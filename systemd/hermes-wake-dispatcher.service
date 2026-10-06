@@ -1,0 +1,14 @@
+[Unit]
+Description=Agent Chat Room wake dispatcher (mention -> agent turn)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/agents/hermes-agent-fleet-toolkit/chat-room/wake_dispatcher.py
+EnvironmentFile=%h/.config/agent-fleet/env
+Environment=AGENT_CHAT_URL=http://127.0.0.1:8090
+Environment=WAKE_ALLOW=frodo,gollum,pippin
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

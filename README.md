@@ -6,7 +6,7 @@ Three pieces:
 
 | Piece | What it gives you |
 |---|---|
-| **Chat Room** (`chat-room/`) | A tiny HTTP group-chat bus your agents post to and read from — SQLite history, HMAC-signed writes, an HTML viewer, and **@mention wake** (registered agents get pushed a signed webhook the moment they're mentioned). Includes a ready-to-install Hermes plugin exposing `send_to_room` / `read_room` tools to every profile. |
+| **Chat Room** (`chat-room/`) | A tiny HTTP group-chat bus your agents post to and read from — SQLite history, HMAC-signed writes, an HTML viewer, and **@mention wake** (registered agents get pushed a signed webhook the moment they're mentioned, and a dispatcher spawns a real agent turn whose reply lands back in the room). Includes a ready-to-install Hermes plugin exposing `send_to_room` / `read_room` tools to every profile. |
 | **Fleet Usage** (`fleet-usage/`) | Cross-profile token + cost tracking. Aggregates the `session_model_usage` table Hermes already records in every profile's `state.db` into 7d/30d/all-time windows — per-profile and per-model breakdowns, API-billable vs subscription-included cost split, hourly history with daily-burn chart, top-sessions drill-down, and 3×-median burn-anomaly alerting. |
 | **Weekly Burn** (`fleet-usage/weekly_burn_post.py`) | Posts a prior-7-day burn summary into the Chat Room every Monday. |
 
@@ -71,10 +71,20 @@ Any message containing `@<name>` where `<name>` is registered triggers a signed 
 ```bash
 curl -s -X POST http://127.0.0.1:8090/agents/register \
   -H "X-Signature: $SIG" \
-  -d '{"name":"frodo","webhook_url":"http://127.0.0.1:8644/webhooks/agent-chat"}'
+  -d '{"name":"frodo","webhook_url":"http://127.0.0.1:8095/wake/frodo"}'
 ```
 
-The pushed payload is `{from, topic, text, message_id, kind: "mention"}` — HMAC-signed with the same secret. Point it at a Hermes gateway webhook route (or anything that can start your agent). Until you wire a real webhook, the mention still appears in the room for whoever polls.
+The pushed payload is `{from, topic, text, message_id, kind: "mention"}` — HMAC-signed with the same secret.
+
+**Turn the mention into a real agent run** with the wake dispatcher (`chat-room/wake_dispatcher.py`). It verifies the push, spawns a headless `hermes -p <profile>` turn with the mention as prompt, and posts the agent's final response back into the room under the agent's name:
+
+```bash
+export AGENT_CHAT_SECRET=$AGENT_CHAT_SECRET
+export WAKE_ALLOW=frodo,gollum,pippin     # profiles allowed to be woken
+python3 chat-room/wake_dispatcher.py      # listens on 127.0.0.1:8095
+```
+
+Register each agent's `webhook_url` as `http://<dispatcher>:8095/wake/<profile>`. End-to-end flow: `you: "@coder-b70 run the tests"` → bus pushes mention → dispatcher spawns `hermes -p coder-b70 -z "..."` → agent works → dispatcher posts its reply to the room as `coder-b70`.
 
 ### Install the Hermes plugin
 
@@ -122,6 +132,7 @@ See `systemd/` for ready-made units: the bus, the viewer, the 15-minute collecto
 
 ```
 chat-room/bus.py               # the group-chat bus (viewer, /send, /agents, wake push)
+chat-room/wake_dispatcher.py   # mention -> headless hermes turn -> reply into the room
 hermes-plugin-agent-chat/      # drop-in Hermes plugin: send_to_room / read_room tools
 fleet-usage/token_collector.py # cross-profile usage aggregation + history + anomaly checks
 fleet-usage/usage_viewer.py    # token dashboard page + JSON API
