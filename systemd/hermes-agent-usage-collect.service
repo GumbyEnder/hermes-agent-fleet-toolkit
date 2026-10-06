@@ -1,0 +1,7 @@
+[Unit]
+Description=Collect fleet token usage snapshot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/agents/hermes-agent-fleet-toolkit/fleet-usage/token_collector.py
+EnvironmentFile=%h/.config/agent-fleet/env

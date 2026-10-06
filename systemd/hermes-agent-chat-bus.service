@@ -1,0 +1,12 @@
+[Unit]
+Description=Agent Chat Bus (self-hosted, HMAC-signed)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/agents/hermes-agent-fleet-toolkit/chat-room/bus.py
+EnvironmentFile=%h/.config/agent-fleet/env
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

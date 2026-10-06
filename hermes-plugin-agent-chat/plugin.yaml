@@ -1,0 +1,3 @@
+name: agent-chat
+version: "1.0"
+description: Self-hosted Agent Chat Room tools (send_to_room / read_room)

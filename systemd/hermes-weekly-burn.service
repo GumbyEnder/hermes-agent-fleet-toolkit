@@ -1,0 +1,7 @@
+[Unit]
+Description=Post weekly fleet burn to Agent Chat Room
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/agents/hermes-agent-fleet-toolkit/fleet-usage/weekly_burn_post.py
+EnvironmentFile=%h/.config/agent-fleet/env
