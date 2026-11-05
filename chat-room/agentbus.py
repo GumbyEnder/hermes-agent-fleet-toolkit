@@ -4,23 +4,27 @@
 Lets NON-Hermes agents (grokbot, claude-code, codex, node/python bots, shell
 scripts, cron jobs) join the same room Hermes profiles already use.
 
-No dependencies. Copy this one file to any host that can reach the bus over
-Tailscale, or call it over ssh.
+No dependencies. Copy this one file to any host that can reach the bus over a
+private network, or call it over ssh.
 
 Env (or flags):
-  AGENT_CHAT_URL     bus base URL (default http://127.0.0.1:8090)
-  AGENT_CHAT_SECRET  shared HMAC secret (required for send/register)
-  AGENT_NAME         your sender identity (default: $AGENT_NAME, $USER, hostname)
+  AGENT_CHAT_URL       bus base URL (default http://127.0.0.1:8090)
+  AGENT_CHAT_SECRET    shared HMAC secret (required for send/register/reads)
+  AGENT_CHAT_ENV_FILE  optional file to read the secret from
+  AGENT_NAME           sender identity (default: $AGENT_NAME, $USER, hostname)
 
 Usage:
   agentbus health
-  agentbus send "text" [--topic general] [--from NAME]
-  agentbus read [--since ID] [--limit 50] [--topic T] [--wait 30] [--json]
-  agentbus tail [--since ID] [--interval 3] [--topic T]
+  agentbus send "text" [--topic general] [--from NAME] [--reply-to ID]
+  agentbus read [--since ID] [--last N] [--limit 50] [--topic T] [--wait 30]
+                [--thread ID] [--mentions NAME] [--telemetry] [--mark] [--json]
+  agentbus tail [--since ID] [--interval 3] [--topic T] [--wait 25]
+  agentbus mentions --name NAME [--since ID]
+  agentbus reads
   agentbus register --name N --webhook URL
 
 Pull-mode (outbound-only hosts that expose no inbound ports):
-  agentbus tail --since 0        # run under systemd/nohup, prints new msgs
+  agentbus tail                 # run under systemd/nohup, prints new msgs
 Exit code 0 on success, 1 on error.
 """
 import argparse
@@ -113,18 +117,31 @@ def _parse(body):
 
 def _print_msg(m):
     ts = m.get("ts")
-    when = time.strftime("%m-%d %H:%M", time.localtime(ts)) if isinstance(ts, (int, float)) else str(ts or "")
+    when = time.strftime("%m-%d %H:%M", time.localtime(ts)) \
+        if isinstance(ts, (int, float)) else str(ts or "")
     who = m.get("sender") or m.get("from") or "?"
-    print(f"[{m.get('id')}] {when} <{who}> #{m.get('topic', 'general')}: {m.get('text', '')}")
+    reply = f" (↳{m['parent_id']})" if m.get("parent_id") else ""
+    print(f"[{m.get('id')}]{reply} {when} <{who}> #{m.get('topic', 'general')}: "
+          f"{m.get('text', '')}")
 
 
-def _fetch(since, limit, topic, wait=0):
+def _fetch(since, limit, topic, wait=0, thread=None, telemetry=False):
     q = {"since": since, "limit": limit}
     if topic:
         q["topic"] = topic
     if wait:
         q["wait"] = wait
+    if thread:
+        q["thread"] = thread
+    if telemetry:
+        q["telemetry"] = 1
     return _get("/api/messages?" + urllib.parse.urlencode(q))
+
+
+def _mark_read(name, last_id):
+    st, body = _post("/api/reads", {"name": name, "last_id": int(last_id)})
+    if st != 200:
+        print(f"cursor not saved ({st}): {body[:120]}", file=sys.stderr)
 
 
 def cmd_health(a):
@@ -148,13 +165,40 @@ def cmd_send(a):
 
 def cmd_read(a):
     since, limit = a.since, a.limit
-    if a.last:  # "the N most recent messages"
-        st, tip_body = _get("/api/tip")
-        tip = int(json.loads(tip_body).get("max_id", 0)) if st == 200 else 0
-        since, limit = max(0, tip - a.last), a.last
-    st, body = _fetch(since, limit, a.topic, a.wait)
+    if a.mentions:
+        path = "/api/mentions?" + urllib.parse.urlencode(
+            {"name": a.mentions, "since": since, "limit": limit})
+        st, body = _get(path)
+        if st != 200:
+            print(f"read failed {st}: {body}", file=sys.stderr)
+            return 1
+        msgs = _parse(body)
+    else:
+        if a.last:  # "the N most recent messages"
+            st, tip_body = _get("/api/tip")
+            tip = int(json.loads(tip_body).get("max_id", 0)) if st == 200 else 0
+            since, limit = max(0, tip - a.last), a.last
+        st, body = _fetch(since, limit, a.topic, a.wait, a.thread, a.telemetry)
+        if st != 200:
+            print(f"read failed {st}: {body}", file=sys.stderr)
+            return 1
+        msgs = _parse(body)
+    if a.json:
+        print(json.dumps(msgs, indent=2))
+    else:
+        for m in msgs:
+            _print_msg(m)
+    if a.mark and msgs:
+        _mark_read(_name(a.sender), max(int(m.get("id") or 0) for m in msgs))
+    return 0
+
+
+def cmd_mentions(a):
+    path = "/api/mentions?" + urllib.parse.urlencode(
+        {"name": a.name, "since": a.since, "limit": a.limit})
+    st, body = _get(path)
     if st != 200:
-        print(f"read failed {st}: {body}", file=sys.stderr)
+        print(f"mentions failed {st}: {body}", file=sys.stderr)
         return 1
     msgs = _parse(body)
     if a.json:
@@ -162,6 +206,21 @@ def cmd_read(a):
     else:
         for m in msgs:
             _print_msg(m)
+    return 0
+
+
+def cmd_reads(a):
+    st, body = _get("/api/reads")
+    if st != 200:
+        print(f"reads failed {st}: {body}", file=sys.stderr)
+        return 1
+    rows = json.loads(body)
+    if a.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for r in rows:
+            when = time.strftime("%m-%d %H:%M", time.localtime(r.get("updated") or 0))
+            print(f"{r.get('name', '?'):<20} last_id={r.get('last_id')} ({when})")
     return 0
 
 
@@ -201,10 +260,10 @@ def main(argv=None):
     sub.add_parser("health").set_defaults(fn=cmd_health)
 
     s = sub.add_parser("send")
-    s.add_argument("text")
+    s.add_argument("text", help="message body, or - for stdin")
     s.add_argument("--topic", default="general")
     s.add_argument("--from", dest="sender")
-    s.add_argument("--reply-to", type=int)
+    s.add_argument("--reply-to", type=int, help="message id this answers")
     s.set_defaults(fn=cmd_send)
 
     r = sub.add_parser("read")
@@ -213,8 +272,26 @@ def main(argv=None):
     r.add_argument("--limit", type=int, default=50)
     r.add_argument("--topic")
     r.add_argument("--wait", type=int, default=0, help="long-poll seconds")
+    r.add_argument("--thread", type=int, help="root message id: it plus its replies")
+    r.add_argument("--mentions", metavar="NAME", help="only messages mentioning @NAME")
+    r.add_argument("--telemetry", action="store_true",
+                   help="include telemetry topics (hidden by default)")
+    r.add_argument("--mark", action="store_true",
+                   help="store a read cursor for my sender name")
+    r.add_argument("--from", dest="sender", help="sender name used by --mark")
     r.add_argument("--json", action="store_true")
     r.set_defaults(fn=cmd_read)
+
+    m = sub.add_parser("mentions")
+    m.add_argument("--name", required=True)
+    m.add_argument("--since", type=int, default=0)
+    m.add_argument("--limit", type=int, default=100)
+    m.add_argument("--json", action="store_true")
+    m.set_defaults(fn=cmd_mentions)
+
+    rd = sub.add_parser("reads", help="per-agent read cursors")
+    rd.add_argument("--json", action="store_true")
+    rd.set_defaults(fn=cmd_reads)
 
     t = sub.add_parser("tail")
     t.add_argument("--since", type=int, default=0)

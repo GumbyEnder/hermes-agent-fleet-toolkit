@@ -7,6 +7,7 @@ GET /health          -> status
 """
 import json
 import os
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,7 +37,7 @@ h2{font-size:1.05rem;color:var(--good);margin:24px 0 8px}
 .updated{color:var(--muted);font-size:.82rem;margin-top:18px}
 </style></head><body><div class="wrap">
 <h1>Fleet Token Usage</h1>
-<div class="sub">All Hermes agents &middot; collected from each profile's state.db &middot; <a href="/api/usage">JSON</a></div>
+<div class="sub">All Hermes agents &middot; collected from each profile's state.db &middot; <a href="/api/usage">JSON</a> &middot; <a href="/api/export.csv">CSV</a> &middot; <a href="/metrics">metrics</a></div>
 <div class="tabs"><button data-w="7d" class="active">Last 7 days</button><button data-w="30d">Last 30 days</button><button data-w="all">All time</button></div>
 <div class="cards" id="cards"></div>
 <h2>By agent (profile)</h2><table id="tp"></table>
@@ -69,24 +70,106 @@ fetch('/api/usage').then(r=>r.json()).then(d=>{data=d;render()});setInterval(()=
 </script></body></html>"""
 
 
+
+def sd_notify(state):
+    """Minimal sd_notify: READY=1 and WATCHDOG=1 without a dependency."""
+    path = os.environ.get("NOTIFY_SOCKET")
+    if not path:
+        return
+    if path.startswith("@"):
+        path = "\0" + path[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.sendto(state.encode(), path)
+    except OSError:
+        pass
+
+
+def watchdog_loop():
+    """Ping systemd at half the configured WatchdogSec; no-op under a manual run."""
+    usec = int(os.environ.get("WATCHDOG_USEC", "0") or 0)
+    if not usec:
+        return
+    interval = max(1.0, usec / 2e6)
+    while True:
+        time.sleep(interval)
+        sd_notify("WATCHDOG=1")
+
+
 class H(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/health":
-            body = json.dumps({"status": "ok", "port": PORT}).encode()
-        elif self.path == "/api/usage":
-            body = open(DATA, "rb").read() if os.path.exists(DATA) else b'{"windows":{}}'
-        elif self.path == "/favicon.svg":
-            self.send_response(200); self.send_header("Content-Type", "image/svg+xml"); self.end_headers()
-            self.wfile.write(b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#07101f"/><path d="M8 22V10l8 6 8-6v12" fill="none" stroke="#78c8ff" stroke-width="2"/></svg>')
-            return
-        else:
-            body = PAGE.encode()
-        self.send_response(200)
+    def _send(self, body: bytes, ctype: str, code: int = 200):
+        self.send_response(code)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Type", "application/json" if self.path.startswith("/api") or self.path == "/health" else "text/html; charset=utf-8")
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _data(self):
+        try:
+            return json.loads(open(DATA, "rb").read() or b"{}")
+        except (OSError, ValueError):
+            return {"windows": {}}
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
+            d = self._data()
+            self._send(json.dumps({"status": "ok", "port": PORT,
+                                   "generated": d.get("generated")}).encode(),
+                       "application/json")
+        elif path == "/api/usage":
+            body = open(DATA, "rb").read() if os.path.exists(DATA) else b'{"windows":{}}'
+            self._send(body, "application/json")
+        elif path == "/api/export.csv":
+            self._send(self._csv(), "text/csv; charset=utf-8")
+        elif path == "/metrics":
+            self._send(self._metrics(), "text/plain; version=0.0.4")
+        elif path == "/favicon.svg":
+            self._send(b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+                       b'<rect width="32" height="32" rx="7" fill="#07101f"/>'
+                       b'<path d="M8 22V10l8 6 8-6v12" fill="none" stroke="#78c8ff" '
+                       b'stroke-width="2"/></svg>', "image/svg+xml")
+        else:
+            self._send(PAGE.encode(), "text/html; charset=utf-8")
+
+    def _csv(self):
+        """Per-profile × model cost/token rows for the 7d window (deltas across windows are
+        available in /api/usage; this is the spreadsheet view)."""
+        import csv
+        import io
+        d = self._data()
+        buf = io.StringIO()
+        wr = csv.writer(buf)
+        wr.writerow(["window", "profile", "model", "sessions", "input", "output",
+                     "cache_read", "reasoning", "est_cost", "actual_cost"])
+        for win, wd in (d.get("windows") or {}).items():
+            for profile, b in (wd.get("by_profile") or {}).items():
+                wr.writerow([win, profile, "*", b.get("sessions", 0), b.get("input", 0),
+                             b.get("output", 0), b.get("cache_read", 0),
+                             b.get("reasoning", 0), round(b.get("est_cost", 0), 4),
+                             round(b.get("actual_cost", 0), 4)])
+            for model, b in (wd.get("by_model") or {}).items():
+                wr.writerow([win, "*", model, b.get("sessions", 0), b.get("input", 0),
+                             b.get("output", 0), b.get("cache_read", 0),
+                             b.get("reasoning", 0), round(b.get("est_cost", 0), 4),
+                             round(b.get("actual_cost", 0), 4)])
+        return buf.getvalue().encode()
+
+    def _metrics(self):
+        d = self._data()
+        lines = ["# HELP fleet_usage_generated_timestamp When the collector last wrote data",
+                 "# TYPE fleet_usage_generated_timestamp gauge",
+                 f"fleet_usage_generated_timestamp {d.get('generated') or 0}"]
+        for win, wd in (d.get("windows") or {}).items():
+            t = wd.get("total") or {}
+            for k in ("sessions", "input", "output", "cache_read", "reasoning",
+                      "est_cost", "billable_cost", "included_cost"):
+                lines.append(f'fleet_usage_{k}{{window="{win}"}} {t.get(k, 0)}')
+        anomaly = (d.get("anomaly") or {}).get("active")
+        lines += ["# TYPE fleet_usage_anomaly_active gauge",
+                  f"fleet_usage_anomaly_active {1 if anomaly else 0}"]
+        return ("\n".join(lines) + "\n").encode()
 
     def log_message(self, fmt, *args):
         pass
@@ -100,4 +183,6 @@ if __name__ == "__main__":
         threading.Thread(target=servers[1].serve_forever, daemon=True).start()
     else:
         print(f"usage viewer on http://127.0.0.1:{PORT}", flush=True)
+    threading.Thread(target=watchdog_loop, daemon=True).start()
+    sd_notify("READY=1")
     servers[0].serve_forever()

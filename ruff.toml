@@ -1,0 +1,9 @@
+# Keep lint meaningful without fighting style: syntax and undefined names only.
+line-length = 110
+
+[lint]
+select = ["E9", "F"]
+ignore = ["F401"]  # plugins/optional imports vary by host
+
+[lint.per-file-ignores]
+"tests/*" = ["F401", "F841"]

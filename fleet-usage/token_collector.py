@@ -1,13 +1,28 @@
 #!/usr/bin/env python3
 """Fleet token collector — aggregates session_model_usage across ALL Hermes profiles.
 
-Run periodically (systemd timer). Writes usage.json for the viewer at :8091.
+Run periodically (systemd timer). Writes usage.json for the viewer at :8091, plus
+history.db snapshots, burn-anomaly alerts and per-profile daily budget alerts.
+
+Env:
+  USAGE_JSON              output file (default ~/.local/share/agent-usage/usage.json)
+  AGENT_USAGE_REMOTES     comma list of ssh hosts to merge
+  USAGE_HISTORY_DAYS      snapshot retention (default 400)
+  USAGE_BUDGET_PROFILE_USD  per-profile 24h spend alert threshold (0 = off)
+  USAGE_BUDGET_STATE      budget cooldown state file (default beside usage.json)
+  AGENT_CHAT_URL          where alerts are posted (default http://127.0.0.1:8090)
+  AGENT_CHAT_SECRET       shared secret; required to post alerts
+  AGENT_CHAT_ENV_FILE     optional file to read the secret from
+  USAGE_VIEWER_URL        link rendered in alert text
 """
+import hashlib
+import hmac as hm
 import json
 import os
 import sqlite3
 import subprocess
 import time
+import urllib.request
 from pathlib import Path
 
 HOME = Path.home()
@@ -17,9 +32,12 @@ D = 86400
 
 WINDOWS = {"7d": 7 * D, "30d": 30 * D, "all": None}
 
-# Tailscale/SSH hosts running Hermes: entries "ssh-alias" (assumes ~/.hermes/state.db).
-# Unreachable hosts are skipped silently and retried next run.
 REMOTES = [h.strip() for h in os.environ.get("AGENT_USAGE_REMOTES", "").split(",") if h.strip()]
+HISTORY_DAYS = float(os.environ.get("USAGE_HISTORY_DAYS", "400"))
+BUDGET_USD = float(os.environ.get("USAGE_BUDGET_PROFILE_USD", "0"))
+BUDGET_STATE = Path(os.environ.get("USAGE_BUDGET_STATE") or (OUT.parent / "budget_state.json"))
+VIEWER_URL = os.environ.get("USAGE_VIEWER_URL") or os.environ.get("USAGE_URL") \
+    or "http://127.0.0.1:8091/"
 
 
 def query_profile(profile: str, db_path: Path):
@@ -45,9 +63,8 @@ def query_profile(profile: str, db_path: Path):
 
 
 def query_remote(host: str):
-    """Pull remote home's usage rows over ssh (collector must exist remotely, or query its DB directly)."""
+    """Pull remote home's usage rows over ssh."""
     try:
-        # run the same collector logic remotely in one shot: dump rows as JSON
         script = (
             "import json,sqlite3,os;rows=[];"
             "dbs=[os.path.expanduser('~/.hermes/state.db')]+"
@@ -60,7 +77,8 @@ def query_remote(host: str):
             " except Exception: pass\n"
             "print(json.dumps(rows))"
         )
-        r = subprocess.run(["ssh", "-o", "ConnectTimeout=6", "-o", "BatchMode=yes", host, "python3", "-c", script],
+        r = subprocess.run(["ssh", "-o", "ConnectTimeout=6", "-o", "BatchMode=yes", host,
+                            "python3", "-c", script],
                            capture_output=True, text=True, timeout=40)
         if r.returncode != 0:
             print(f"remote {host}: unreachable ({r.stderr.strip()[:80]})")
@@ -77,7 +95,6 @@ def query_remote(host: str):
 
 
 def top_sessions(raw, now, days=7, limit=10):
-    """Most expensive sessions in the last N days (drill-down table)."""
     cut = now - days * D
     rows = [r for r in raw if (r["last_seen"] or 0) >= cut]
     rows.sort(key=lambda r: (r["estimated_cost_usd"] or 0.0), reverse=True)
@@ -90,8 +107,42 @@ def top_sessions(raw, now, days=7, limit=10):
     } for r in rows[:limit]]
 
 
+def _secret():
+    s = os.environ.get("AGENT_CHAT_SECRET", "")
+    if s:
+        return s
+    env_file = os.environ.get("AGENT_CHAT_ENV_FILE")
+    if env_file:
+        try:
+            for line in Path(env_file).expanduser().read_text().splitlines():
+                if line.startswith("AGENT_CHAT_SECRET="):
+                    return line.split("=", 1)[1].strip().strip("'\"")
+        except OSError:
+            pass
+    return ""
+
+
+def post_to_room(text, topic="alerts"):
+    """Best-effort signed post; returns a short status string."""
+    secret = _secret()
+    if not secret:
+        return "no secret"
+    try:
+        body = json.dumps({"from": "fleet-usage", "topic": topic, "text": text,
+                           "kind": "system"}).encode()
+        sig = hm.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        room = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090").rstrip("/") + "/send"
+        req = urllib.request.Request(room, data=body,
+                                     headers={"X-Signature": sig,
+                                              "Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=8)
+        return "posted"
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+
+
 def check_anomaly(raw, now, mult=3.0):
-    """Alert if last-24h input burn exceeds mult x the 7-day daily median. Cooldown 20h via state file."""
+    """Alert when last-24h input exceeds mult x the 7-day daily median (20h cooldown)."""
     state = OUT.parent / "anomaly_state.json"
     try:
         cooldown = json.loads(state.read_text()) if state.exists() else {}
@@ -101,13 +152,12 @@ def check_anomaly(raw, now, mult=3.0):
         return {"active": False, "reason": "cooldown"}
 
     day = sum(r["input_tokens"] or 0 for r in raw if (r["last_seen"] or 0) >= now - D)
-    # per-day input over last 7 days from cumulative last_seen windows is approximate:
-    # use per-row first_seen to bucket each row's day for a stable median
     daily = {}
     for r in raw:
         fs = r["first_seen"] or 0
         if now - 7 * D <= fs <= now - D:
-            daily[int((now - fs) // D)] = daily.get(int((now - fs) // D), 0) + (r["input_tokens"] or 0)
+            bucket = int((now - fs) // D)
+            daily[bucket] = daily.get(bucket, 0) + (r["input_tokens"] or 0)
     if len(daily) < 3:
         return {"active": False, "reason": "not enough history"}
     vals = sorted(daily.values())
@@ -115,40 +165,68 @@ def check_anomaly(raw, now, mult=3.0):
     if median > 0 and day > mult * median:
         result = {"active": True, "day_input": day, "median_input": median,
                   "multiple": round(day / median, 1)}
-        # post to agent chat room (best effort)
-        try:
-            secret = os.environ.get("AGENT_CHAT_SECRET", "")
-            env_file = os.environ.get("AGENT_CHAT_ENV_FILE")
-            if not secret and env_file:
-                for line in Path(env_file).expanduser().read_text().splitlines():
-                    if line.startswith("AGENT_CHAT_SECRET="):
-                        secret = line.split("=", 1)[1].strip()
-            if secret:
-                import hashlib, hmac as hm, urllib.request
-                text = (f"⚠ Token burn anomaly: last 24h input = {day:,} "
-                        f"({result['multiple']}× the 7-day median of {median:,}). "
-                        f"Check the usage viewer: {os.environ.get('USAGE_URL', 'http://127.0.0.1:8091/')}")
-                body = json.dumps({"from": "fleet-usage", "topic": "alerts", "text": text,
-                                   "kind": "system"}).encode()
-                sig = hm.new(secret.encode(), body, hashlib.sha256).hexdigest()
-                room = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090").rstrip("/") + "/send"
-                req = urllib.request.Request(room, data=body,
-                                             headers={"X-Signature": sig})
-                urllib.request.urlopen(req, timeout=8)
-                result["posted_to_room"] = True
-        except Exception as e:
-            result["post_error"] = str(e)
+        text = (f"⚠ Token burn anomaly: last 24h input = {day:,} "
+                f"({result['multiple']}× the 7-day median of {median:,}). "
+                f"Check the usage viewer: {VIEWER_URL}")
+        result["post"] = post_to_room(text)
         state.write_text(json.dumps({"last_alert": now}))
         return result
     return {"active": False, "day_input": day, "median_input": median}
 
 
+def check_budgets(raw, now):
+    """Per-profile 24h spend alert (USAGE_BUDGET_PROFILE_USD). Returns a list of alerts."""
+    if BUDGET_USD <= 0:
+        return []
+    by_profile = {}
+    for r in raw:
+        if (r["last_seen"] or 0) < now - D:
+            continue
+        by_profile[r["profile"]] = by_profile.get(r["profile"], 0.0) + \
+            (r["estimated_cost_usd"] or 0.0)
+    try:
+        state = json.loads(BUDGET_STATE.read_text()) if BUDGET_STATE.exists() else {}
+    except Exception:
+        state = {}
+    alerts = []
+    for profile, cost in sorted(by_profile.items(), key=lambda kv: -kv[1]):
+        if cost <= BUDGET_USD:
+            continue
+        if now - state.get(profile, 0) < 20 * 3600:
+            continue
+        text = (f"💸 Budget: {profile} spent ${cost:,.2f} in the last 24h "
+                f"(limit ${BUDGET_USD:,.2f}). {VIEWER_URL}")
+        alerts.append({"profile": profile, "cost_24h": round(cost, 2),
+                       "limit": BUDGET_USD, "post": post_to_room(text)})
+        state[profile] = now
+    if alerts:
+        try:
+            BUDGET_STATE.parent.mkdir(parents=True, exist_ok=True)
+            BUDGET_STATE.write_text(json.dumps(state))
+        except OSError:
+            pass
+    return alerts
+
+
+def compact_history(conn, now):
+    """Drop snapshots past retention and reclaim space when anything was removed."""
+    cutoff = now - HISTORY_DAYS * D
+    cur = conn.execute("DELETE FROM snapshots WHERE ts < ?", (cutoff,))
+    conn.commit()
+    removed = cur.rowcount or 0
+    if removed:
+        conn.execute("VACUUM")
+    return removed
+
+
 def main():
-    profiles = sorted(d.name for d in (HERMES / "profiles").iterdir() if d.is_dir())
+    profiles = []
+    prof_dir = HERMES / "profiles"
+    if prof_dir.is_dir():
+        profiles = sorted(d.name for d in prof_dir.iterdir() if d.is_dir())
     raw = []
     for p in profiles:
-        raw.extend(query_profile(p, HERMES / "profiles" / p / "state.db"))
-    # also the default home (non-profile agents)
+        raw.extend(query_profile(p, prof_dir / p / "state.db"))
     raw.extend(query_profile("default", HERMES / "state.db"))
     for host in REMOTES:
         raw.extend(query_remote(host))
@@ -161,23 +239,26 @@ def main():
         by_profile, by_model = {}, {}
         for r in rows:
             pf = r["profile"]
-            b = by_profile.setdefault(pf, {"sessions": 0, "input": 0, "output": 0, "cache_read": 0, "reasoning": 0, "est_cost": 0.0, "actual_cost": 0.0, "api_calls": 0})
-            m = by_model.setdefault(r["model"] or "?", {"sessions": 0, "input": 0, "output": 0, "cache_read": 0, "reasoning": 0, "est_cost": 0.0, "actual_cost": 0.0})
-            vals = (1, r["input_tokens"] or 0, r["output_tokens"] or 0, r["cache_read_tokens"] or 0,
-                    r["reasoning_tokens"] or 0, r["estimated_cost_usd"] or 0.0, r["actual_cost_usd"] or 0.0, r["api_call_count"] or 0)
-            for k, v in zip(("sessions", "input", "output", "cache_read", "reasoning", "est_cost", "actual_cost"), vals):
+            b = by_profile.setdefault(pf, {"sessions": 0, "input": 0, "output": 0,
+                                           "cache_read": 0, "reasoning": 0,
+                                           "est_cost": 0.0, "actual_cost": 0.0,
+                                           "api_calls": 0})
+            m = by_model.setdefault(r["model"] or "?", {"sessions": 0, "input": 0,
+                                                        "output": 0, "cache_read": 0,
+                                                        "reasoning": 0, "est_cost": 0.0,
+                                                        "actual_cost": 0.0})
+            vals = (1, r["input_tokens"] or 0, r["output_tokens"] or 0,
+                    r["cache_read_tokens"] or 0, r["reasoning_tokens"] or 0,
+                    r["estimated_cost_usd"] or 0.0, r["actual_cost_usd"] or 0.0,
+                    r["api_call_count"] or 0)
+            for k, v in zip(("sessions", "input", "output", "cache_read", "reasoning",
+                             "est_cost", "actual_cost"), vals):
                 b[k] += v
-            for k, v in zip(("sessions", "input", "output", "cache_read", "reasoning", "est_cost", "actual_cost"), vals):
                 m[k] += v
             b["api_calls"] += r["api_call_count"] or 0
-        total = {"sessions": sum(b["sessions"] for b in by_profile.values()),
-                 "input": sum(b["input"] for b in by_profile.values()),
-                 "output": sum(b["output"] for b in by_profile.values()),
-                 "cache_read": sum(b["cache_read"] for b in by_profile.values()),
-                 "reasoning": sum(b["reasoning"] for b in by_profile.values()),
-                 "est_cost": sum(b["est_cost"] for b in by_profile.values()),
-                 "actual_cost": sum(b["actual_cost"] for b in by_profile.values())}
-        # last active timestamp per profile
+        total = {k: sum(b[k] for b in by_profile.values())
+                 for k in ("sessions", "input", "output", "cache_read", "reasoning",
+                           "est_cost", "actual_cost")}
         last_active = {}
         for r in rows:
             if (r["last_seen"] or 0) > last_active.get(r["profile"], 0):
@@ -185,11 +266,9 @@ def main():
         windows[wname] = {"total": total, "by_profile": by_profile, "by_model": by_model,
                           "last_active": last_active, "cutoff": cut}
 
-    # ---- billing split: subscription-included vs API-billable ----
-    for wname in windows:
-        w = windows[wname]
-        rows = [r for r in raw if (r["last_seen"] or 0) >= windows[wname]["cutoff"]]
-        billable = included = 0
+    for wname, w in windows.items():
+        rows = [r for r in raw if (r["last_seen"] or 0) >= w["cutoff"]]
+        billable = included = 0.0
         for r in rows:
             if r["billing_mode"] == "subscription_included":
                 included += r["estimated_cost_usd"] or 0.0
@@ -198,7 +277,7 @@ def main():
         w["total"]["billable_cost"] = round(billable, 2)
         w["total"]["included_cost"] = round(included, 2)
 
-    # ---- history: append one snapshot per run (sqlite, local) ----
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     hist_db = OUT.parent / "history.db"
     conn = sqlite3.connect(hist_db, timeout=10)
     conn.execute("""CREATE TABLE IF NOT EXISTS snapshots (
@@ -206,22 +285,31 @@ def main():
                        output INTEGER, cache_read INTEGER, reasoning INTEGER,
                        billable_cost REAL, included_cost REAL)""")
     last = conn.execute("SELECT ts FROM snapshots ORDER BY ts DESC LIMIT 1").fetchone()
-    if not last or now - last[0] >= 3500:  # ~hourly, avoid timer-restart dupes
+    if not last or now - last[0] >= 3500:      # ~hourly, avoid timer-restart dupes
         conn.execute("INSERT INTO snapshots VALUES (?,?,?,?,?,?,?,?)",
-                     (now, windows["all"]["total"]["sessions"], windows["all"]["total"]["input"],
-                      windows["all"]["total"]["output"], windows["all"]["total"]["cache_read"],
+                     (now, windows["all"]["total"]["sessions"],
+                      windows["all"]["total"]["input"], windows["all"]["total"]["output"],
+                      windows["all"]["total"]["cache_read"],
                       windows["all"]["total"]["reasoning"],
-                      windows["all"]["total"]["billable_cost"], windows["all"]["total"]["included_cost"]))
-    conn.commit()
-    hist = [dict(zip(("ts", "sessions", "input", "output", "cache_read", "reasoning", "billable_cost", "included_cost"), r))
-            for r in conn.execute("SELECT * FROM snapshots WHERE ts >= ? ORDER BY ts", (now - 60 * D,))]
+                      windows["all"]["total"]["billable_cost"],
+                      windows["all"]["total"]["included_cost"]))
+        conn.commit()
+    removed = compact_history(conn, now)
+    hist = [dict(zip(("ts", "sessions", "input", "output", "cache_read", "reasoning",
+                      "billable_cost", "included_cost"), r))
+            for r in conn.execute("SELECT * FROM snapshots WHERE ts >= ? ORDER BY ts",
+                                  (now - 60 * D,))]
     conn.close()
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({"generated": now, "profiles": profiles, "windows": windows, "history": hist,
-                               "top_sessions": top_sessions(raw, now),
-                               "anomaly": check_anomaly(raw, now)}))
-    print(f"collected {len(raw)} usage rows across {len(profiles)+1} homes -> {OUT}")
+    anomaly = check_anomaly(raw, now)
+    budgets = check_budgets(raw, now)
+    OUT.write_text(json.dumps({"generated": now, "profiles": profiles, "windows": windows,
+                               "history": hist, "top_sessions": top_sessions(raw, now),
+                               "anomaly": anomaly, "budgets": budgets,
+                               "budget_limit_usd": BUDGET_USD}))
+    print(f"collected {len(raw)} usage rows across {len(profiles) + 1} homes -> {OUT}"
+          + (f" (history pruned: {removed})" if removed else "")
+          + (f" | budget alerts: {len(budgets)}" if budgets else ""))
 
 
 if __name__ == "__main__":

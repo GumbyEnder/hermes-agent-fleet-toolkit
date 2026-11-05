@@ -122,6 +122,13 @@ def save_state(last_id, note="", repo_heads_seen=None):
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
     os.replace(tmp, STATE_PATH)
+    # Publish the cursor so humans and other agents can see how far I have read
+    # (`agentbus reads`). Best effort: the local file stays authoritative.
+    if os.environ.get("WATCH_PUBLISH_CURSOR", "1") == "1":
+        try:
+            signed_post(BUS + "/api/reads", {"name": ME, "last_id": int(last_id)}, timeout=8)
+        except Exception as e:  # noqa: BLE001
+            log(f"cursor publish failed (ignored): {e}")
 
 
 def wants_me(m):

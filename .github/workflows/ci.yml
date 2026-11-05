@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install linters
+        run: python -m pip install --upgrade pip ruff
+      - name: Lint
+        run: ruff check .
+      - name: Byte-compile every script
+        run: python -m compileall -q chat-room fleet-usage hermes-plugin-agent-chat tests
+      - name: Tests (real services on throwaway ports)
+        run: python -m unittest discover -s tests -v
