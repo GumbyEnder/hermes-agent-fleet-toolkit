@@ -226,8 +226,8 @@ def row_msg(r):
 SEL = "SELECT id, ts, sender, topic, text, kind, parent_id FROM messages"
 
 
-def select_msgs(c, since, limit, topic, thread=None, telemetry=False):
-    where, args = ["id > ?"], [since]
+def select_msgs(c, since, limit, topic, thread=None, telemetry=False, before=None):
+    where, args = (["id < ?"], [before]) if before is not None else (["id > ?"], [since])
     if topic:
         where.append("topic = ?")
         args.append(topic)
@@ -238,7 +238,11 @@ def select_msgs(c, since, limit, topic, thread=None, telemetry=False):
         where.append("(id = ? OR parent_id = ?)")
         args.extend([thread, thread])
     args.append(limit)
-    rows = c.execute(f"{SEL} WHERE {' AND '.join(where)} ORDER BY id LIMIT ?", args).fetchall()
+    order = "DESC" if before is not None else "ASC"
+    rows = c.execute(f"{SEL} WHERE {' AND '.join(where)} ORDER BY id {order} LIMIT ?",
+                     args).fetchall()
+    if before is not None:
+        rows.reverse()
     return [row_msg(r) for r in rows]
 
 
@@ -320,36 +324,75 @@ def viewer_html(token):
 <style>
 :root{--bg:#07101f;--panel:rgba(14,24,48,.94);--text:#eaf0ff;--muted:#9aabc9;--border:#21314f;--accent:#78c8ff;--good:#9cffbf;--warn:#ffd27a}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;color:var(--text);background:radial-gradient(circle at top left,rgba(120,200,255,.18),transparent 26%),linear-gradient(180deg,#07101f,#0b1730);min-height:100vh}
-.wrap{max-width:960px;margin:0 auto;padding:24px 16px 60px}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 16px 60px}
 h1{margin:0 0 4px;font-size:1.6rem;letter-spacing:-.02em}
 .sub{color:var(--muted);font-size:.9rem;margin-bottom:18px}
-.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+.shell{display:grid;grid-template-columns:minmax(0,1fr) 176px;gap:18px;align-items:start}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
 .bar input,.bar select{background:rgba(9,17,34,.75);border:1px solid var(--border);color:var(--text);border-radius:999px;padding:8px 14px;font-size:.9rem}
-#feed{display:grid;gap:10px}
-.msg{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:10px 14px}
-.msg.reply{margin-left:22px;border-left:3px solid rgba(120,200,255,.45)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;min-height:30px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:rgba(9,17,34,.75);border:1px solid var(--border);border-radius:999px;padding:5px 11px;font:inherit;font-size:.8rem;color:var(--text);cursor:pointer}
+.chip:hover{border-color:rgba(120,200,255,.45)}
+.chip.on{border-color:rgba(120,200,255,.75);background:rgba(120,200,255,.16);color:var(--accent)}
+.chip .dot{width:8px;height:8px;border-radius:50%;background:var(--c);flex:none}
+.chip .n{color:var(--muted);font-size:.72rem}
+#feed{display:grid;gap:12px}
+.dayhead{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:8px;width:100%;background:linear-gradient(180deg,#0a1428,#0a1428eb);border:1px solid var(--border);border-radius:999px;padding:5px 12px;color:var(--muted);font:inherit;font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
+.dayhead:hover{color:var(--text);border-color:rgba(120,200,255,.4)}
+.dayhead .dc{color:var(--accent)}
+.dayhead .ch{margin-left:auto;font-size:.8rem}
+.dayhead.col{opacity:.7}
+.msgs{display:grid;gap:10px;padding:10px 0 2px}
+.earlier{justify-self:center;background:transparent;border:1px dashed var(--border);color:var(--muted);border-radius:999px;padding:5px 14px;font:inherit;font-size:.78rem;cursor:pointer}
+.earlier:hover{color:var(--accent);border-color:rgba(120,200,255,.5)}
+.msg{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:10px 14px;box-shadow:inset 3px 0 0 var(--c,transparent)}
+.msg.reply{margin-left:22px}
 .msg .head{display:flex;justify-content:space-between;gap:10px;margin-bottom:4px}
-.sender{font-weight:700;color:var(--accent)}.sender.sys{color:var(--good)}
+.sender{font-weight:700;color:var(--c,var(--accent))}.sender.sys{color:var(--good)}
+.meta{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .topic{font-size:.78rem;border:1px solid var(--border);border-radius:999px;padding:2px 9px;color:var(--muted)}
-.time{color:var(--muted);font-size:.78rem;white-space:nowrap}
-.text{font-size:.94rem;line-height:1.5;white-space:pre-wrap;word-break:break-word}
-.act{font-size:.75rem;color:var(--muted);cursor:pointer;margin-left:8px}
+.time{color:var(--muted);font-size:.78rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+.act{font-size:.75rem;color:var(--muted);cursor:pointer;margin-left:4px}
 .act:hover{color:var(--accent)}
+.text{font-size:.94rem;line-height:1.5;white-space:pre-wrap;word-break:break-word}
 .stale{color:var(--warn);font-size:.85rem;display:none;margin:6px 0}
+.cal{position:sticky;top:14px;max-height:calc(100vh - 28px);overflow:auto;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:8px;display:grid;gap:3px;align-content:start;scrollbar-width:thin}
+.calh{font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:4px 6px 6px}
+.cald{display:grid;grid-template-columns:30px 1fr auto;gap:8px;align-items:center;background:transparent;border:0;border-left:3px solid transparent;border-radius:8px;padding:6px;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.cald:hover{background:rgba(120,200,255,.08)}
+.cald.on{background:rgba(120,200,255,.15);border-left-color:var(--accent)}
+.cald .dnum{font-size:1.12rem;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.cald .dmeta{font-size:.66rem;color:var(--muted);line-height:1.2;text-transform:uppercase;letter-spacing:.06em}
+.cald .dcnt{font-size:.7rem;color:var(--muted)}
+.cald.jumpnew{grid-template-columns:1fr;justify-items:center;font-size:.74rem;color:var(--muted);border-top:1px solid var(--border);border-radius:0;margin-top:4px;padding-top:8px}
+.cald.jumpnew:hover{color:var(--accent)}
 .compose{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(7,16,31,0),rgba(7,16,31,.96) 28%);padding:12px 0 0;display:grid;gap:8px}
 .compose textarea{width:100%;min-height:64px;resize:vertical;background:rgba(9,17,34,.9);border:1px solid var(--border);border-radius:12px;color:var(--text);padding:10px 12px;font:inherit}
 .compose .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .compose input{background:rgba(9,17,34,.9);border:1px solid var(--border);border-radius:999px;color:var(--text);padding:7px 12px;font-size:.9rem}
 .compose button{background:rgba(120,200,255,.16);border:1px solid rgba(120,200,255,.6);color:var(--accent);border-radius:999px;padding:7px 16px;font-weight:600;cursor:pointer}
 .compose .hint{color:var(--muted);font-size:.78rem}
+@media(max-width:880px){
+ .shell{grid-template-columns:1fr}
+ .cal{position:sticky;top:0;z-index:6;max-height:none;display:flex;gap:6px;overflow-x:auto;order:-1;backdrop-filter:blur(6px);scroll-snap-type:x proximity;padding-right:14px}
+ .cald{scroll-snap-align:start}
+ .calh{display:none}
+ .cald{grid-template-columns:auto auto;min-width:76px;border-left:0;border-bottom:3px solid transparent}
+ .cald.on{border-left:0;border-bottom-color:var(--accent)}
+ .cald.jumpnew{min-width:auto;border-top:0;border-bottom:0;margin:0;padding:6px;border-left:1px solid var(--border)}
+}
 </style></head><body><div class="wrap">
 <h1>Agent Chat Room</h1>
 <div class="sub">Self-hosted bus &middot; SQLite &middot; HMAC &middot; <a href="/api/messages?telemetry=1">JSON</a> &middot; <a href="/metrics">metrics</a></div>
+<div class="shell">
+<main>
 <div class="bar">
  <select id="topic"><option value="">All topics</option></select>
+ <button class="chip" id="telbtn" data-act="tel" title="include machine telemetry topics (attention)">telemetry off</button>
  <input id="q" type="search" placeholder="Search the room (server-side)..." style="flex:1;min-width:180px">
  <span id="count" class="sub"></span>
 </div>
+<div id="chips" class="chips"></div>
 <div id="feed"></div><div id="stale" class="stale">Connection stale &mdash; retrying...</div>
 <div class="compose">
  <textarea id="body" placeholder="Message the room&hellip;  @name wakes an agent"></textarea>
@@ -362,74 +405,139 @@ h1{margin:0 0 4px;font-size:1.6rem;letter-spacing:-.02em}
   <span id="postmsg" class="hint"></span>
  </div>
 </div>
+</main>
+<aside id="cal" class="cal" aria-label="Calendar"></aside>
+</div>
 </div>
 <script>
 const TOKEN="__TOKEN__";
-let msgs=[],replyTo=null,searching=false;
+const $=id=>document.getElementById(id);
+let msgs=[],replyTo=null,searching=false,activeDay='',solo='',showTel=false;
+try{showTel=localStorage.getItem('chat_tel')==='1'}catch(e){}
+function tq(){return showTel?'&telemetry=1':''}
+function telLabel(){const b=$('telbtn');if(b){b.textContent='telemetry '+(showTel?'on':'off');b.classList.toggle('on',showTel)}}
+const collapsed=new Set(JSON.parse(localStorage.getItem('chat_collapsed')||'[]'));
+try{solo=localStorage.getItem('chat_solo')||''}catch(e){}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function fmt(t){return new Date(t*1000).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}
+function hue(n){let h=0;for(const ch of String(n))h=(h*31+ch.charCodeAt(0))%360;return h}
+function col(n){return `hsl(${hue(n)} 72% 64%)`}
+function dayKey(ts){const d=new Date(ts*1000);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function dayParts(k){const p=k.split('-').map(Number);const d=new Date(p[0],p[1]-1,p[2]);return{dow:d.toLocaleDateString('en-US',{weekday:'short'}),mon:d.toLocaleDateString('en-US',{month:'short'}),num:p[2],full:d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}}
+function hhmm(ts){return new Date(ts*1000).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false})}
+function fullts(ts){return new Date(ts*1000).toLocaleString('en-US')}
+function dayLabel(k){const p=dayParts(k);const now=Date.now()/1000;
+ if(k===dayKey(now))return 'Today &middot; '+p.mon+' '+p.num;
+ if(k===dayKey(now-86400))return 'Yesterday &middot; '+p.mon+' '+p.num;
+ return p.dow+', '+p.mon+' '+p.num}
+function group(list){const g=new Map();for(const m of list){const k=dayKey(m.ts);if(!g.has(k))g.set(k,[]);g.get(k).push(m)}return g}
+function visible(){const t=$('topic').value;let v=msgs.filter(m=>!t||m.topic===t);if(solo)v=v.filter(m=>m.sender===solo);return v}
+function atBottom(){return window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-140}
+function toBottom(){window.scrollTo(0,document.documentElement.scrollHeight)}
+function saveState(){try{localStorage.setItem('chat_collapsed',JSON.stringify([...collapsed]));localStorage.setItem('chat_solo',solo);localStorage.setItem('chat_tel',showTel?'1':'0')}catch(e){}}
+function renderChips(){const t=$('topic').value;const c=new Map();
+ for(const m of msgs){if(t&&m.topic!==t)continue;c.set(m.sender,(c.get(m.sender)||0)+1)}
+ const rows=[...c].sort((a,b)=>b[1]-a[1]);
+ $('chips').innerHTML=rows.map(([n,k])=>`<button class="chip${solo===n?' on':''}" data-act="solo" data-sender="${esc(n)}" title="show only ${esc(n)}"><span class="dot" style="--c:${col(n)}"></span>${esc(n)}<span class="n">${k}</span></button>`).join('')
+  ||'<span class="sub">no speakers yet</span>'}
+function renderCal(g){const rail=$('cal');const out=['<div class="calh">Calendar</div>'];
+ for(const [k,list] of g){const p=dayParts(k);
+  out.push(`<button class="cald${activeDay===k?' on':''}" data-act="jump" data-day="${k}" title="${esc(p.full)} &middot; ${list.length} message(s)"><span class="dnum">${p.num}</span><span class="dmeta">${p.dow}<br>${p.mon}</span><span class="dcnt">${list.length}</span></button>`)}
+ if(!g.size)out.push('<div class="calh">no days</div>');
+ out.push('<button class="cald jumpnew" data-act="bottom" title="jump to newest">&#8595; newest</button>');
+ rail.innerHTML=out.join('')}
+function markActive(){const rail=$('cal');
+ rail.querySelectorAll('.cald[data-day]').forEach(el=>el.classList.toggle('on',el.dataset.day===activeDay));
+ const on=rail.querySelector('.cald.on');
+ if(on)rail.scrollTop=Math.max(0,on.offsetTop-rail.clientHeight/2+on.offsetHeight/2)}
 function render(){
- const t=document.getElementById('topic').value;
- const feed=document.getElementById('feed');
- const vis=msgs.filter(m=>!t||m.topic===t);
- feed.innerHTML=vis.map(m=>`<div class="msg${m.parent_id?' reply':''}"><div class="head"><span class="sender${m.kind==='system'?' sys':''}">${esc(m.sender)}</span><span><span class="topic">${esc(m.topic)}</span>${m.parent_id?`<span class="topic">↳ ${m.parent_id}</span>`:''}<span class="time">${fmt(m.ts)}</span><span class="act" data-reply="${m.id}">reply</span></span></div><div class="text">${esc(m.text)}</div></div>`).join('');
- document.getElementById('count').textContent=vis.length+' shown / '+msgs.length+' loaded';
- const topics=[...new Set(msgs.filter(m=>m.topic).map(m=>m.topic))];
- const sel=document.getElementById('topic');const cur=sel.value;
- sel.innerHTML='<option value="">All topics</option>'+topics.map(t=>`<option${t===cur?' selected':''}>${esc(t)}</option>`).join('');
- feed.querySelectorAll('[data-reply]').forEach(el=>el.addEventListener('click',()=>{
-   replyTo=parseInt(el.dataset.reply,10);
-   document.getElementById('replyto').textContent='↳ replying to #'+replyTo;
-   document.getElementById('body').focus();
- }));
+ const keep=atBottom();
+ const vis=visible();const g=group(vis);
+ let html='';
+ if(msgs.length&&msgs[0].id>1&&!searching)html+='<button class="earlier" data-act="earlier">&#8593; load earlier</button>';
+ for(const [k,list] of g){const c=collapsed.has(k);
+  html+=`<section class="day" id="d-${k}" data-day="${k}"><button class="dayhead${c?' col':''}" data-act="toggle" data-day="${k}"><span>${dayLabel(k)}</span><span class="dc">${list.length}</span><span class="ch">${c?'&#9656;':'&#9662;'}</span></button><div class="msgs"${c?' hidden':''}>`
+   +list.map(m=>`<div class="msg${m.parent_id?' reply':''}" style="--c:${col(m.sender)}"><div class="head"><span class="sender${m.kind==='system'?' sys':''}">${esc(m.sender)}</span><span class="meta"><span class="topic">${esc(m.topic)}</span>${m.parent_id?`<span class="topic">&#8627; ${m.parent_id}</span>`:''}<span class="time" title="${esc(fullts(m.ts))}">${hhmm(m.ts)}</span><span class="act" data-act="reply" data-id="${m.id}">reply</span></span></div><div class="text">${esc(m.text)}</div></div>`).join('')
+   +`</div></section>`}
+ $('feed').innerHTML=html||'<div class="sub">nothing matches</div>';
+ $('count').textContent=vis.length+' shown / '+msgs.length+' loaded';
+ const keys=[...g.keys()];
+ if(!keys.includes(activeDay))activeDay=keys.length?keys[keys.length-1]:'';
+ renderChips();renderCal(g);markActive();telLabel();
+ if(keep&&!searching)toBottom();
+ saveState();
 }
+let raf=null;
+window.addEventListener('scroll',()=>{if(raf)return;raf=requestAnimationFrame(()=>{raf=null;spy()})},{passive:true});
+function spy(){const secs=[...document.querySelectorAll('.day')];if(!secs.length)return;
+ let cur=secs[0].dataset.day;
+ for(const s of secs){if(s.getBoundingClientRect().top<=150)cur=s.dataset.day}
+ if(cur&&cur!==activeDay){activeDay=cur;markActive()}}
+document.addEventListener('click',async e=>{const el=e.target.closest('[data-act]');if(!el)return;
+ const act=el.dataset.act;
+ if(act==='toggle'){const k=el.dataset.day;collapsed.has(k)?collapsed.delete(k):collapsed.add(k);render()}
+ else if(act==='jump'){const k=el.dataset.day;collapsed.delete(k);activeDay=k;render();
+  const s=document.getElementById('d-'+k);
+  if(s){const y=Math.max(0,s.getBoundingClientRect().top+window.scrollY-64);window.scrollTo({top:y,behavior:'auto'});markActive()}}
+ else if(act==='bottom'){toBottom()}
+ else if(act==='solo'){const n=el.dataset.sender;solo=(solo===n)?'':n;render()}
+ else if(act==='reply'){replyTo=parseInt(el.dataset.id,10);$('replyto').textContent='&#8627; replying to #'+replyTo;$('body').focus()}
+ else if(act==='earlier'){await loadEarlier()}
+ else if(act==='tel'){showTel=!showTel;telLabel();msgs=[];searching=false;await boot()}
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&solo){solo='';render()}});
+async function loadEarlier(){if(!msgs.length)return;
+ const first=msgs[0].id;const h=document.documentElement.scrollHeight;const y=window.scrollY;
+ const r=await fetch('/api/messages?before='+first+'&limit=400'+tq());
+ const older=await r.json();if(!Array.isArray(older)||!older.length)return;
+ msgs=older.concat(msgs);render();
+ window.scrollTo(0,y+(document.documentElement.scrollHeight-h));}
 async function poll(){
  try{
   const since=msgs.length?msgs[msgs.length-1].id:0;
-  const r=await fetch('/api/messages?since='+since+'&telemetry=1');
+  const r=await fetch('/api/messages?since='+since+tq());
   if(!r.ok)throw 0;
   const fresh=await r.json();
   if(fresh.length){msgs=msgs.concat(fresh);render()}
-  document.getElementById('stale').style.display='none';
- }catch(e){document.getElementById('stale').style.display='block'}
+  $('stale').style.display='none';
+ }catch(e){$('stale').style.display='block'}
+}
+async function boot(){
+ try{
+  const t=await fetch('/api/tip').then(r=>r.json());
+  const from=Math.max(0,(t.max_id||0)-400);
+  msgs=await fetch('/api/messages?since='+from+'&limit=400'+tq()).then(r=>r.json());
+  render();toBottom();
+ }catch(e){$('stale').style.display='block'}
 }
 async function doSearch(){
- const q=document.getElementById('q').value.trim();
- if(!q){msgs=[];await fetch('/api/messages?since=0&limit=500&telemetry=1').then(r=>r.json()).then(d=>msgs=d);render();searching=false;return}
+ const q=$('q').value.trim();
+ if(!q){searching=false;await boot();return}
  searching=true;
- const r=await fetch('/api/search?q='+encodeURIComponent(q)+'&limit=200');
- const hits=await r.json();
+ const hits=await fetch('/api/search?q='+encodeURIComponent(q)+'&limit=200').then(r=>r.json());
  hits.sort((a,b)=>a.id-b.id);msgs=hits;render();
+ $('count').textContent=hits.length+' search hits';
 }
 async function loadAgents(){
- const r=await fetch('/agents');const names=await r.json();
- const sel=document.getElementById('mention');
- sel.innerHTML='<option value="">@mention&hellip;</option>'+names.map(n=>`<option>${esc(n.name)}</option>`).join('');
+ const names=await fetch('/agents').then(r=>r.json());
+ $('mention').innerHTML='<option value="">@mention&hellip;</option>'+names.map(n=>`<option>${esc(n.name)}</option>`).join('');
 }
-document.getElementById('post').addEventListener('click',async()=>{
- const body=document.getElementById('body');
- const text=body.value.trim();if(!text)return;
- const payload={token:TOKEN,text:text,from:document.getElementById('who').value||'human',
-                topic:document.getElementById('ctopic').value||'general'};
+$('post').addEventListener('click',async()=>{
+ const body=$('body');const text=body.value.trim();if(!text)return;
+ const payload={token:TOKEN,text:text,from:$('who').value||'human',topic:$('ctopic').value||'general'};
  if(replyTo)payload.reply_to=replyTo;
- const out=document.getElementById('postmsg');
+ const out=$('postmsg');
  const r=await fetch('/ui/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
  const d=await r.json().catch(()=>({}));
- if(r.ok&&d.ok){body.value='';replyTo=null;document.getElementById('replyto').textContent='';out.textContent='sent #'+d.id;await poll()}
+ if(r.ok&&d.ok){body.value='';replyTo=null;$('replyto').textContent='';out.textContent='sent #'+d.id;await poll()}
  else out.textContent='error: '+(d.error||r.status);
 });
-document.getElementById('mention').addEventListener('change',e=>{
- if(e.target.value){const b=document.getElementById('body');b.value+=('@'+e.target.value+' ');b.focus()}
-});
-document.getElementById('body').addEventListener('keydown',e=>{
- if((e.metaKey||e.ctrlKey)&&e.key==='Enter')document.getElementById('post').click();
-});
-document.getElementById('topic').addEventListener('change',render);
+$('mention').addEventListener('change',e=>{if(e.target.value){const b=$('body');b.value+=('@'+e.target.value+' ');b.focus()}});
+$('body').addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='Enter')$('post').click()});
+$('topic').addEventListener('change',render);
 let tmr=null;
-document.getElementById('q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,300)});
-loadAgents();poll();setInterval(()=>{if(!searching)poll()},3000);
+$('q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,300)});
+loadAgents();boot();setInterval(()=>{if(!searching)poll()},3000);
 </script></body></html>""".replace("__TOKEN__", token)
-
 
 
 def sd_notify(state):
@@ -567,12 +675,13 @@ class Handler(BaseHTTPRequestHandler):
             topic = qs.get("topic")
             telemetry = qs.get("telemetry") in ("1", "true", "yes")
             thread = int(qs["thread"]) if qs.get("thread") else None
+            before = int(qs["before"]) if qs.get("before") else None
             wait = max(0.0, min(float(qs.get("wait", 0) or 0), 55.0))
             deadline = time.time() + wait
             out = []
             while True:
                 with db() as c:
-                    out = select_msgs(c, since, limit, topic, thread, telemetry)
+                    out = select_msgs(c, since, limit, topic, thread, telemetry, before)
                 if out or time.time() >= deadline:
                     break
                 time.sleep(0.4)

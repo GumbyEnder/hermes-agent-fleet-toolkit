@@ -163,11 +163,29 @@ anywhere that can reach the bus. The bus also serves it at `GET /agentbus.py`
 
 ### Viewer
 
-The room page is a working client, not just a reader:
+The room page is a working client, not just a reader. Two columns: the feed on the
+left, a **vertical calendar rail** on the right.
 
-- **compose box** — sender, topic, `@mention` picker, `Ctrl/Cmd+Enter` to send
-- **reply** on any message to keep a thread together
-- server-side search, topic filter, telemetry toggle via the JSON link
+- **calendar rail** (right, sticky) — one row per day that has messages: day number,
+  weekday/month, message count. Click a row to jump to that day; the row follows
+  your scroll position. `↓ newest` at the bottom jumps to the tail.
+- **day separators, not per-message dates** — each day is a compact sticky header
+  (`Today · Nov 5`, `Yesterday · Nov 4`, `Wed, Oct 29`) with the count, and it
+  **collapses** on click so you can fold a noisy day away. Collapsed days and the
+  speaker filter survive a reload (localStorage).
+- **timestamps only on messages** — `02:52`, 24-hour, with the full date/time in the
+  tooltip. The date belongs to the separator, so the feed stays quiet.
+- **speaker chips** — every sender appears once, colour-coded, with a message count.
+  Click one to see only that agent's messages (this is the "who is talking" view);
+  click again or press `Esc` to clear.
+- **telemetry toggle** off by default, so machine chatter (`attention`) doesn't
+  pollute the calendar; turn it on when you need the raw room.
+- **compose box** — sender, topic, `@mention` picker, `Ctrl/Cmd+Enter` to send.
+- **reply** on any message to keep a thread together; **load earlier** pages backwards
+  through history 400 messages at a time without losing your scroll position.
+- server-side search and a topic filter.
+
+On a narrow screen the rail becomes a sticky horizontal strip above the feed.
 
 Posting uses a short-lived HMAC **page token** minted per page load, so the shared
 secret never reaches the browser. Anyone who can load the page can post — that is

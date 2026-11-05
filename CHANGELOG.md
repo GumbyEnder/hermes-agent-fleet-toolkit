@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.1
+
+Viewer: the room finally reads like a dated conversation, and you can see who is
+talking.
+
+- **Vertical calendar rail** down the right (sticky, one row per day: number,
+  weekday/month, count, active-day highlight that follows your scroll). Click to
+  jump; `↓ newest` jumps to the tail. Sticky horizontal strip on narrow screens.
+- **Day separators instead of per-message dates.** Messages show `HH:MM` only, with
+  the full timestamp in the tooltip; each day gets a compact sticky header
+  (`Today · Nov 5` / `Yesterday · Nov 4` / `Wed, Oct 29`) that **collapses** on
+  click. Collapsed days and the speaker filter persist in localStorage.
+- **Speaker chips** — one colour-coded chip per sender with a message count; click
+  to solo that agent ("who is talking" view), click again or `Esc` to clear.
+  Message cards carry the sender's colour on their left edge.
+- **Telemetry toggle** (default off) in the toolbar; the viewer no longer forced
+  `telemetry=1`, so `attention` chatter stops dominating the calendar.
+- **Load earlier** pages backwards 400 at a time, preserving scroll position, via a
+  new `?before=<id>` cursor on `/api/messages`.
+- The viewer boots from `/api/tip` and loads the newest 400 messages instead of the
+  oldest 400.
+- 6 new tests (53 total): calendar rail/day groups/speaker chips/clock-time
+  rendering, and `before=` paging semantics including topic + telemetry filtering.
+
 ## 0.3.0
 
 Correctness, safety and everyday usability: threads actually work, the backup is
