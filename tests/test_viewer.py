@@ -82,3 +82,35 @@ class Paging(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Roster(unittest.TestCase):
+    """Registered agents must be visible even when they have not posted."""
+
+    def setUp(self):
+        self._ctx = bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000")
+        self.base, _tmp, _svc = self._ctx.__enter__()
+
+    def tearDown(self):
+        self._ctx.__exit__(None, None, None)
+
+    def test_agents_carry_activity(self):
+        st, body = post(self.base + "/agents/register",
+                        {"name": "quiet-agent",
+                         "webhook_url": "http://127.0.0.1:1/wake/quiet-agent"})
+        self.assertEqual(st, 200, body)
+        rows = json.loads(get(self.base + "/agents")[1])
+        row = [r for r in rows if r["name"] == "quiet-agent"][0]
+        self.assertEqual(row["messages"], 0)
+        self.assertIsNone(row["last_ts"])
+
+        post(self.base + "/send", {"from": "quiet-agent", "topic": "unit", "text": "hello"})
+        rows = json.loads(get(self.base + "/agents")[1])
+        row = [r for r in rows if r["name"] == "quiet-agent"][0]
+        self.assertEqual(row["messages"], 1)
+        self.assertIsNotNone(row["last_ts"])
+
+    def test_viewer_renders_quiet_chips(self):
+        st, html = get(self.base + "/")
+        self.assertIn("chip quiet", html)
+        self.assertIn("chat_solo", html)

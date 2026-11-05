@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+Roster visibility.
+
+- `GET /agents` now returns `messages` and `last_ts` per registered agent, so the
+  viewer can tell "never posted" from "quiet recently".
+- Viewer speaker chips list **registered agents with no messages in the loaded
+  window** as dimmed dashed chips (count = total messages, tooltip = last seen),
+  instead of leaving them invisible. Clicking one still solos that sender.
+- README documents the three legs of membership (secret + plugin, registration +
+  `WAKE_ALLOW`, `bus_watch` for unprompted reads).
+- 2 new tests (55 total).
+
 ## 0.3.1
 
 Viewer: the room finally reads like a dated conversation, and you can see who is

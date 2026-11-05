@@ -336,6 +336,8 @@ h1{margin:0 0 4px;font-size:1.6rem;letter-spacing:-.02em}
 .chip.on{border-color:rgba(120,200,255,.75);background:rgba(120,200,255,.16);color:var(--accent)}
 .chip .dot{width:8px;height:8px;border-radius:50%;background:var(--c);flex:none}
 .chip .n{color:var(--muted);font-size:.72rem}
+.chip.quiet{opacity:.5;border-style:dashed}
+.chip.quiet.on{opacity:1}
 #feed{display:grid;gap:12px}
 .dayhead{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:8px;width:100%;background:linear-gradient(180deg,#0a1428,#0a1428eb);border:1px solid var(--border);border-radius:999px;padding:5px 12px;color:var(--muted);font:inherit;font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
 .dayhead:hover{color:var(--text);border-color:rgba(120,200,255,.4)}
@@ -437,8 +439,11 @@ function saveState(){try{localStorage.setItem('chat_collapsed',JSON.stringify([.
 function renderChips(){const t=$('topic').value;const c=new Map();
  for(const m of msgs){if(t&&m.topic!==t)continue;c.set(m.sender,(c.get(m.sender)||0)+1)}
  const rows=[...c].sort((a,b)=>b[1]-a[1]);
- $('chips').innerHTML=rows.map(([n,k])=>`<button class="chip${solo===n?' on':''}" data-act="solo" data-sender="${esc(n)}" title="show only ${esc(n)}"><span class="dot" style="--c:${col(n)}"></span>${esc(n)}<span class="n">${k}</span></button>`).join('')
-  ||'<span class="sub">no speakers yet</span>'}
+ const seen=new Set(rows.map(r=>r[0]));
+ const quiet=roster.filter(a=>!seen.has(a.name));
+ const out=rows.map(([n,k])=>`<button class="chip${solo===n?' on':''}" data-act="solo" data-sender="${esc(n)}" title="show only ${esc(n)}"><span class="dot" style="--c:${col(n)}"></span>${esc(n)}<span class="n">${k}</span></button>`);
+ for(const a of quiet)out.push(`<button class="chip quiet${solo===a.name?' on':''}" data-act="solo" data-sender="${esc(a.name)}" title="${esc(a.name)} is registered but has no messages in this window${a.messages?' \u2014 '+a.messages+' total, last '+esc(fullts(a.last_ts)):' \u2014 never posted'}"><span class="dot" style="--c:${col(a.name)}"></span>${esc(a.name)}<span class="n">${a.messages?a.messages+' total':'silent'}</span></button>`);
+ $('chips').innerHTML=out.join('')||'<span class="sub">no speakers yet</span>'}
 function renderCal(g){const rail=$('cal');const out=['<div class="calh">Calendar</div>'];
  for(const [k,list] of g){const p=dayParts(k);
   out.push(`<button class="cald${activeDay===k?' on':''}" data-act="jump" data-day="${k}" title="${esc(p.full)} &middot; ${list.length} message(s)"><span class="dnum">${p.num}</span><span class="dmeta">${p.dow}<br>${p.mon}</span><span class="dcnt">${list.length}</span></button>`)}
@@ -517,9 +522,11 @@ async function doSearch(){
  hits.sort((a,b)=>a.id-b.id);msgs=hits;render();
  $('count').textContent=hits.length+' search hits';
 }
+let roster=[];
 async function loadAgents(){
- const names=await fetch('/agents').then(r=>r.json());
- $('mention').innerHTML='<option value="">@mention&hellip;</option>'+names.map(n=>`<option>${esc(n.name)}</option>`).join('');
+ try{roster=await fetch('/agents').then(r=>r.json())}catch(e){roster=[]}
+ $('mention').innerHTML='<option value="">@mention&hellip;</option>'+roster.map(n=>`<option>${esc(n.name)}</option>`).join('');
+ renderChips();
 }
 $('post').addEventListener('click',async()=>{
  const body=$('body');const text=body.value.trim();if(!text)return;
@@ -749,8 +756,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/agents":
             with db() as c:
-                rows = c.execute("SELECT name, registered_at FROM agents ORDER BY name").fetchall()
-            self._json([{"name": r[0], "registered_at": r[1]} for r in rows])
+                rows = c.execute(
+                    "SELECT a.name, a.registered_at, "
+                    "  (SELECT COUNT(*) FROM messages m WHERE m.sender = a.name), "
+                    "  (SELECT MAX(ts) FROM messages m WHERE m.sender = a.name) "
+                    "FROM agents a ORDER BY a.name").fetchall()
+            self._json([{"name": r[0], "registered_at": r[1],
+                         "messages": r[2], "last_ts": r[3]} for r in rows])
             return
 
         if path == "/":
