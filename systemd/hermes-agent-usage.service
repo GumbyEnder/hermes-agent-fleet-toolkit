@@ -1,10 +1,10 @@
 [Unit]
-Description=Fleet Token Usage viewer
+Description=Hermes Fleet Token Usage viewer
 After=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 %h/agents/hermes-agent-fleet-toolkit/fleet-usage/usage_viewer.py
-EnvironmentFile=%h/.config/agent-fleet/env
+EnvironmentFile=-%h/.config/hermes-fleet/env
+ExecStart=/usr/bin/python3 %h/Agents/Projects/hermes-agent-fleet-toolkit/fleet-usage/usage_viewer.py
 Restart=on-failure
 RestartSec=3
 

@@ -8,7 +8,8 @@ mention text as the prompt; the agent sees the room context and can reply into
 the room via its send_to_room tool.
 
 Env: AGENT_CHAT_SECRET (required), WAKE_BIN (default: hermes on PATH),
-WAKE_BIND (127.0.0.1), WAKE_PORT (8095), WAKE_ALLOW (comma list of profiles).
+WAKE_BIND (127.0.0.1), WAKE_PORT (8095), WAKE_ALLOW (comma list of profiles),
+AGENT_CHAT_URL (bus base URL the reply is posted back to).
 """
 import hashlib
 import hmac as hm
@@ -57,8 +58,12 @@ class H(BaseHTTPRequestHandler):
                 print(f"wake run {profile} failed: {e}", flush=True)
         subprocess_thread = __import__("threading").Thread(target=_run, daemon=True)
         subprocess_thread.start()
+        body = b'{"ok":true}'
         self.send_response(200)
-        self.wfile.write(b'{"ok":true}')
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()   # without this the body lands inside the header block -> BadStatusLine for clients
+        self.wfile.write(body)
         print(f"woke {profile} (msg {m.get('message_id')})", flush=True)
 
     def log_message(self, fmt, *args):

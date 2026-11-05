@@ -4,17 +4,17 @@
 Runs Mondays 09:00 via user systemd timer.
 """
 import hashlib
-import os
 import hmac
 import json
+import os
 import time
 import urllib.request
 from pathlib import Path
 
 HOME = Path.home()
-OUT = Path(os.environ.get("USAGE_JSON", os.path.expanduser("~/.local/share/fleet-usage/usage.json")))
-ROOM = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090") + "/send"
-STATE = Path(os.environ.get("WEEKLY_STATE", os.path.expanduser("~/.local/share/fleet-usage/.weekly_state.json")))
+OUT = Path(os.environ.get("USAGE_JSON") or (HOME / ".local/share/agent-usage/usage.json"))
+ROOM = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090").rstrip("/") + "/send"
+STATE = OUT.parent / ".weekly_state.json"
 
 
 def fmt(n):
@@ -36,12 +36,14 @@ def main():
              "• Top agents by input:"]
     for p, b in sorted(w["by_profile"].items(), key=lambda x: -x[1]["input"])[:5]:
         lines.append(f"   – {p}: {fmt(b['input'])} in · ${b['est_cost']:,.2f}")
-    lines.append("Full breakdown: " + os.environ.get("USAGE_PUBLIC_URL", "http://127.0.0.1:8091") + "/")
+    lines.append(f"Full breakdown: {os.environ.get('USAGE_URL', 'http://127.0.0.1:8091/')}")
 
-    secret = ""
-    for line in (HOME / ".hermes/profiles/frodo/.env").read_text().splitlines():
-        if line.startswith("AGENT_CHAT_SECRET="):
-            secret = line.split("=", 1)[1].strip()
+    secret = os.environ.get("AGENT_CHAT_SECRET", "")
+    env_file = os.environ.get("AGENT_CHAT_ENV_FILE")
+    if not secret and env_file:
+        for line in Path(env_file).expanduser().read_text().splitlines():
+            if line.startswith("AGENT_CHAT_SECRET="):
+                secret = line.split("=", 1)[1].strip()
     body = json.dumps({"from": "fleet-usage", "topic": "weekly-burn",
                        "text": "\n".join(lines), "kind": "system"}).encode()
     sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()

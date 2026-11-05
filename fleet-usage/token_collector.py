@@ -11,8 +11,8 @@ import time
 from pathlib import Path
 
 HOME = Path.home()
-HERMES = Path(os.environ.get("HERMES_HOME", str(HOME / ".hermes")))
-OUT = Path(os.environ.get("USAGE_JSON", os.path.expanduser("~/.local/share/fleet-usage/usage.json")))
+HERMES = HOME / ".hermes"
+OUT = Path(os.environ.get("USAGE_JSON") or (HOME / ".local/share/agent-usage/usage.json"))
 D = 86400
 
 WINDOWS = {"7d": 7 * D, "30d": 30 * D, "all": None}
@@ -117,19 +117,22 @@ def check_anomaly(raw, now, mult=3.0):
                   "multiple": round(day / median, 1)}
         # post to agent chat room (best effort)
         try:
-            secret = ""
-            for line in (HOME / ".hermes/profiles/frodo/.env").read_text().splitlines():
-                if line.startswith("AGENT_CHAT_SECRET="):
-                    secret = line.split("=", 1)[1].strip()
+            secret = os.environ.get("AGENT_CHAT_SECRET", "")
+            env_file = os.environ.get("AGENT_CHAT_ENV_FILE")
+            if not secret and env_file:
+                for line in Path(env_file).expanduser().read_text().splitlines():
+                    if line.startswith("AGENT_CHAT_SECRET="):
+                        secret = line.split("=", 1)[1].strip()
             if secret:
                 import hashlib, hmac as hm, urllib.request
                 text = (f"⚠ Token burn anomaly: last 24h input = {day:,} "
                         f"({result['multiple']}× the 7-day median of {median:,}). "
-                        f"Check the Tokens tab: {os.environ.get('USAGE_PUBLIC_URL', 'http://127.0.0.1:8091')}/")
+                        f"Check the usage viewer: {os.environ.get('USAGE_URL', 'http://127.0.0.1:8091/')}")
                 body = json.dumps({"from": "fleet-usage", "topic": "alerts", "text": text,
                                    "kind": "system"}).encode()
                 sig = hm.new(secret.encode(), body, hashlib.sha256).hexdigest()
-                req = urllib.request.Request(os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090") + "/send", data=body,
+                room = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090").rstrip("/") + "/send"
+                req = urllib.request.Request(room, data=body,
                                              headers={"X-Signature": sig})
                 urllib.request.urlopen(req, timeout=8)
                 result["posted_to_room"] = True

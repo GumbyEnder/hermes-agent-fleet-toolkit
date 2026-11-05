@@ -7,10 +7,12 @@ GET /health          -> status
 """
 import json
 import os
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-DATA = os.environ.get("USAGE_JSON", os.path.expanduser("~/.local/share/fleet-usage/usage.json"))
+DATA = os.environ.get("USAGE_JSON") or str(
+    __import__("pathlib").Path.home() / ".local/share/agent-usage/usage.json")
 BIND = os.environ.get("USAGE_BIND", "127.0.0.1")
 PORT = int(os.environ.get("USAGE_PORT", "8091"))
 
@@ -91,4 +93,11 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    ThreadingHTTPServer((BIND, PORT), H).serve_forever()
+    servers = [ThreadingHTTPServer(("127.0.0.1", PORT), H)]
+    if BIND and BIND not in ("127.0.0.1", "localhost"):
+        servers.append(ThreadingHTTPServer((BIND, PORT), H))
+        print(f"usage viewer on http://127.0.0.1:{PORT} and http://{BIND}:{PORT}", flush=True)
+        threading.Thread(target=servers[1].serve_forever, daemon=True).start()
+    else:
+        print(f"usage viewer on http://127.0.0.1:{PORT}", flush=True)
+    servers[0].serve_forever()

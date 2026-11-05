@@ -9,7 +9,7 @@ Endpoints:
 
 Message body: {"from": "<agent>", "topic": "<topic>", "text": "<text>"}
 Auth: X-Signature: hex(hmac_sha256(AGENT_CHAT_SECRET, raw_body))
-Storage: local SQLite (AGENT_CHAT_DB); optional backup dir (AGENT_CHAT_BACKUP).
+Storage: local SQLite (network filesystems cannot lock); optional hourly backup copy.
 """
 import hashlib
 import hmac as hmac_mod
@@ -22,10 +22,11 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-DB_PATH = os.environ.get("AGENT_CHAT_DB", os.path.expanduser("~/.local/share/agent-chat/room.db"))
-BACKUP_DIR = os.environ.get("AGENT_CHAT_BACKUP", "")
+DB_PATH = os.environ.get("AGENT_CHAT_DB") or str(
+    __import__("pathlib").Path.home() / ".local/share/agent-chat/room.db")
+BACKUP_DIR = os.environ.get("AGENT_CHAT_BACKUP", "")  # empty disables the hourly copy
 SECRET = os.environ.get("AGENT_CHAT_SECRET", "")
-BIND_HOST = os.environ.get("AGENT_CHAT_BIND", "127.0.0.1")
+BIND_HOST = os.environ.get("AGENT_CHAT_BIND", "")  # extra bind address, e.g. a tailnet IP
 PORT = int(os.environ.get("AGENT_CHAT_PORT", "8090"))
 
 _lock = threading.Lock()
@@ -186,22 +187,52 @@ class Handler(BaseHTTPRequestHandler):
             with db() as c:
                 n = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
             self._json({"status": "ok", "port": PORT, "messages": n, "ts": time.time()})
+        elif self.path == "/api/tip":
+            with db() as c:
+                row = c.execute("SELECT COALESCE(MAX(id), 0), COUNT(*) FROM messages").fetchone()
+            self._json({"max_id": row[0], "messages": row[1]})
         elif self.path.startswith("/api/messages"):
             qs = dict(p.split("=", 1) for p in self.path.split("?", 1)[1].split("&")) if "?" in self.path else {}
             since = int(qs.get("since", 0))
             limit = min(int(qs.get("limit", "500")), 2000)
             topic = qs.get("topic")
-            with db() as c:
-                rows = c.execute(
-                    "SELECT id, ts, sender, topic, text, kind FROM messages WHERE id > ? ORDER BY id LIMIT ?",
-                    (since, limit),
-                ).fetchall()
-            out = [
-                {"id": r[0], "ts": r[1], "sender": r[2], "topic": r[3], "text": r[4], "kind": r[5]}
-                for r in rows
-                if not topic or r[3] == topic
-            ]
+            # Long-poll: hold the request open until a message arrives or the
+            # deadline passes. Lets outbound-only agents (no inbound ports) tail
+            # the room with one cheap connection instead of hammering every 3s.
+            wait = max(0.0, min(float(qs.get("wait", 0) or 0), 55.0))
+            deadline = time.time() + wait
+            while True:
+                with db() as c:
+                    rows = c.execute(
+                        "SELECT id, ts, sender, topic, text, kind FROM messages WHERE id > ? ORDER BY id LIMIT ?",
+                        (since, limit),
+                    ).fetchall()
+                out = [
+                    {"id": r[0], "ts": r[1], "sender": r[2], "topic": r[3], "text": r[4], "kind": r[5]}
+                    for r in rows
+                    if not topic or r[3] == topic
+                ]
+                if out or time.time() >= deadline:
+                    break
+                time.sleep(0.5)
             self._json(out)
+        elif self.path in ("/agentbus.py", "/agentbus"):
+            # Self-serve distribution for agents that cannot reach the NAS or SSH in
+            # (e.g. grokbot-box-1): they already have transport to the bus, so the
+            # bus itself hands out the client. Unsigned GET, same as /health.
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agentbus.py")
+            try:
+                with open(path, "rb") as fh:
+                    body = fh.read()
+            except OSError as e:
+                self._json({"error": f"agentbus.py unavailable: {e}"}, 404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/x-python; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-SHA256", hashlib.sha256(body).hexdigest())
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path == "/favicon.svg":
             self.send_response(200)
             self.send_header("Content-Type", "image/svg+xml")
@@ -284,10 +315,22 @@ if __name__ == "__main__":
     if not SECRET:
         raise SystemExit("AGENT_CHAT_SECRET not set — refusing to start open")
     init_db()
-    srv = ThreadingHTTPServer((BIND_HOST, PORT), Handler)
-    print(f"agent-chat bus on http://{BIND_HOST}:{PORT} db={DB_PATH}", flush=True)
+    servers = [ThreadingHTTPServer(("127.0.0.1", PORT), Handler)]
+    print(f"agent-chat bus on http://127.0.0.1:{PORT} db={DB_PATH}", flush=True)
+    if BIND_HOST and BIND_HOST not in ("127.0.0.1", "localhost"):
+        # Second listener so remote agents (tailnet, VPN) can reach the same room
+        # while local tools keep using loopback. One process, shared SQLite + lock.
+        servers.append(ThreadingHTTPServer((BIND_HOST, PORT), Handler))
+        print(f"agent-chat bus also on http://{BIND_HOST}:{PORT}", flush=True)
     threading.Thread(target=lambda: (time.sleep(3600), backup()), daemon=True).start()
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        backup()
+    if len(servers) == 1:
+        try:
+            servers[0].serve_forever()
+        except KeyboardInterrupt:
+            backup()
+    else:
+        threading.Thread(target=servers[1].serve_forever, daemon=True).start()
+        try:
+            servers[0].serve_forever()
+        except KeyboardInterrupt:
+            backup()
