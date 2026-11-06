@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0
+
+Analytics tab.
+
+- `GET /api/analytics?days=N` (1–365, default 30): room message buckets per day,
+  by sender and by topic, thread count, plus the fleet collector's usage snapshot
+  merged in. `usage.json` is read-only and mtime-cached; a missing file degrades to
+  room-only instead of erroring.
+- Daily spend/tokens come from diffing the collector's cumulative snapshots, so the
+  series works for data that already exists.
+- Viewer: `room` / `analytics` tabs. Analytics shows KPI cards (today / 7d / 30d
+  spend and tokens, room volume, threads), two bar charts with peak annotations,
+  an agent table (messages, 7-day tokens, cost, share of 7-day spend, last seen),
+  top sessions and topic volume, plus budget/anomaly strips when present.
+- The room poll pauses while the analytics tab is open; analytics refreshes on its
+  own once a minute.
+- 4 new tests (61 total) covering buckets, the usage merge, missing-file safety and
+  day bounds.
+
 ## 0.4.0
 
 Visual pass. Same behaviour, no more hobby-dashboard look.

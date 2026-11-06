@@ -60,6 +60,10 @@ TELEMETRY_TOPICS = {t.strip() for t in
 TELEMETRY_DAYS = float(os.environ.get("AGENT_CHAT_TELEMETRY_DAYS", "7"))
 JANITOR_INTERVAL = int(os.environ.get("AGENT_CHAT_JANITOR_INTERVAL", "3600"))
 HUMAN_NAME = os.environ.get("AGENT_CHAT_HUMAN_NAME", "you")
+USAGE_JSON = os.environ.get(
+    "USAGE_JSON", os.path.expanduser("~/.local/share/agent-usage/usage.json"))
+_usage_cache = {"mtime": None, "data": None}
+
 UI_TTL = int(os.environ.get("AGENT_CHAT_UI_TTL", str(12 * 3600)))
 
 START = time.time()
@@ -316,6 +320,122 @@ def store(sender, topic, text, kind="message", parent_id=None):
         return cur.lastrowid
 
 
+
+# --- analytics -------------------------------------------------------------
+
+def load_usage():
+    """Read the fleet collector's usage.json (read-only, mtime-cached)."""
+    try:
+        st = os.stat(USAGE_JSON)
+    except OSError:
+        return None
+    if _usage_cache["mtime"] != st.st_mtime:
+        try:
+            with open(USAGE_JSON) as fh:
+                _usage_cache["data"] = json.load(fh)
+            _usage_cache["mtime"] = st.st_mtime
+        except (OSError, ValueError):
+            return None
+    return _usage_cache["data"]
+
+
+def daily_usage(usage, days):
+    """Turn the collector's cumulative snapshots into per-day deltas."""
+    hist = sorted(usage.get("history") or [], key=lambda r: r.get("ts") or 0)
+    cutoff = time.time() - days * 86400
+    buckets = {}
+    prev = None
+    for r in hist:
+        if prev is not None:
+            d = time.strftime("%Y-%m-%d", time.localtime(prev["ts"]))
+            b = buckets.setdefault(d, {"date": d, "input": 0, "output": 0,
+                                       "cost": 0.0, "sessions": 0})
+            b["input"] += max(0, int(r.get("input", 0)) - int(prev.get("input", 0)))
+            b["output"] += max(0, int(r.get("output", 0)) - int(prev.get("output", 0)))
+            b["cost"] += max(0.0, float(r.get("billable_cost", 0)) -
+                             float(prev.get("billable_cost", 0)))
+            b["sessions"] += max(0, int(r.get("sessions", 0)) - int(prev.get("sessions", 0)))
+        prev = r
+    out = [b for d, b in sorted(buckets.items())
+           if time.mktime(time.strptime(d, "%Y-%m-%d")) >= cutoff]
+    for b in out:
+        b["cost"] = round(b["cost"], 2)
+    return out
+
+
+def room_analytics(c, days):
+    since = time.time() - days * 86400
+    per_day = c.execute(
+        "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, COUNT(*) n "
+        "FROM messages WHERE ts >= ? GROUP BY d ORDER BY d", (since,)).fetchall()
+    by_sender = c.execute(
+        "SELECT sender, COUNT(*) n, MAX(ts) last, SUM(LENGTH(text)) chars "
+        "FROM messages WHERE ts >= ? GROUP BY sender ORDER BY n DESC LIMIT 40",
+        (since,)).fetchall()
+    by_topic = c.execute(
+        "SELECT topic, COUNT(*) n FROM messages WHERE ts >= ? GROUP BY topic "
+        "ORDER BY n DESC LIMIT 12", (since,)).fetchall()
+    total, first, last = c.execute(
+        "SELECT COUNT(*), MIN(ts), MAX(ts) FROM messages").fetchone()
+    window = c.execute("SELECT COUNT(*) FROM messages WHERE ts >= ?", (since,)).fetchone()[0]
+    threads = c.execute(
+        "SELECT COUNT(DISTINCT parent_id) FROM messages WHERE parent_id IS NOT NULL").fetchone()[0]
+    day_today = time.strftime("%Y-%m-%d")
+    today = sum(r[1] for r in per_day if r[0] == day_today)
+    return {
+        "days": days, "since": since, "total": total, "first_ts": first, "last_ts": last,
+        "window_messages": window, "today_messages": today, "threads": threads,
+        "per_day": [{"date": r[0], "messages": r[1]} for r in per_day],
+        "by_sender": [{"sender": r[0], "messages": r[1], "last_ts": r[2],
+                       "chars": r[3]} for r in by_sender],
+        "by_topic": [{"topic": r[0], "messages": r[1]} for r in by_topic],
+    }
+
+
+def analytics_payload(days):
+    with db() as c:
+        room = room_analytics(c, days)
+    usage = load_usage()
+    if not usage:
+        return {"generated": time.time(), "room": room, "usage": {"available": False},
+                "agents": room["by_sender"]}
+    daily = daily_usage(usage, days)
+    windows = {}
+    for name, w in (usage.get("windows") or {}).items():
+        windows[name] = {"total": w.get("total", {}),
+                         "by_profile": w.get("by_profile", {})}
+    today = next((d for d in daily if d["date"] == time.strftime("%Y-%m-%d")), None)
+    by_profile = (windows.get("7d") or {}).get("by_profile") or {}
+    merged = []
+    for row in room["by_sender"]:
+        name = row["sender"]
+        prof = by_profile.get(name) or {}
+        merged.append({**row,
+                       "tokens_7d": int(prof.get("input", 0)) + int(prof.get("output", 0)),
+                       "cost_7d": round(float(prof.get("est_cost", 0)), 2),
+                       "sessions_7d": prof.get("sessions", 0)})
+    for name, prof in by_profile.items():
+        if any(m["sender"] == name for m in merged):
+            continue
+        merged.append({"sender": name, "messages": 0, "last_ts": prof.get("last_active"),
+                       "chars": 0, "tokens_7d": int(prof.get("input", 0)) + int(prof.get("output", 0)),
+                       "cost_7d": round(float(prof.get("est_cost", 0)), 2),
+                       "sessions_7d": prof.get("sessions", 0)})
+    return {
+        "generated": time.time(),
+        "room": room,
+        "usage": {"available": True, "generated": usage.get("generated"),
+                  "windows": windows, "today": today, "daily": daily,
+                  "budgets": usage.get("budgets") or [],
+                  "budget_limit_usd": usage.get("budget_limit_usd"),
+                  "anomaly": usage.get("anomaly") or {},
+                  "top_sessions": (usage.get("top_sessions") or [])[:6],
+                  "profiles": usage.get("profiles") or []},
+        "agents": sorted(merged, key=lambda r: (-(r.get("cost_7d") or 0), -r["messages"])),
+    }
+
+
+
 # --- viewer --------------------------------------------------------------
 
 def viewer_html(token, sender="you"):
@@ -453,6 +573,46 @@ main{min-width:0}
 .cald.jumpnew.top{border-bottom:1px solid var(--line);margin-bottom:3px;padding:4px 6px 9px}
 .cald.jumpnew:hover{color:var(--accent);background:transparent}
 
+
+/* --- tabs + analytics --- */
+.tabs{display:flex;gap:2px;margin-left:20px}
+.tab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--dim);
+ font:11px var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:4px 10px 3px;cursor:pointer}
+.tab:hover{color:var(--text)}
+.tab.on{color:var(--text);border-bottom-color:var(--accent)}
+#analytics-pane{padding:18px 0 40px;display:grid;gap:20px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:12px}
+.kpi{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;background:var(--panel)}
+.kpi b{display:block;font:600 20px/1.2 var(--sans);margin:5px 0 3px;letter-spacing:-.01em}
+.kpi span{font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dimmer)}
+.kpi i{font:11px var(--mono);color:var(--dim);font-style:normal}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+figure{margin:0;border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;background:var(--panel)}
+figcaption{font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dimmer);margin-bottom:10px}
+.bars{display:flex;align-items:flex-end;gap:2px;height:110px;position:relative;
+ background:repeating-linear-gradient(to top,var(--line) 0 1px,transparent 1px 33.33%)}
+.bar{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%;min-width:0}
+.bar i{display:block;background:#2b3f60;border-radius:2px 2px 0 0;transition:background .15s;min-height:1px}
+.bar:hover i{background:var(--accent)}
+.bar span{font:9px var(--mono);color:var(--dimmer);text-align:center;margin-top:5px;overflow:hidden}
+.legend{display:flex;gap:14px;font:10.5px var(--mono);color:var(--dimmer);margin-top:9px}
+table.atable{width:100%;border-collapse:collapse;font-size:13px}
+.atable caption{caption-side:top;text-align:left;font:10px var(--mono);letter-spacing:.14em;
+ text-transform:uppercase;color:var(--dimmer);padding:0 0 9px}
+.atable th{text-align:left;font:10px var(--mono);letter-spacing:.12em;text-transform:uppercase;
+ color:var(--dimmer);padding:0 8px 8px;border-bottom:1px solid var(--line);font-weight:400}
+.atable td{padding:8px;border-bottom:1px solid #14181d;vertical-align:middle}
+.atable td.num{font:12px var(--mono);color:var(--dim);text-align:right;font-variant-numeric:tabular-nums}
+.atable .who2{font-weight:600;color:var(--c,#e9ebee)}
+.atable .share{height:4px;background:#1b2028;border-radius:3px;overflow:hidden;min-width:56px;margin-bottom:4px}
+.atable .pct{font:10px var(--mono);color:var(--dimmer)}
+.atable .share i{display:block;height:100%;background:#3a5b88}
+.panelrow{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.list{display:grid;gap:7px;font-size:12.5px}
+.list .row2{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid #14181d;padding-bottom:6px}
+.list .k{color:var(--dim);font:11.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list .v{font:11.5px var(--mono);color:var(--text);white-space:nowrap}
+.warnstrip{border:1px solid #4a3a1f;background:#1b1610;color:#e0b341;border-radius:var(--r);padding:9px 12px;font:12px var(--mono)}
 @media(max-width:880px){
  .app{padding:0 14px 30px}
  .shell{grid-template-columns:1fr;gap:0}
@@ -465,16 +625,19 @@ main{min-width:0}
  .cald.jumpnew{min-width:auto;border-bottom:0;border-left:1px solid var(--line);margin:0;padding:4px 8px}
  .msg{grid-template-columns:44px minmax(0,1fr);gap:10px}
  .top{flex-wrap:wrap}
+ .charts,.panelrow{grid-template-columns:1fr}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 </style></head><body><div class="app">
 <div class="top">
  <span class="brand"><span class="dot"></span>Agent Chat Room</span>
+ <div class="tabs"><button class="tab on" data-tab="room">room</button><button class="tab" data-tab="analytics">analytics</button></div>
  <span class="spacer"></span>
  <span class="links"><a href="/api/messages?telemetry=1">json</a><span>&middot;</span><a href="/metrics">metrics</a><span>&middot;</span><span id="count" class="count"></span></span>
 </div>
 <div class="shell">
 <main>
+<div id="room-pane">
 <div class="compose">
  <textarea id="body" placeholder="Message the room&hellip;   @name wakes an agent"></textarea>
  <div class="row">
@@ -493,6 +656,8 @@ main{min-width:0}
 </div>
 <div id="chips" class="speakers"></div>
 <div id="feed"></div><div id="stale" class="stale">connection stale &mdash; retrying&hellip;</div>
+</div>
+<div id="analytics-pane" hidden></div>
 </main>
 <aside id="cal" class="cal" aria-label="Calendar"></aside>
 </div>
@@ -641,8 +806,66 @@ $('body').addEventListener('input',syncSend);syncSend();
 $('topic').addEventListener('change',render);
 let tmr=null;
 $('q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,300)});
+
+let tab='room',adata=null,aAt=0;
+function setTab(t){tab=t;
+ document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
+ $('room-pane').hidden=(t!=='room');$('analytics-pane').hidden=(t!=='analytics');
+ const cal=$('cal');if(cal)cal.style.display=(t==='room')?'':'none';
+ if(t==='analytics')loadAnalytics();}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-tab]');if(b)setTab(b.dataset.tab)});
+function nf(n){n=Number(n)||0;if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return Math.round(n/1e3)+'k';return String(Math.round(n))}
+function money(n){n=Number(n)||0;return '$'+(n>=1000?(n/1000).toFixed(1)+'k':n.toFixed(2))}
+function ago(ts){if(!ts)return '\u2014';const s=(Date.now()/1000)-ts;if(s<90)return 'just now';if(s<3600)return Math.round(s/60)+'m ago';if(s<86400)return Math.round(s/3600)+'h ago';return Math.round(s/86400)+'d ago'}
+function bars(rows,key,fmt,label){
+ const max=Math.max(1,...rows.map(r=>Number(r[key])||0));
+ const step=Math.max(1,Math.ceil(rows.length/6));
+ return '<div class="bars">'+rows.map((r,idx)=>{
+  const v=Number(r[key])||0;const h=Math.max(1,(v/max)*100);
+  const tick=(idx%step===0||idx===rows.length-1)?r.date.slice(8):'';
+  return `<div class="bar" title="${label(r)} \u00b7 ${fmt(v)}"><i style="height:${h}%"></i><span>${tick}</span></div>`}).join('')+'</div>'}
+function peak(rows,key,fmt){if(!rows.length)return '';const top=rows.reduce((a,b)=>Number(b[key])>Number(a[key])?b:a,rows[0]);
+ return 'peak '+fmt(Number(top[key])||0)+' \u00b7 '+top.date.slice(5)}
+async function loadAnalytics(){
+ try{adata=await fetch('/api/analytics?days=30').then(r=>r.json());aAt=Date.now();renderAnalytics()}
+ catch(err){$('analytics-pane').innerHTML='<div class="warnstrip">analytics unavailable: '+esc(err.message||'fetch failed')+'</div>'}
+}
+function renderAnalytics(){
+ const d=adata;if(!d)return;
+ const room=d.room,u=d.usage||{},w=u.windows||{};
+ const t7=(w['7d']||{}).total||{},t30=(w['30d']||{}).total||{},today=u.today||{};
+ const per=room.per_day||[];
+ const agents=d.agents||[];
+ const totCost=agents.reduce((a,x)=>a+(x.cost_7d||0),0)||0.01;
+ const kpis=[
+  ['today spend',money(today.cost||0),nf((today.input||0)+(today.output||0))+' tokens'],
+  ['7 days',money(t7.billable_cost||t7.est_cost||0),nf((t7.input||0)+(t7.output||0))+' tokens'],
+  ['30 days',money(t30.billable_cost||t30.est_cost||0),nf(t30.sessions||0)+' sessions'],
+  ['room today',nf(room.today_messages||0),nf(room.window_messages||0)+' in 30d'],
+  ['threads',nf(room.threads||0),nf(room.total||0)+' messages all time'],
+ ];
+ const warn=(u.anomaly&&u.anomaly.active)?`<div class="warnstrip">burn anomaly active \u2014 ${esc(u.anomaly.reason||'usage above baseline')}</div>`:'';
+ const budgets=(u.budgets||[]).length?`<div class="warnstrip">${u.budgets.map(b=>esc(b.profile)+' at '+money(b.cost_24h)).join(' \u00b7 ')}</div>`:'';
+ const sessions=(u.top_sessions||[]).map(x=>`<div class="row2"><span class="k">${esc(x.profile)} \u00b7 ${esc(x.model)}</span><span class="v">${money(x.est_cost)}</span></div>`).join('')||'<div class="row2"><span class="k">no sessions yet</span></div>';
+ const topics=(room.by_topic||[]).slice(0,6).map(t=>`<div class="row2"><span class="k">#${esc(t.topic)}</span><span class="v">${nf(t.messages)}</span></div>`).join('');
+ $('analytics-pane').innerHTML=`
+ <div class="kpis">${kpis.map(k=>`<div class="kpi"><span>${k[0]}</span><b>${k[1]}</b><i>${k[2]}</i></div>`).join('')}</div>
+ ${warn}${budgets}
+ <div class="charts">
+  <figure><figcaption>spend per day</figcaption>${u.available?bars(u.daily||[],'cost',money,r=>r.date):'<div class="count">usage.json not found</div>'}<div class="legend"><span>${u.available?peak(u.daily||[],'cost',money):'\u2014'}</span><span>${u.generated?'as of '+new Date(u.generated*1000).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false}):''}</span></div></figure>
+  <figure><figcaption>messages per day</figcaption>${bars(per,'messages',nf,r=>r.date)}<div class="legend"><span>${peak(per,'messages',nf)}</span><span>${per.reduce((a,r)=>a+r.messages,0)} total</span></div></figure>
+ </div>
+ <table class="atable"><caption>agents</caption>
+  <thead><tr><th>agent</th><th class="num">msgs</th><th class="num">tokens 7d</th><th class="num">cost 7d</th><th>share of 7d</th><th class="num">last seen</th></tr></thead>
+  <tbody>${agents.map(a=>`<tr><td><span class="who2" style="--c:${col(a.sender)}">${esc(a.sender)}</span></td><td class="num">${nf(a.messages||0)}</td><td class="num">${a.tokens_7d?nf(a.tokens_7d):'\u2014'}</td><td class="num">${a.cost_7d?money(a.cost_7d):'\u2014'}</td><td><div class="share" title="${a.cost_7d?(a.cost_7d/totCost*100).toFixed(1)+'% of 7d spend':'no spend'}"><i style="width:${a.cost_7d?Math.max(1.5,a.cost_7d/totCost*100):0}%"></i></div><span class="pct">${a.cost_7d?(a.cost_7d/totCost*100).toFixed(a.cost_7d/totCost>=0.1?0:1)+'%':''}</span></td><td class="num">${ago(a.last_ts)}</td></tr>`).join('')}</tbody>
+ </table>
+ <div class="panelrow">
+  <figure><figcaption>most expensive sessions</figcaption><div class="list">${sessions}</div></figure>
+  <figure><figcaption>topics</figcaption><div class="list">${topics||'<div class="row2"><span class="k">no traffic</span></div>'}</div></figure>
+ </div>`;
+}
 window.addEventListener('resize',()=>document.documentElement.style.setProperty('--composeH',composeH()+'px'));
-loadAgents();boot();setInterval(()=>{if(!searching)poll()},3000);
+loadAgents();boot();setInterval(()=>{if(tab==='analytics'){if(Date.now()-aAt>60000)loadAnalytics()}else if(!searching)poll()},3000);
 </script></body></html>""".replace("__TOKEN__", token).replace("__SENDER__", sender)
 
 
@@ -792,6 +1015,11 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 time.sleep(0.4)
             self._json(out)
+            return
+
+        if path == "/api/analytics":
+            days = max(1, min(int(qs.get("days", "30") or 30), 365))
+            self._json(analytics_payload(days))
             return
 
         if path == "/api/search":
