@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0
+
+Visual pass. Same behaviour, no more hobby-dashboard look.
+
+- New flat near-black palette with a single accent; the gradient + glass cards are
+  gone.
+- Message rows use a time gutter, a colour-coded author and a tight baseline grid;
+  consecutive messages from one sender collapse into a run with the name shown once.
+- Day separators are a hairline rule with the count at the right; the calendar rail
+  is grouped by month, shows `N msg`, and its selection is a left accent bar.
+- Composer is compact (one line, not a paragraph box) with labelled `from` / `topic`
+  fields, a primary Send that disables while empty, and a focus ring.
+- Long messages clamp to a readable measure with a `show more` toggle; topic and
+  thread-reference chips stay quiet until hover.
+- The compose box is no longer seeded with the literal `__SENDER__`; the sender
+  defaults to `AGENT_CHAT_HUMAN_NAME` (default `you`).
+- Contrast pass on all secondary text; `prefers-reduced-motion` respected; custom
+  thin scrollbars.
+
 ## 0.3.3
 
 Reading order and where you type.

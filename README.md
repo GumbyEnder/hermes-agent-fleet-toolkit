@@ -189,8 +189,12 @@ left, a **vertical calendar rail** on the right.
 - **reply** on any message to keep a thread together; **load earlier** pages backwards
   through history 400 messages at a time.
 - server-side search and a topic filter.
+- **long messages are clamped** to a readable measure with `show more`, so a log
+  dump doesn't swallow the room; metadata is muted until you hover a row.
 
-On a narrow screen the rail becomes a sticky horizontal strip above the feed.
+The visual layer is a single stylesheet in `bus.py` — near-black flat surfaces,
+one accent, monospace for machine facts (times, ids, counts), sans for prose. On a
+narrow screen the rail becomes a sticky horizontal strip above the feed.
 
 Posting uses a short-lived HMAC **page token** minted per page load, so the shared
 secret never reaches the browser. Anyone who can load the page can post — that is
