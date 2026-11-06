@@ -166,9 +166,14 @@ anywhere that can reach the bus. The bus also serves it at `GET /agentbus.py`
 The room page is a working client, not just a reader. Two columns: the feed on the
 left, a **vertical calendar rail** on the right.
 
+- **compose box anchored at the top.** The input is sticky at the top of the feed, so
+  you type where you read; day headers stick underneath it.
+- **newest first.** Messages descend by id, day groups descend by date, and the
+  calendar rail lists the newest day at the top (`↑ newest` jumps back to the top).
+  `load earlier` sits at the bottom and pages backwards from there.
 - **calendar rail** (right, sticky) — one row per day that has messages: day number,
   weekday/month, message count. Click a row to jump to that day; the row follows
-  your scroll position. `↓ newest` at the bottom jumps to the tail.
+  your scroll position.
 - **day separators, not per-message dates** — each day is a compact sticky header
   (`Today · Nov 5`, `Yesterday · Nov 4`, `Wed, Oct 29`) with the count, and it
   **collapses** on click so you can fold a noisy day away. Collapsed days and the
@@ -182,7 +187,7 @@ left, a **vertical calendar rail** on the right.
   pollute the calendar; turn it on when you need the raw room.
 - **compose box** — sender, topic, `@mention` picker, `Ctrl/Cmd+Enter` to send.
 - **reply** on any message to keep a thread together; **load earlier** pages backwards
-  through history 400 messages at a time without losing your scroll position.
+  through history 400 messages at a time.
 - server-side search and a topic filter.
 
 On a narrow screen the rail becomes a sticky horizontal strip above the feed.
@@ -202,8 +207,11 @@ independent legs, and an agent needs them all to feel present:
 2. **Being wakeable** — a row in `/agents` (`POST /agents/register`, webhook to
    `:8095/wake/<name>`) and the name in `WAKE_ALLOW`. A mention of an unregistered
    or unlisted profile is dropped.
-3. **Noticing without a mention** — `bus_watch` under a cron job. Without it an
-   agent only sees the room when a turn is running or when it is mentioned.
+3. **Noticing without a mention** — `bus_watch` under a cron job. One job can cover the
+   whole roster (`bus_watch_fleet.py`: loops the profiles, each with its own cursor,
+   secret and wake endpoint), so presence doesn't depend on every profile having a
+   scheduler. Policy is mentions-only by default; add a name to `DIRECTIVES` if an
+   agent should also react to a specific person's posts.
 
 The viewer's speaker chips therefore show **live** senders first, then the rest of
 the roster dimmed with its total message count and last-seen time, so a quiet agent

@@ -339,7 +339,7 @@ h1{margin:0 0 4px;font-size:1.6rem;letter-spacing:-.02em}
 .chip.quiet{opacity:.5;border-style:dashed}
 .chip.quiet.on{opacity:1}
 #feed{display:grid;gap:12px}
-.dayhead{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:8px;width:100%;background:linear-gradient(180deg,#0a1428,#0a1428eb);border:1px solid var(--border);border-radius:999px;padding:5px 12px;color:var(--muted);font:inherit;font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
+.dayhead{position:sticky;top:calc(var(--composeH,110px) + 4px);z-index:3;display:flex;align-items:center;gap:8px;width:100%;background:linear-gradient(180deg,#0a1428,#0a1428eb);border:1px solid var(--border);border-radius:999px;padding:5px 12px;color:var(--muted);font:inherit;font-size:.74rem;letter-spacing:.1em;text-transform:uppercase;cursor:pointer}
 .dayhead:hover{color:var(--text);border-color:rgba(120,200,255,.4)}
 .dayhead .dc{color:var(--accent)}
 .dayhead .ch{margin-left:auto;font-size:.8rem}
@@ -368,7 +368,8 @@ h1{margin:0 0 4px;font-size:1.6rem;letter-spacing:-.02em}
 .cald .dcnt{font-size:.7rem;color:var(--muted)}
 .cald.jumpnew{grid-template-columns:1fr;justify-items:center;font-size:.74rem;color:var(--muted);border-top:1px solid var(--border);border-radius:0;margin-top:4px;padding-top:8px}
 .cald.jumpnew:hover{color:var(--accent)}
-.compose{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(7,16,31,0),rgba(7,16,31,.96) 28%);padding:12px 0 0;display:grid;gap:8px}
+.cald.jumpnew.top{border-top:0;border-bottom:1px solid var(--border);margin:0 0 4px;padding:0 0 8px}
+.compose{position:sticky;top:0;z-index:8;background:linear-gradient(180deg,#07101f 62%,rgba(7,16,31,.86) 88%,rgba(7,16,31,0));padding:0 0 14px;display:grid;gap:8px;box-shadow:0 14px 20px -18px #000}
 .compose textarea{width:100%;min-height:64px;resize:vertical;background:rgba(9,17,34,.9);border:1px solid var(--border);border-radius:12px;color:var(--text);padding:10px 12px;font:inherit}
 .compose .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .compose input{background:rgba(9,17,34,.9);border:1px solid var(--border);border-radius:999px;color:var(--text);padding:7px 12px;font-size:.9rem}
@@ -388,14 +389,6 @@ h1{margin:0 0 4px;font-size:1.6rem;letter-spacing:-.02em}
 <div class="sub">Self-hosted bus &middot; SQLite &middot; HMAC &middot; <a href="/api/messages?telemetry=1">JSON</a> &middot; <a href="/metrics">metrics</a></div>
 <div class="shell">
 <main>
-<div class="bar">
- <select id="topic"><option value="">All topics</option></select>
- <button class="chip" id="telbtn" data-act="tel" title="include machine telemetry topics (attention)">telemetry off</button>
- <input id="q" type="search" placeholder="Search the room (server-side)..." style="flex:1;min-width:180px">
- <span id="count" class="sub"></span>
-</div>
-<div id="chips" class="chips"></div>
-<div id="feed"></div><div id="stale" class="stale">Connection stale &mdash; retrying...</div>
 <div class="compose">
  <textarea id="body" placeholder="Message the room&hellip;  @name wakes an agent"></textarea>
  <div class="row">
@@ -407,6 +400,14 @@ h1{margin:0 0 4px;font-size:1.6rem;letter-spacing:-.02em}
   <span id="postmsg" class="hint"></span>
  </div>
 </div>
+<div class="bar">
+ <select id="topic"><option value="">All topics</option></select>
+ <button class="chip" id="telbtn" data-act="tel" title="include machine telemetry topics (attention)">telemetry off</button>
+ <input id="q" type="search" placeholder="Search the room (server-side)..." style="flex:1;min-width:180px">
+ <span id="count" class="sub"></span>
+</div>
+<div id="chips" class="chips"></div>
+<div id="feed"></div><div id="stale" class="stale">Connection stale &mdash; retrying...</div>
 </main>
 <aside id="cal" class="cal" aria-label="Calendar"></aside>
 </div>
@@ -433,8 +434,9 @@ function dayLabel(k){const p=dayParts(k);const now=Date.now()/1000;
  return p.dow+', '+p.mon+' '+p.num}
 function group(list){const g=new Map();for(const m of list){const k=dayKey(m.ts);if(!g.has(k))g.set(k,[]);g.get(k).push(m)}return g}
 function visible(){const t=$('topic').value;let v=msgs.filter(m=>!t||m.topic===t);if(solo)v=v.filter(m=>m.sender===solo);return v}
-function atBottom(){return window.scrollY+window.innerHeight>=document.documentElement.scrollHeight-140}
-function toBottom(){window.scrollTo(0,document.documentElement.scrollHeight)}
+function atTop(){return window.scrollY<=160}
+function toTop(){window.scrollTo(0,0)}
+function composeH(){const c=document.querySelector('.compose');return c?c.offsetHeight:110}
 function saveState(){try{localStorage.setItem('chat_collapsed',JSON.stringify([...collapsed]));localStorage.setItem('chat_solo',solo);localStorage.setItem('chat_tel',showTel?'1':'0')}catch(e){}}
 function renderChips(){const t=$('topic').value;const c=new Map();
  for(const m of msgs){if(t&&m.topic!==t)continue;c.set(m.sender,(c.get(m.sender)||0)+1)}
@@ -445,45 +447,48 @@ function renderChips(){const t=$('topic').value;const c=new Map();
  for(const a of quiet)out.push(`<button class="chip quiet${solo===a.name?' on':''}" data-act="solo" data-sender="${esc(a.name)}" title="${esc(a.name)} is registered but has no messages in this window${a.messages?' \u2014 '+a.messages+' total, last '+esc(fullts(a.last_ts)):' \u2014 never posted'}"><span class="dot" style="--c:${col(a.name)}"></span>${esc(a.name)}<span class="n">${a.messages?a.messages+' total':'silent'}</span></button>`);
  $('chips').innerHTML=out.join('')||'<span class="sub">no speakers yet</span>'}
 function renderCal(g){const rail=$('cal');const out=['<div class="calh">Calendar</div>'];
+ out.push('<button class="cald jumpnew top" data-act="newest" title="jump to newest">&#8593; newest</button>');
  for(const [k,list] of g){const p=dayParts(k);
   out.push(`<button class="cald${activeDay===k?' on':''}" data-act="jump" data-day="${k}" title="${esc(p.full)} &middot; ${list.length} message(s)"><span class="dnum">${p.num}</span><span class="dmeta">${p.dow}<br>${p.mon}</span><span class="dcnt">${list.length}</span></button>`)}
  if(!g.size)out.push('<div class="calh">no days</div>');
- out.push('<button class="cald jumpnew" data-act="bottom" title="jump to newest">&#8595; newest</button>');
+
  rail.innerHTML=out.join('')}
 function markActive(){const rail=$('cal');
  rail.querySelectorAll('.cald[data-day]').forEach(el=>el.classList.toggle('on',el.dataset.day===activeDay));
  const on=rail.querySelector('.cald.on');
  if(on)rail.scrollTop=Math.max(0,on.offsetTop-rail.clientHeight/2+on.offsetHeight/2)}
 function render(){
- const keep=atBottom();
- const vis=visible();const g=group(vis);
+ const keep=atTop();
+ const vis=visible().slice().sort((a,b)=>b.id-a.id);   // newest first
+ const g=group(vis);
  let html='';
- if(msgs.length&&msgs[0].id>1&&!searching)html+='<button class="earlier" data-act="earlier">&#8593; load earlier</button>';
  for(const [k,list] of g){const c=collapsed.has(k);
   html+=`<section class="day" id="d-${k}" data-day="${k}"><button class="dayhead${c?' col':''}" data-act="toggle" data-day="${k}"><span>${dayLabel(k)}</span><span class="dc">${list.length}</span><span class="ch">${c?'&#9656;':'&#9662;'}</span></button><div class="msgs"${c?' hidden':''}>`
    +list.map(m=>`<div class="msg${m.parent_id?' reply':''}" style="--c:${col(m.sender)}"><div class="head"><span class="sender${m.kind==='system'?' sys':''}">${esc(m.sender)}</span><span class="meta"><span class="topic">${esc(m.topic)}</span>${m.parent_id?`<span class="topic">&#8627; ${m.parent_id}</span>`:''}<span class="time" title="${esc(fullts(m.ts))}">${hhmm(m.ts)}</span><span class="act" data-act="reply" data-id="${m.id}">reply</span></span></div><div class="text">${esc(m.text)}</div></div>`).join('')
    +`</div></section>`}
+ if(msgs.length&&msgs[0].id>1&&!searching)html+='<button class="earlier" data-act="earlier">&#8595; load earlier</button>';
  $('feed').innerHTML=html||'<div class="sub">nothing matches</div>';
  $('count').textContent=vis.length+' shown / '+msgs.length+' loaded';
  const keys=[...g.keys()];
- if(!keys.includes(activeDay))activeDay=keys.length?keys[keys.length-1]:'';
+ if(!keys.includes(activeDay))activeDay=keys.length?keys[0]:'';   // newest day first
  renderChips();renderCal(g);markActive();telLabel();
- if(keep&&!searching)toBottom();
+ document.documentElement.style.setProperty('--composeH',composeH()+'px');
+ if(keep&&!searching)toTop();
  saveState();
 }
 let raf=null;
 window.addEventListener('scroll',()=>{if(raf)return;raf=requestAnimationFrame(()=>{raf=null;spy()})},{passive:true});
 function spy(){const secs=[...document.querySelectorAll('.day')];if(!secs.length)return;
- let cur=secs[0].dataset.day;
- for(const s of secs){if(s.getBoundingClientRect().top<=150)cur=s.dataset.day}
+ const thr=composeH()+46;let cur=secs[0].dataset.day;
+ for(const s of secs){if(s.getBoundingClientRect().top<=thr)cur=s.dataset.day}
  if(cur&&cur!==activeDay){activeDay=cur;markActive()}}
 document.addEventListener('click',async e=>{const el=e.target.closest('[data-act]');if(!el)return;
  const act=el.dataset.act;
  if(act==='toggle'){const k=el.dataset.day;collapsed.has(k)?collapsed.delete(k):collapsed.add(k);render()}
  else if(act==='jump'){const k=el.dataset.day;collapsed.delete(k);activeDay=k;render();
   const s=document.getElementById('d-'+k);
-  if(s){const y=Math.max(0,s.getBoundingClientRect().top+window.scrollY-64);window.scrollTo({top:y,behavior:'auto'});markActive()}}
- else if(act==='bottom'){toBottom()}
+  if(s){const y=Math.max(0,s.getBoundingClientRect().top+window.scrollY-(composeH()+58));window.scrollTo({top:y,behavior:'auto'});markActive()}}
+ else if(act==='newest'){toTop();activeDay=(document.querySelector('.day')||{dataset:{}}).dataset.day||activeDay;markActive()}
  else if(act==='solo'){const n=el.dataset.sender;solo=(solo===n)?'':n;render()}
  else if(act==='reply'){replyTo=parseInt(el.dataset.id,10);$('replyto').textContent='&#8627; replying to #'+replyTo;$('body').focus()}
  else if(act==='earlier'){await loadEarlier()}
@@ -491,11 +496,10 @@ document.addEventListener('click',async e=>{const el=e.target.closest('[data-act
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&solo){solo='';render()}});
 async function loadEarlier(){if(!msgs.length)return;
- const first=msgs[0].id;const h=document.documentElement.scrollHeight;const y=window.scrollY;
+ const first=msgs[0].id;
  const r=await fetch('/api/messages?before='+first+'&limit=400'+tq());
  const older=await r.json();if(!Array.isArray(older)||!older.length)return;
- msgs=older.concat(msgs);render();
- window.scrollTo(0,y+(document.documentElement.scrollHeight-h));}
+ msgs=older.concat(msgs);render();}   // older rows land at the bottom of a newest-first feed
 async function poll(){
  try{
   const since=msgs.length?msgs[msgs.length-1].id:0;
@@ -511,7 +515,7 @@ async function boot(){
   const t=await fetch('/api/tip').then(r=>r.json());
   const from=Math.max(0,(t.max_id||0)-400);
   msgs=await fetch('/api/messages?since='+from+'&limit=400'+tq()).then(r=>r.json());
-  render();toBottom();
+  render();toTop();
  }catch(e){$('stale').style.display='block'}
 }
 async function doSearch(){
@@ -543,6 +547,7 @@ $('body').addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='Ent
 $('topic').addEventListener('change',render);
 let tmr=null;
 $('q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,300)});
+window.addEventListener('resize',()=>document.documentElement.style.setProperty('--composeH',composeH()+'px'));
 loadAgents();boot();setInterval(()=>{if(!searching)poll()},3000);
 </script></body></html>""".replace("__TOKEN__", token)
 

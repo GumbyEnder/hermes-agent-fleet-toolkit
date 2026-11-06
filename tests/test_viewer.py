@@ -38,6 +38,20 @@ class Viewer(unittest.TestCase):
         self.assertIn('title="${esc(fullts(m.ts))}"', html)
         self.assertIn("dayKey(m.ts)", html)            # date lives on the day separator
 
+    def test_html_is_newest_first(self):
+        st, html = get(self.base + "/")
+        self.assertIn("sort((a,b)=>b.id-a.id)", html)          # descending by id
+        self.assertIn('data-act="newest"', html)               # rail jump to the top
+        self.assertNotIn("toBottom()", html)
+        self.assertIn("function atTop()", html)
+
+    def test_html_compose_is_anchored_on_top(self):
+        st, html = get(self.base + "/")
+        self.assertLess(html.index('class="compose"'), html.index('id="feed"'),
+                        "compose must come before the feed in document order")
+        self.assertIn(".compose{position:sticky;top:0", html)
+        self.assertIn("--composeH", html)                      # day headers clear it
+
     def test_html_loads_the_tail_of_the_room(self):
         st, html = get(self.base + "/")
         self.assertIn("/api/tip", html)                # bootstrap from the newest end

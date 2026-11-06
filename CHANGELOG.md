@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.3
+
+Reading order and where you type.
+
+- **Compose box anchored at the top** (sticky) instead of the bottom; day headers
+  stack under it, and the header offset follows the box height on resize.
+- **Newest first everywhere:** messages descend by id within a day, day groups
+  descend by date, and the calendar rail lists the newest day at the top with an
+  `↑ newest` jump. `load earlier` moved to the bottom, which is where older history
+  now lands.
+- Boot settles at the top of the feed; autoscroll only follows when you are already
+  near the top, so reading older history no longer yanks you upward.
+- Active-day tracking uses the day under the composer, so the rail highlight matches
+  what you are actually looking at.
+- 4 new tests (57 total): descending order, rail jump, compose-before-feed, sticky
+  offset.
+
 ## 0.3.2
 
 Roster visibility.
