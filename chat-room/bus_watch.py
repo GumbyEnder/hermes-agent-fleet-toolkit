@@ -31,6 +31,7 @@ import hmac
 import http.client as http_client
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -138,7 +139,8 @@ def wants_me(m):
     if (m.get("topic") or "") in IGNORE_TOPICS:
         return False
     text = (m.get("text") or "").lower()
-    if f"@{ME.lower()}" in text:
+    # Whole-token match: "@buzzy" must not fire on "@buzzygrok" (or "@buzzy_2").
+    if re.search(rf"(?<![a-z0-9_-])@{re.escape(ME.lower())}(?![a-z0-9_-])", text):
         return True
     sender = (m.get("sender") or "").lower()
     # A directive from the human (or a configured reporter) in a work lane counts too.

@@ -41,6 +41,17 @@ class WatchSelection(unittest.TestCase):
         self.assertFalse(self.mod.wants_me({"sender": "watcher", "topic": "work",
                                             "text": "@watcher note to self"}))
 
+    def test_mention_is_whole_token(self):
+        # "@watcher" must not fire inside "@watcher2" / "@watcher_bot" (@buzzy vs @buzzygrok).
+        self.assertFalse(self.mod.wants_me({"sender": "a", "topic": "work",
+                                            "text": "@watcher2 take this one"}))
+        self.assertFalse(self.mod.wants_me({"sender": "a", "topic": "work",
+                                            "text": "@watcher_bot take this one"}))
+        self.assertTrue(self.mod.wants_me({"sender": "a", "topic": "work",
+                                           "text": "@watcher2 and @watcher: this one is yours"}))
+        self.assertTrue(self.mod.wants_me({"sender": "a", "topic": "work",
+                                           "text": "ping @watcher."}))
+
     def test_ignored_topic(self):
         self.assertFalse(self.mod.wants_me({"sender": "a", "topic": "attention",
                                             "text": "@watcher telemetry mention"}))
