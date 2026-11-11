@@ -44,12 +44,41 @@ ALLOW = {p.strip() for p in os.environ.get("WAKE_ALLOW", "").split(",") if p.str
 MAX_CONC = max(1, int(os.environ.get("WAKE_MAX_CONCURRENCY", "2")))
 MAX_QUEUE = max(1, int(os.environ.get("WAKE_MAX_QUEUE", "20")))
 TIMEOUT = int(os.environ.get("WAKE_TIMEOUT", "900"))
+
+
+def _parse_overrides(raw):
+    """`game=3600,frodo=1800` -> {"game": 3600, "frodo": 1800}."""
+    out = {}
+    for part in str(raw or "").split(","):
+        if "=" not in part:
+            continue
+        name, _, val = part.partition("=")
+        name = name.strip()
+        try:
+            secs = int(val.strip())
+        except ValueError:
+            continue
+        if name and secs >= 60:
+            out[name] = secs
+    return out
+
+
+TIMEOUT_OVERRIDES = _parse_overrides(os.environ.get("WAKE_TIMEOUT_OVERRIDES", ""))
+
+
+def timeout_for(profile):
+    """Per-profile turn budget; long-running agents (e.g. game) need more than 15 min."""
+    return TIMEOUT_OVERRIDES.get(profile, TIMEOUT)
+
+
 DEDUPE_TTL = int(os.environ.get("WAKE_DEDUPE_TTL", "600"))
 
 START = time.time()
 _work = queue.Queue(maxsize=MAX_QUEUE)
 _lock = threading.Lock()
 _seen = {}              # dedupe key -> first-seen ts
+_gates = {}             # profile -> Lock (one concurrent turn per profile)
+_gates_lock = threading.Lock()
 _active = 0
 _done = 0
 _failed = 0
@@ -107,10 +136,11 @@ def _run_one(profile, payload):
     text = str(payload.get("text", ""))[:4000]
     prompt = (f"[Agent Chat Room — you were @mentioned by {payload.get('from')} "
               f"in topic '{payload.get('topic')}']\n\n{text}")
+    budget = timeout_for(profile)
     rc, reply, err = None, "", ""
     try:
         r = subprocess.run([BIN, "-p", profile, "-z", prompt],
-                           capture_output=True, text=True, timeout=TIMEOUT,
+                           capture_output=True, text=True, timeout=budget,
                            stdin=subprocess.DEVNULL)
         rc, reply = r.returncode, (r.stdout or "").strip()[-4000:]
         err = (r.stderr or "")[:400]
@@ -125,14 +155,38 @@ def _run_one(profile, payload):
         else:
             _done += 1
     log(evt="wake", profile=profile, message_id=message_id, rc=rc,
-        dur_s=round(time.time() - started, 1), reply_chars=len(reply),
-        posted_id=posted, error=(err[:200] or None))
+        dur_s=round(time.time() - started, 1), budget_s=budget,
+        reply_chars=len(reply), posted_id=posted, error=(err[:200] or None))
+
+
+def _gate_for(profile):
+    """Per-profile turn gate: one Hermes turn per profile at a time.
+
+    Two concurrent turns for the same profile land in the same working tree and
+    each reads the room before the other answers, so both post near-identical
+    replies under the same mention. Serializing per profile (not per message
+    id: separate mentions are separate keys) removes that race.
+    """
+    with _gates_lock:
+        return _gates.setdefault(profile, threading.Lock())
 
 
 def _worker():
-    global _active
+    global _active, _rejected_full
     while True:
         profile, payload = _work.get()
+        gate = _gate_for(profile)
+        if not gate.acquire(blocking=False):
+            # another turn for this profile is running: put this one back at the
+            # tail so other profiles are not blocked behind it, and retry.
+            try:
+                _work.put_nowait((profile, payload))
+            except queue.Full:
+                with _lock:
+                    _rejected_full += 1
+            _work.task_done()
+            time.sleep(0.5)
+            continue
         with _lock:
             _active += 1
         try:
@@ -140,10 +194,8 @@ def _worker():
         finally:
             with _lock:
                 _active -= 1
+            gate.release()
             _work.task_done()
-
-
-
 def sd_notify(state):
     """Minimal sd_notify: READY=1 and WATCHDOG=1 without a dependency."""
     path = os.environ.get("NOTIFY_SOCKET")
@@ -192,6 +244,8 @@ class H(BaseHTTPRequestHandler):
                         "max_concurrency": MAX_CONC, "max_queue": MAX_QUEUE,
                         "done": _done, "failed": _failed, "deduped": _deduped,
                         "rejected_full": _rejected_full,
+                        "timeout_s": TIMEOUT,
+                        "timeout_overrides": TIMEOUT_OVERRIDES,
                         "dedupe_ttl_s": DEDUPE_TTL,
                         "uptime_s": round(time.time() - START, 1)})
 

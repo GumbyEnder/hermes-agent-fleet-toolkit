@@ -102,6 +102,41 @@ class DispatcherTests(unittest.TestCase):
         self.assertTrue(got, "no threaded reply from the woken agent")
         self.assertIn("stub answer", got[0]["text"])
 
+    def test_one_turn_per_profile_at_a_time(self):
+        """Two mentions of the same profile never run concurrently.
+
+        Separate mention ids are separate dedupe keys, so dedupe does not cover
+        them; two concurrent turns read the room before either answers and both
+        post under the same mention. The per-profile gate must serialize them.
+        """
+        log = os.path.join(self.tmp, "gate.log")
+        stub = os.path.join(self.tmp, "gate-stub.sh")
+        with open(stub, "w") as fh:
+            fh.write("#!/bin/sh\n"
+                     'echo start >> "$STUB_LOG"\n'
+                     'sleep "${STUB_SLEEP:-0}"\n'
+                     'echo end >> "$STUB_LOG"\n'
+                     'echo "stub answer for $2"\n')
+        os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
+        with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b2, _t, _s):
+            with dispatcher(b2, WAKE_ALLOW="gamma", WAKE_BIN=stub,
+                            WAKE_MAX_CONCURRENCY="2", WAKE_MAX_QUEUE="10",
+                            WAKE_DEDUPE_TTL="60", STUB_LOG=log,
+                            STUB_SLEEP="1.2") as (d2, _svc2):
+                for i in (2001, 2002):
+                    st, body = post(d2 + "/wake/gamma",
+                                    {"from": "t", "topic": "wake",
+                                     "text": f"@gamma job {i}", "message_id": i})
+                    self.assertEqual(st, 200, body)
+                got = wait_for(lambda: os.path.exists(log) and
+                               open(log).read().count("end") >= 2, timeout=15)
+                self.assertTrue(got, "the two turns never finished")
+                depth, peak = 0, 0
+                for line in open(log).read().split():
+                    depth += 1 if line == "start" else -1
+                    peak = max(peak, depth)
+                self.assertEqual(peak, 1, f"two turns for gamma overlapped: {open(log).read()!r}")
+
     def test_queue_full_returns_429(self):
         """One worker, one queue slot, slow agent: the third mention is refused."""
         with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b2, _t, _s):
