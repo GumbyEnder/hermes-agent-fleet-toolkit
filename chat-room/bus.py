@@ -197,6 +197,42 @@ def migrate():
         c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 
+def _log_line(line):
+    """stdout byte-for-byte, plus the db-tagged tee file.
+
+    One writer for both arms so a field added to a checkpoint line cannot land in
+    the tee and be missing from the journal (or the reverse). The tee's prefix is
+    load-bearing: measured 2026-11-13, a rehearsal that redirected AGENT_CHAT_DB but
+    not AGENT_CHAT_BUS_CHECKPOINT_LOG wrote plausible-looking lines into the
+    production file with nothing saying which database they described.
+    """
+    print(line, flush=True)
+    try:
+        with open(BUS_CHECKPOINT_LOG, "a") as f:
+            f.write("%s db=%s %s\n"
+                    % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), DB_PATH, line))
+    except OSError:
+        pass                    # a full/unwritable home must not break a checkpoint
+
+
+def _wal_state():
+    """Sidecar size in bytes, or 'absent' — read AFTER the connection has closed.
+
+    The TRUNCATE tuple cannot answer this: removal needs the LAST close, which
+    happens when `with db()` exits, so the tuple reports a fold on a file that is
+    about to be unlinked. Measured 2026-11-13 11:17:53 -> the pair at :15:19/:15:20
+    folds, the janitor's connection closes, sqlite unlinks, and `backup()`'s
+    `os.path.exists()` one second later answers `no`. Publishing `moved=` without
+    this field leaves "the janitor folded 30" and "the wal was not copied" looking
+    like a contradiction when they are one ordered pair. Other threads can still
+    open/close in the gap, so this is the state at the close, not at the copy.
+    """
+    try:
+        return str(os.stat(DB_PATH + "-wal").st_size)
+    except OSError:
+        return "absent"
+
+
 def checkpoint(src="manual"):
     """TRUNCATE the WAL and REPORT the outcome.
 
@@ -278,19 +314,13 @@ def checkpoint(src="manual"):
             # in them said which database they were about -- a reader would grade
             # a scratch fold as a production TRUNCATE. Any consumer must key on
             # db= and may never assume "a line in this file is this database".
-            print(line, flush=True)
-            try:
-                with open(BUS_CHECKPOINT_LOG, "a") as f:
-                    f.write("%s db=%s %s\n"
-                            % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), DB_PATH, line))
-            except OSError:
-                pass                    # a full/unwritable home must not break a checkpoint
+            _log_line(line)
 
         _emit("checkpoint-pre: busy=%d log=%d folded=%d src=%s%s"
               % (pre_busy, pre_log, pre_folded, src,
                  _tag(pre_busy, pre_log, pre_folded)))
-        _emit("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s%s"
-              % (busy, log, folded, pre_log - log, src,
+        _emit("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s wal=%s%s"
+              % (busy, log, folded, pre_log - log, src, _wal_state(),
                  _tag(busy, log, folded, pre_pinned)))
     except Exception as e:  # noqa: BLE001
         print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
@@ -307,11 +337,26 @@ def backup():
         return
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
+        # The decision is the evidence, so record it. `if os.path.exists(f)` is the
+        # whole discriminator between "copied a quiet file" (stamp frozen, content
+        # fresh) and "copied nothing at all" (stamp AND content from the previous
+        # generation) -- two states that are indistinguishable from the .bak stamp
+        # alone, because copy2 preserves the SOURCE mtime either way. Measured
+        # 2026-11-13 18:15:20: dir listing showed db.bak advancing to 18:15:21.431
+        # while the wal slot stayed frozen at 17:15:20.241, a +3,601.189 s gap whose
+        # only honest reading is the skip named here.
+        states = []
         for f in (DB_PATH, DB_PATH + "-wal"):
             if os.path.exists(f):
+                n = os.path.getsize(f)
                 shutil.copy2(f, os.path.join(BACKUP_DIR, os.path.basename(f) + ".bak"))
+                states.append("copy:%d" % n)
+            else:
+                states.append("skip:absent")
+        _log_line("backup: main=%s wal=%s src=backup" % (states[0], states[1]))
     except Exception as e:  # noqa: BLE001
         print("backup failed:", e, flush=True)
+        _log_line("backup failed: err=%s src=backup" % e)
 
 
 def backup_loop():
