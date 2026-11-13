@@ -238,12 +238,18 @@ def checkpoint(src="manual"):
         # last. So folded==log/busy==0 is the production shape of a live unlink
         # pin and it is indistinguishable from healthy here. Only the absence of
         # a DELETE room.db-wal record can see it (wal-unlink-watch verdict.py).
-        # Tokens: BUSY = could not run; PINNED = ran and left frames un-folded
-        # (the only shape that risks a row).
-        def _tag(busy, log, folded):
+        # Tokens: BUSY = sqlite could not run the checkpoint at all (log=-1);
+        # PINNED = the tuple reports frames still un-folded. PINNED is graded off
+        # the PRE-line only: the post tuple is TRUNCATE's own report and repeats
+        # the pre numbers on a pin, so tagging both lines doubles one fact.
+        # Rehearsed 2026-11-13 09:31 on a scratch DB: a held READ transaction
+        # printed pre 0|1568|0 PINNED and post 1|1568|0 -- the pre-line alone
+        # carries it. A held write transaction printed post 1|0|0, untagged and
+        # correct: log=0 means no frames are at risk.
+        def _tag(busy, log, folded, post=False):
             if busy and log < 0:
                 return " BUSY"
-            if folded < log:
+            if not post and folded < log:
                 return " PINNED"
             return ""
 
@@ -252,7 +258,7 @@ def checkpoint(src="manual"):
                  _tag(pre_busy, pre_log, pre_folded)), flush=True)
         print("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s%s"
               % (busy, log, folded, pre_log - log, src,
-                 _tag(busy, log, folded)), flush=True)
+                 _tag(busy, log, folded, post=True)), flush=True)
     except Exception as e:  # noqa: BLE001
         print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
 
