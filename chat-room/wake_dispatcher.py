@@ -24,6 +24,8 @@ Env:
   WAKE_TEXT_MAX          last-resort cap on the mention body (default 100000);
                          only reached when the re-fetch fails, and a cut is
                          always marked in the prompt
+  WAKE_SPILL             JSONL file holding accepted-but-unfinished wakes
+                         (default ~/agents/agent-chat/wake-spill.jsonl)
 """
 import hashlib
 import hmac as hm
@@ -49,6 +51,8 @@ MAX_QUEUE = max(1, int(os.environ.get("WAKE_MAX_QUEUE", "20")))
 TIMEOUT = int(os.environ.get("WAKE_TIMEOUT", "900"))
 TEXT_MAX = int(os.environ.get("WAKE_TEXT_MAX", "100000"))
 BUS_URL = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090").rstrip("/")
+SPILL = os.path.abspath(os.path.expanduser(
+    os.environ.get("WAKE_SPILL", "~/agents/agent-chat/wake-spill.jsonl")))
 
 
 def _parse_overrides(raw):
@@ -89,6 +93,153 @@ _done = 0
 _failed = 0
 _deduped = 0
 _rejected_full = 0
+
+# --- spill: the queue lives in this process, so a restart used to eat it -------
+# A SIGTERM dropped every accepted-but-unfinished wake: the HTTP 200 had already
+# been handed to the bus, so nothing retried them and the mentions went unanswered
+# (bus_watch advances its cursor on 200). Every accepted payload is therefore
+# written to WAKE_SPILL until its turn finishes, and re-queued at startup.
+_spill_lock = threading.Lock()
+_pending = {}           # seq -> {"profile": str, "payload": dict}
+_overflow = []          # seqs spilled because _work was full, oldest first
+_seq = int(time.time() * 1000)
+_draining = False
+SPILL_MAX = max(1, int(os.environ.get("WAKE_SPILL_MAX", "200")))
+
+
+def _spill_flush_locked():
+    """Rewrite the spill file from `_pending`; caller holds `_spill_lock`.
+
+    Whole-file rewrite inside one process, at most MAX_QUEUE+MAX_CONC records, so
+    cost is a few hundred bytes. os.replace keeps the file readable to any
+    observer (a truncated file would read as "queue empty" at the next boot).
+    """
+    tmp = SPILL + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(SPILL), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            for seq in sorted(_pending):
+                rec = dict(_pending[seq], seq=seq)
+                fh.write(json.dumps(rec, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, SPILL)
+    except OSError as e:  # noqa: BLE001
+        log(evt="spill_write_failed", path=SPILL, error=str(e)[:200])
+
+
+def _spill_add(profile, payload):
+    global _seq
+    with _spill_lock:
+        _seq += 1
+        seq = _seq
+        _pending[seq] = {"profile": profile, "payload": payload}
+        _spill_flush_locked()
+        return seq
+
+
+def _spill_drop(seq):
+    with _spill_lock:
+        if _pending.pop(seq, None) is not None:
+            try:
+                _overflow.remove(seq)
+            except ValueError:
+                pass
+            _spill_flush_locked()
+
+
+def _enqueue(profile, payload, seq):
+    """Put a record on the work queue, or hold it for the pump when the queue is full.
+
+    A full queue used to answer 429. The bus pushes the wake fire-and-forget and
+    never retries, so a 429 was a permanently unanswered mention (14 of them in
+    the six hours to 18:50 on 2026-11-13). A record is now accepted once it is on
+    disk; the in-memory queue is just the working window.
+    """
+    try:
+        _work.put_nowait((profile, payload, seq))
+        return True
+    except queue.Full:
+        with _spill_lock:
+            if seq in _pending and seq not in _overflow:
+                _overflow.append(seq)
+        return False
+
+
+def _pump_loop():
+    """Feed held records into the work queue as it frees up."""
+    while True:
+        time.sleep(1.0)
+        moved = 0
+        while True:
+            with _spill_lock:
+                if not _overflow or _work.qsize() >= MAX_QUEUE:
+                    break
+                seq = _overflow[0]
+                rec = _pending.get(seq)
+                if rec is None:
+                    _overflow.pop(0)
+                    continue
+                try:
+                    _work.put_nowait((rec["profile"], rec["payload"], seq))
+                except queue.Full:
+                    break
+                _overflow.pop(0)
+                moved += 1
+        if moved:
+            log(evt="spill_repump", moved=moved, overflow=len(_overflow))
+
+
+def _spill_load():
+    """Records left over from a previous process. Malformed lines are counted."""
+    try:
+        with open(SPILL, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError as e:  # noqa: BLE001
+        log(evt="spill_read_failed", path=SPILL, error=str(e)[:200])
+        return []
+    out, bad = [], 0
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            profile, payload = rec["profile"], rec["payload"]
+            if not isinstance(profile, str) or not isinstance(payload, dict):
+                raise ValueError("bad record shape")
+        except Exception:  # noqa: BLE001
+            bad += 1
+            continue
+        out.append((profile, payload))
+    log(evt="spill_load", path=SPILL, records=len(out), malformed=bad)
+    return out
+
+
+def _already_answered(profile, message_id):
+    """True when this mention already has a reply from this profile in the room.
+
+    A turn killed mid-flight may have posted before it died; re-running it under
+    the same mention would double-post. Fail OPEN (run the turn again) when the
+    bus cannot be read: a duplicate post is cheaper than an unanswered mention.
+    """
+    if not isinstance(message_id, int) or message_id <= 0:
+        return False
+    url = f"{BUS_URL}/api/messages?thread={message_id}&since=0&limit=50"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            rows = json.loads(r.read() or b"[]")
+    except Exception as e:  # noqa: BLE001
+        log(evt="spill_child_check_failed", profile=profile,
+            message_id=message_id, error=str(e)[:200])
+        return False
+    for row in rows if isinstance(rows, list) else []:
+        if (isinstance(row, dict) and row.get("parent_id") == message_id
+                and row.get("sender") == profile):
+            return True
+    return False
 
 
 def log(**fields):
@@ -227,16 +378,12 @@ def _gate_for(profile):
 def _worker():
     global _active, _rejected_full
     while True:
-        profile, payload = _work.get()
+        profile, payload, seq = _work.get()
         gate = _gate_for(profile)
         if not gate.acquire(blocking=False):
             # another turn for this profile is running: put this one back at the
-            # tail so other profiles are not blocked behind it, and retry.
-            try:
-                _work.put_nowait((profile, payload))
-            except queue.Full:
-                with _lock:
-                    _rejected_full += 1
+            # tail (or hold it on disk) so other profiles are not blocked.
+            _enqueue(profile, payload, seq)
             _work.task_done()
             time.sleep(0.5)
             continue
@@ -248,6 +395,7 @@ def _worker():
             with _lock:
                 _active -= 1
             gate.release()
+            _spill_drop(seq)
             _work.task_done()
 def sd_notify(state):
     """Minimal sd_notify: READY=1 and WATCHDOG=1 without a dependency."""
@@ -291,12 +439,17 @@ class H(BaseHTTPRequestHandler):
         if urllib.parse.urlparse(self.path).path != "/health":
             self._json({"error": "not found"}, 404)
             return
+        with _spill_lock:
+            spilled = len(_pending)
         with _lock:
             self._json({"status": "ok", "allowed": sorted(ALLOW),
                         "active": _active, "queued": _work.qsize(),
                         "max_concurrency": MAX_CONC, "max_queue": MAX_QUEUE,
                         "done": _done, "failed": _failed, "deduped": _deduped,
                         "rejected_full": _rejected_full,
+                        "draining": _draining,
+                        "spilled": spilled, "overflow": len(_overflow),
+                        "spill_path": SPILL,
                         "timeout_s": TIMEOUT,
                         "timeout_overrides": TIMEOUT_OVERRIDES,
                         "dedupe_ttl_s": DEDUPE_TTL,
@@ -338,24 +491,58 @@ class H(BaseHTTPRequestHandler):
                 _deduped += 1
             self._json({"ok": True, "duplicate": True, "profile": profile})
             return
-        try:
-            _work.put_nowait((profile, m))
-        except queue.Full:
+        seq = _spill_add(profile, m)
+        with _lock:
+            draining = _draining
+        with _spill_lock:
+            backlog = len(_pending)
+        if draining:
+            # Stop-and-restart window: accept (the bus already believes the push
+            # landed) but spill only. The next process re-queues it.
+            self._json({"ok": True, "spilled": True, "draining": True,
+                        "profile": profile})
+            return
+        if backlog > SPILL_MAX:
+            # Only a durable backlog this deep is real backpressure; SPILL_MAX is
+            # the guard against an unbounded file if every turn stalls.
+            _spill_drop(seq)
             with _lock:
                 _rejected_full += 1
-            self._json({"error": "wake queue full", "queued": _work.qsize()}, 429,
-                       {"Retry-After": "10"})
+            self._json({"error": "wake backlog full", "spilled": backlog}, 429,
+                       {"Retry-After": "60"})
             return
-        self._json({"ok": True, "queued": True, "profile": profile,
-                    "queued_depth": _work.qsize()})
+        queued = _enqueue(profile, m, seq)
+        self._json({"ok": True, "queued": queued, "spilled": not queued,
+                    "profile": profile, "queued_depth": _work.qsize(),
+                    "spilled_depth": backlog})
 
     def log_message(self, fmt, *args):
         log(evt="http", line=(fmt % args))
 
 
 def main():
+    global _draining, _seq
     if not SECRET:
         raise SystemExit("AGENT_CHAT_SECRET not set")
+
+    # Re-queue whatever the previous process accepted but never finished. The
+    # already-answered check is what makes a restart safe: a turn killed after it
+    # posted is dropped here instead of double-posting under the same mention.
+    resumed = []
+    for profile, payload in _spill_load():
+        mid = payload.get("message_id")
+        if _already_answered(profile, mid):
+            log(evt="spill_skip_answered", profile=profile, message_id=mid)
+            continue
+        with _spill_lock:
+            _seq += 1
+            seq = _seq
+            _pending[seq] = {"profile": profile, "payload": payload}
+        resumed.append((seq, profile, payload))
+    with _spill_lock:
+        _spill_flush_locked()
+    log(evt="spill_resume", records=len(resumed))
+
     for _ in range(MAX_CONC):
         threading.Thread(target=_worker, daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), H)
@@ -363,6 +550,12 @@ def main():
     stop = threading.Event()
 
     def _shut(signum, _frame):
+        global _draining
+        with _lock:
+            first = not _draining
+            _draining = True
+        if first:
+            log(evt="draining", signal=signum, active=_active, queued=_work.qsize())
         stop.set()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -372,13 +565,21 @@ def main():
 
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     threading.Thread(target=watchdog_loop, daemon=True).start()
+    threading.Thread(target=_pump_loop, daemon=True).start()
     sd_notify("READY=1")
     log(evt="start", bind=BIND, port=PORT, allowed=sorted(ALLOW),
-        workers=MAX_CONC, queue=MAX_QUEUE, timeout=TIMEOUT)
+        workers=MAX_CONC, queue=MAX_QUEUE, timeout=TIMEOUT, spill=SPILL)
+    for seq, profile, payload in resumed:
+        if not _enqueue(profile, payload, seq):
+            log(evt="spill_requeue_held", profile=profile,
+                message_id=payload.get("message_id"))
     try:
         stop.wait()
     finally:
-        log(evt="stop", active=_active, queued=_work.qsize())
+        with _spill_lock:
+            _spill_flush_locked()
+            pending = len(_pending)
+        log(evt="stop", active=_active, queued=_work.qsize(), spilled=pending)
         srv.shutdown()
 
 

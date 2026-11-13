@@ -128,6 +128,11 @@ def bus(**over):
 @contextlib.contextmanager
 def dispatcher(base_url, **over):
     port = free_port()
+    # Same pollution trap as the bus checkpoint log: the dispatcher's default
+    # spill file is the production one (~/agents/agent-chat/wake-spill.jsonl),
+    # and a test run must never leave records there for a real boot to re-run.
+    over.setdefault("WAKE_SPILL", os.path.join(tempfile.mkdtemp(prefix="fleet-spill-"),
+                                               "wake-spill.jsonl"))
     env = base_env(AGENT_CHAT_URL=base_url, WAKE_PORT=str(port), **over)
     with Service(str(ROOT / "chat-room/wake_dispatcher.py"), env,
                  f"http://127.0.0.1:{port}/health") as svc:

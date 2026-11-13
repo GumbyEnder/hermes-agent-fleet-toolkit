@@ -137,21 +137,48 @@ class DispatcherTests(unittest.TestCase):
                     peak = max(peak, depth)
                 self.assertEqual(peak, 1, f"two turns for gamma overlapped: {open(log).read()!r}")
 
-    def test_queue_full_returns_429(self):
-        """One worker, one queue slot, slow agent: the third mention is refused."""
+    def test_full_queue_spills_instead_of_refusing(self):
+        """A full queue is a spill, not a 429: the bus never retries a refused wake.
+
+        The bus pushes fire-and-forget and logs `wake <p> failed` on any non-200,
+        so a 429 is an unanswered mention forever (14 in the six hours to 18:50 on
+        2026-11-13). One worker and one queue slot must therefore still accept all
+        four mentions and eventually run every one of them.
+        """
         with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b2, _t, _s):
             count = os.path.join(self.tmp, "slow.txt")
             with dispatcher(b2, WAKE_ALLOW="slow", WAKE_BIN=self.stub,
                             WAKE_MAX_CONCURRENCY="1", WAKE_MAX_QUEUE="1",
-                            STUB_COUNT=count, STUB_SLEEP="2") as (d2, _svc2):
+                            STUB_COUNT=count, STUB_SLEEP="0.5") as (d2, _svc2):
                 codes = []
                 for i in range(4):
-                    st, _ = post(d2 + "/wake/slow",
-                                 {"from": "t", "topic": "wake",
-                                  "text": f"@slow job {i}", "message_id": 1000 + i})
+                    st, body = post(d2 + "/wake/slow",
+                                    {"from": "t", "topic": "wake",
+                                     "text": f"@slow job {i}", "message_id": 1000 + i})
                     codes.append(st)
-                    time.sleep(0.25)
-                self.assertIn(429, codes, f"expected backpressure, got {codes}")
+                    time.sleep(0.1)
+                self.assertEqual(codes, [200, 200, 200, 200],
+                                 f"a full queue must spill, not refuse: {codes}")
+                got = wait_for(lambda: os.path.exists(count) and
+                               open(count).read().count("slow") >= 4, timeout=20)
+                self.assertTrue(got, "spilled mentions never ran")
+
+    def test_backlog_cap_still_returns_429(self):
+        """WAKE_SPILL_MAX is the real backpressure: a runaway backlog is refused."""
+        with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b2, _t, _s):
+            count = os.path.join(self.tmp, "cap.txt")
+            with dispatcher(b2, WAKE_ALLOW="cap", WAKE_BIN=self.stub,
+                            WAKE_MAX_CONCURRENCY="1", WAKE_MAX_QUEUE="1",
+                            WAKE_SPILL_MAX="2",
+                            STUB_COUNT=count, STUB_SLEEP="5") as (d2, _svc2):
+                codes = []
+                for i in range(4):
+                    st, _ = post(d2 + "/wake/cap",
+                                 {"from": "t", "topic": "wake",
+                                  "text": f"@cap job {i}", "message_id": 2000 + i})
+                    codes.append(st)
+                    time.sleep(0.1)
+                self.assertIn(429, codes, f"backlog cap never fired: {codes}")
                 self.assertEqual(codes[0], 200)
 
 
