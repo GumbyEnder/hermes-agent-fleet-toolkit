@@ -11,7 +11,7 @@ Five scenarios, each with a live holder that really has room.db-wal open:
      -> classes=<pid>:other and WAL-PINNED. This is the only case that exercises
      the class that raises a real pin; B and C inherit hermes-gateway.service and
      grade session-kernel, so without E the alarm branch has zero evidence
-     (frodo #3974).
+     (frodo #3958).
 Every scenario feeds a `busy=1 log=11 folded=0 moved=0` bus line, i.e. the
 refused-TRUNCATE leg, so A's silent outcome can only be the exclusion working.
 """

@@ -82,7 +82,7 @@ unlink. `WAL-IDLE` is everything else that reached the stall clock, and always
 carries `excluded=` and `classes=` so an armed keeper is distinguishable from a
 session that is genuinely holding the sidecar.
 
-## New fact worth keeping (2026-11-13, frodo #3974)
+## New fact worth keeping (2026-11-13, frodo #3958)
 
 The recurring de-facto keeper at 15:10/15:20/15:30 was `1092165`, a
 `hermes_kernel_runner.py` under `hermes-gateway.service`, alive ~33 min, holding
