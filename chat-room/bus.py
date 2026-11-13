@@ -215,9 +215,20 @@ def checkpoint(src="manual"):
     """
     try:
         with db() as c:
+            # PASSIVE first: its tuple is the PRE-FOLD state (log = frames sitting
+            # in the WAL at this instant). TRUNCATE's tuple is POST-FOLD state and
+            # on success is always (0,0,0) -- measured 2026-11-13 on scratch in
+            # both sqlite 3.53.1 and the 3.45.1 CLI: 22 frames + TRUNCATE ->
+            # (0,0,0) with room.db mtime moving. So the post tuple can never size
+            # a fold; without this pre-read every successful tick printed zeros.
+            pre_busy, pre_log, pre_folded = c.execute(
+                "PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             busy, log, folded = c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        print("checkpoint: busy=%d log=%d folded=%d src=%s%s"
-              % (busy, log, folded, src,
+        print("checkpoint-pre: busy=%d log=%d folded=%d src=%s%s"
+              % (pre_busy, pre_log, pre_folded, src,
+                 " PINNED" if pre_folded < pre_log else ""), flush=True)
+        print("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s%s"
+              % (busy, log, folded, pre_log - log, src,
                  " PINNED" if busy or folded < log else ""), flush=True)
     except Exception as e:  # noqa: BLE001
         print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
