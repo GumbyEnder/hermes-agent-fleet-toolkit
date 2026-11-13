@@ -77,8 +77,26 @@ _counters = {"sent": 0, "rejected_sig": 0, "rejected_rate": 0, "rejected_size": 
 
 # --- database ------------------------------------------------------------
 
+class _ClosingConnection(sqlite3.Connection):
+    """Connection whose context-manager exit also closes it.
+
+    sqlite3's `with conn:` only commits/rolls back — it never closes — so every
+    `with db() as c:` block leaked one connection (and its -wal fd). Measured
+    2026-11-13 02:25:29: one bus PID held 85 handles on the live room.db inode and
+    61 on room.db-wal, 77 of them opened at 01:46 and never closed. While any of
+    those live, the WAL can never be unlinked, so a "last connection close" is
+    unreachable by construction.
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def db():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(DB_PATH, timeout=10, factory=_ClosingConnection)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
