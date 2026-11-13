@@ -123,7 +123,44 @@ REPO="$HOME/Agents/Projects/hermes-agent-fleet-toolkit"
   journalctl --user -u "$SVC" --since "$SINCE" --no-pager \
     | grep -E 'checkpoint-pre:|checkpoint:|checkpoint failed|janitor failed|backup failed'
   echo "# tee $(stat -c '%s %y' "$CPLOG" 2>/dev/null || echo absent)"
-  echo "# wal $(stat -c '%s %y' "$DBP-wal" 2>/dev/null || echo absent) holders: $(fuser "$DBP-wal" 2>&1 || true)"
+  # --- wal line: size + holders. Never let fuser's own error text land in the holders
+  # field. Measured 2026-11-13T16:15:21: with the sidecar absent, `fuser "$DBP-wal" 2>&1`
+  # put "Specified filename ... does not exist." where the holder list belongs, so the
+  # field was empty-by-ERROR, not empty-by-measurement, and a reader grepping holders for
+  # ": <pid>" tokens would parse a sentence as a holder. The shipped gate only survives
+  # this because it keys on `^# wal [0-9]+`; do not leave the trap for the next reader.
+  # ROOT CAUSE (psmisc 23.7, measured 16:57): fuser writes the FILE NAME to stderr and the
+  # padded PIDs to stdout (' 1598328'), so the old 2>&1 manufactured both the `path: pid`
+  # look in the 15:15 capture and the sentence in the 16:15 one. Stderr is dropped and the
+  # path is re-prefixed explicitly, so holders is deterministically
+  # `<db>-wal: <pid>[ <pid>]` | `none` (measured, no holder) | `n/a` (fuser not run).
+  _pids=""
+  if [ -e "$DBP-wal" ]; then
+    _pids="$(fuser "$DBP-wal" 2>/dev/null | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')"
+    _hold="$_pids"
+    if [ -n "$_hold" ]; then _hold="$DBP-wal: $_hold"; else _hold="none"; fi
+    echo "# wal $(stat -c '%s %y' "$DBP-wal" 2>/dev/null || echo absent) holders: $_hold"
+  else
+    echo "# wal absent holders: n/a (sidecar absent at capture; fuser not run)"
+  fi
+  # --- holder CLASSES, additive on their own line. The `# holders` field carries bare
+  # PIDs and a PID dies with its interpreter: measured 2026-11-13, the 17:15 slot named
+  # 1629524 and 1661351, both GONE (/proc absent) by 18:02 -- so an hour later the
+  # artifact cannot say keeper vs session-kernel vs bus without a live box. Annotate at
+  # capture time, and keep the `# wal ... holders:` shape (already quoted in the ledger)
+  # byte-identical: this is a SECOND line, never an extension of that field.
+  # Unit = DEEPEST .service component of /proc/<pid>/cgroup; every user unit sits under
+  # user@1000.service, so a first-component walk grades them all the same and excludes
+  # nothing.
+  if [ -n "$_pids" ]; then
+    _cls=""
+    for _p in $_pids; do
+      _comm="$(cat "/proc/$_p/comm" 2>/dev/null || echo '?')"
+      _unit="$(awk -F/ '{for(i=NF;i>0;i--) if ($i ~ /\.service$/) {print $i; exit}}' "/proc/$_p/cgroup" 2>/dev/null)"
+      _cls="$_cls ${_p}:${_comm}@${_unit:-gone}"
+    done
+    echo "# holder-class$_cls"
+  fi
   echo "# keeper $(KEEP=$(systemctl --user show -p MainPID --value hermes-agent-chat-wal-keeper.service 2>/dev/null || echo 0); echo "pid=${KEEP:-0}") -- keeper MainPID only (0 = retired); frame supply is a property of ANY live holder at the slot second, named on the # holders line above, not of the keeper"
 } | tee "$OUT"
 

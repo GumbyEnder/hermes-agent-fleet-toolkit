@@ -3,7 +3,7 @@
 23f2d0d7257bd156665be09463db6ab4  test-wal-holder-exclusion.py
 5e223e475405e36d1a13275a1a901744  test-wal-verdict-stall.py
 1e76948ef109380b692a21773ec9c045  wal-checkpoint.sh
-f97c12a7d2016061845ec60916cdc181  witness-split-pair-v2.sh
+81ef687ea9f31903fb630882a9bc4c93  witness-split-pair-v2.sh
 5271966c1a06f1aa591d3f598fefd9d8  wal-keeper.py
 e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
 982a76227209b04166e31f7b9c16de7e  systemd/hermes-agent-chat-walcheck.service
