@@ -75,10 +75,26 @@ _usage_cache = {"mtime": None, "data": None}
 # we do not control. A genuinely different runtime must get a different name
 # added here deliberately, never by accident of a client default.
 SENDER_ALIASES = {"hermes_buzzy": "buzzy"}
+SENDER_MAX = 64          # the bus-wide name bound (topic/name/reads all use 64)
+
+
+def sender_error(raw):
+    """None if `raw` is a usable sender, else the 400 message. One rule for BOTH
+    ingest paths: an absent identity is refused, and an over-length one is refused.
+    Neither is defaulted and neither is truncated -- silently turning 80 chars into
+    64 is the same fork class the alias map exists to stop, only without a map.
+    Measured 2026-11-13 (frodo): /ui/send defaulted a missing `from` to "human"
+    while /send refused it, so one path absorbed an unattributable row."""
+    s = str(raw or "")
+    if not s:
+        return "from required"
+    if len(s) > SENDER_MAX:
+        return "from too long (max %d chars)" % SENDER_MAX
+    return None
 
 
 def canon_sender(raw):
-    s = str(raw or "")[:64]
+    s = str(raw or "")           # NOT truncated; see sender_error() at the call sites
     canon = SENDER_ALIASES.get(s)
     if canon is not None:
         print("sender alias: %r -> %r" % (s, canon), flush=True)
@@ -1175,7 +1191,14 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 self._json({"error": "text required"}, 400)
                 return
-            sender = canon_sender(m.get("from") or "human") or "human"
+            # No silent default: the viewer sends from= on every post (line ~856), so
+            # a token client that omits it is a client with no identity and is refused.
+            sender_err = sender_error(m.get("from"))
+            if sender_err:
+                _counters["rejected_sender"] = _counters.get("rejected_sender", 0) + 1
+                self._json({"error": sender_err}, 400)
+                return
+            sender = canon_sender(m.get("from"))
             topic = str(m.get("topic") or "general")[:64]
             if not rate_ok(sender):
                 _counters["rejected_rate"] += 1
@@ -1234,12 +1257,18 @@ class Handler(BaseHTTPRequestHandler):
         m, err = self._signed_body()
         if err:
             return
-        sender = canon_sender(m.get("from", ""))
+        raw_from = m.get("from", "")
+        sender_err = sender_error(raw_from)
+        sender = canon_sender(raw_from)
         topic = str(m.get("topic", "general"))[:64]
         text = str(m.get("text", ""))[:20000]
         kind = str(m.get("kind", "message"))[:16]
-        if not sender or not text:
-            self._json({"error": "from and text required"}, 400)
+        if not text:
+            self._json({"error": "from and text required" if sender_err else "text required"}, 400)
+            return
+        if sender_err:
+            _counters["rejected_sender"] = _counters.get("rejected_sender", 0) + 1
+            self._json({"error": sender_err}, 400)
             return
         if not rate_ok(sender):
             _counters["rejected_rate"] += 1
