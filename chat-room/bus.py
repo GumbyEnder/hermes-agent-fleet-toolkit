@@ -224,12 +224,35 @@ def checkpoint(src="manual"):
             pre_busy, pre_log, pre_folded = c.execute(
                 "PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             busy, log, folded = c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        # busy=1 with log=-1 is NOT a pin: sqlite could not run the checkpoint at
+        # all (a concurrent WRITER, not a read mark). Measured 2026-11-13
+        # 08:35:47: the janitor's TRUNCATE returned (1,-1,-1) 0.6 s before the
+        # backup thread's returned (0,66,66) moved=66 in the SAME process, so
+        # `busy or folded<log` printed PINNED on a healthy file. Never source
+        # PINNED from busy.
+        #
+        # What this line CANNOT say: the unlink gate. Measured the same second,
+        # the backup arm TRUNCATEd 1,182,472 -> 0 under an idle reader and the
+        # sidecar was still not removed -- because removal needs the LAST close,
+        # which is decided outside this process by whichever connection closes
+        # last. So folded==log/busy==0 is the production shape of a live unlink
+        # pin and it is indistinguishable from healthy here. Only the absence of
+        # a DELETE room.db-wal record can see it (wal-unlink-watch verdict.py).
+        # Tokens: BUSY = could not run; PINNED = ran and left frames un-folded
+        # (the only shape that risks a row).
+        def _tag(busy, log, folded):
+            if busy and log < 0:
+                return " BUSY"
+            if folded < log:
+                return " PINNED"
+            return ""
+
         print("checkpoint-pre: busy=%d log=%d folded=%d src=%s%s"
               % (pre_busy, pre_log, pre_folded, src,
-                 " PINNED" if pre_folded < pre_log else ""), flush=True)
+                 _tag(pre_busy, pre_log, pre_folded)), flush=True)
         print("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s%s"
               % (busy, log, folded, pre_log - log, src,
-                 " PINNED" if busy or folded < log else ""), flush=True)
+                 _tag(busy, log, folded)), flush=True)
     except Exception as e:  # noqa: BLE001
         print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
 
