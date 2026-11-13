@@ -115,6 +115,10 @@ def bus(**over):
     tmp = tempfile.mkdtemp(prefix="fleet-test-")
     port = free_port()
     over.setdefault("AGENT_CHAT_DB", os.path.join(tmp, "room.db"))
+    # The production bus tees checkpoint lines into ~/agents/agent-chat; a test run
+    # must never add lines there -- they would be graded as real TRUNCATE evidence by
+    # wal-unlink-watch-verdict.py (measured: one suite run wrote 6 such lines).
+    over.setdefault("AGENT_CHAT_BUS_CHECKPOINT_LOG", os.path.join(tmp, "bus-checkpoint.log"))
     env = base_env(AGENT_CHAT_PORT=str(port), AGENT_CHAT_BACKUP="",
                    AGENT_CHAT_JANITOR_INTERVAL="3600", **over)
     with Service(str(ROOT / "chat-room/bus.py"), env, f"http://127.0.0.1:{port}/health") as svc:

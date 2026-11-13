@@ -263,10 +263,20 @@ def checkpoint(src="manual"):
             # timestamped copy the unlink watcher can read without journal access.
             # The timestamp is what dates "a TRUNCATE ran" to an instant; journal
             # adds its own prefix but nothing on disk carries one.
+            #
+            # The file copy also carries db=<path> and stdout does NOT. Measured
+            # 2026-11-13 09:47:55 and 09:57:43-09:58:01: a test/rehearsal that
+            # pointed AGENT_CHAT_DB at a scratch file but not
+            # AGENT_CHAT_BUS_CHECKPOINT_LOG wrote 14 plausible-looking
+            # "src=shutdown ... 0|0|0" lines into the production file, and nothing
+            # in them said which database they were about -- a reader would grade
+            # a scratch fold as a production TRUNCATE. Any consumer must key on
+            # db= and may never assume "a line in this file is this database".
             print(line, flush=True)
             try:
                 with open(BUS_CHECKPOINT_LOG, "a") as f:
-                    f.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), line))
+                    f.write("%s db=%s %s\n"
+                            % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), DB_PATH, line))
             except OSError:
                 pass                    # a full/unwritable home must not break a checkpoint
 
@@ -280,8 +290,8 @@ def checkpoint(src="manual"):
         print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
         try:
             with open(BUS_CHECKPOINT_LOG, "a") as f:
-                f.write("%s checkpoint failed: src=%s err=%s\n"
-                        % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), src, e))
+                f.write("%s db=%s checkpoint failed: src=%s err=%s\n"
+                        % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), DB_PATH, src, e))
         except OSError:
             pass
 
