@@ -156,9 +156,28 @@ def migrate():
 
 
 def checkpoint():
+    """TRUNCATE the WAL and REPORT the outcome.
+
+    A blocked checkpoint is NOT an exception: PRAGMA wal_checkpoint returns
+    (busy, log, checkpointed) and exits 0 whether it folded everything or
+    nothing, so the previous form -- discard the tuple, log only exceptions --
+    printed nothing in either case. That made the bus's one teardown path
+    un-instrumented: measured 2026-11-13 03:42:17-04:04:12, a foreign handle
+    (an execute_code kernel) held room.db so no request close was ever the last
+    close, the sidecar went 115,392 -> 181,312 -> 259,592 B and the bus logged
+    zero lines. Reproduced on scratch with this tuple: an idle holder still
+    lets TRUNCATE succeed (0|N|N -> 0 B file, never unlinked), while a holder
+    inside a read transaction returns busy=1 with checkpointed < log and leaves
+    those frames un-folded -- the only shape that risks a row. Print every call
+    so "silence" can never again be read as success; the 2-min PASSIVE probe in
+    wal-checkpoint.sh already speaks this same busy|log|checkpointed tuple.
+    """
     try:
         with db() as c:
-            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            busy, log, folded = c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        print("checkpoint: busy=%d log=%d folded=%d%s"
+              % (busy, log, folded,
+                 " PINNED" if busy or folded < log else ""), flush=True)
     except Exception as e:  # noqa: BLE001
         print("checkpoint failed:", e, flush=True)
 
