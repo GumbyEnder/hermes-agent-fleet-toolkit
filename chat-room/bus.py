@@ -162,10 +162,14 @@ def checkpoint():
     (busy, log, checkpointed) and exits 0 whether it folded everything or
     nothing, so the previous form -- discard the tuple, log only exceptions --
     printed nothing in either case. That made the bus's one teardown path
-    un-instrumented: measured 2026-11-13 03:42:17-04:04:12, a foreign handle
-    (an execute_code kernel) held room.db so no request close was ever the last
-    close, the sidecar went 115,392 -> 181,312 -> 259,592 B and the bus logged
-    zero lines. Reproduced on scratch with this tuple: an idle holder still
+    un-instrumented: measured 2026-11-13 03:42:17.985-04:03:10.751 (1,252.77 s,
+    the DELETE-to-DELETE gap in wal-unlink-watch.log), a connection that stayed
+    open across the whole window held room.db so no request close was ever the
+    last close -- a single-instant fuser read at 03:55:40 named pid 2162568
+    (hermes_kernel_runner.py, started 03:38:22), but that process is gone and the
+    attribution has one observer, so treat it as a lead, not a fact -- the sidecar
+    went 115,392 -> 181,312 -> 259,592 B and the bus logged zero lines.
+    Reproduced on scratch with this tuple: an idle holder still
     lets TRUNCATE succeed (0|N|N -> 0 B file, never unlinked), while a holder
     inside a read transaction returns busy=1 with checkpointed < log and leaves
     those frames un-folded -- the only shape that risks a row. Print every call
