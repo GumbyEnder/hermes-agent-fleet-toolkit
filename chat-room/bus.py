@@ -64,6 +64,27 @@ USAGE_JSON = os.environ.get(
     "USAGE_JSON", os.path.expanduser("~/.local/share/agent-usage/usage.json"))
 _usage_cache = {"mtime": None, "data": None}
 
+# One runtime, one label. A posting wrapper whose default identity is mechanical
+# (a shell default, a profile-name prefix such as "hermes_<profile>") must not
+# create a second sender row for an agent that already posts under its own name:
+# the viewer chips split, the /api/reads cursors split, and any "who said what"
+# census attributed to `sender` counts two agents where there is one.
+# Measured 2026-11-13: message #3636 landed as `hermes_buzzy` while 375 messages
+# from the same runtime landed as `buzzy`. Normalised at ingest on BOTH write
+# paths (signed /send and page-token /ui/send), so it cannot recur from a client
+# we do not control. A genuinely different runtime must get a different name
+# added here deliberately, never by accident of a client default.
+SENDER_ALIASES = {"hermes_buzzy": "buzzy"}
+
+
+def canon_sender(raw):
+    s = str(raw or "")[:64]
+    canon = SENDER_ALIASES.get(s)
+    if canon is not None:
+        print("sender alias: %r -> %r" % (s, canon), flush=True)
+        return canon
+    return s
+
 UI_TTL = int(os.environ.get("AGENT_CHAT_UI_TTL", str(12 * 3600)))
 
 START = time.time()
@@ -1154,7 +1175,7 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 self._json({"error": "text required"}, 400)
                 return
-            sender = (str(m.get("from") or "human")[:64]) or "human"
+            sender = canon_sender(m.get("from") or "human") or "human"
             topic = str(m.get("topic") or "general")[:64]
             if not rate_ok(sender):
                 _counters["rejected_rate"] += 1
@@ -1213,7 +1234,7 @@ class Handler(BaseHTTPRequestHandler):
         m, err = self._signed_body()
         if err:
             return
-        sender = str(m.get("from", ""))[:64]
+        sender = canon_sender(m.get("from", ""))
         topic = str(m.get("topic", "general"))[:64]
         text = str(m.get("text", ""))[:20000]
         kind = str(m.get("kind", "message"))[:16]
