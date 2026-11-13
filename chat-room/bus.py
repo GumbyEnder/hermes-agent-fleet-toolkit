@@ -59,6 +59,11 @@ TELEMETRY_TOPICS = {t.strip() for t in
                     if t.strip()}
 TELEMETRY_DAYS = float(os.environ.get("AGENT_CHAT_TELEMETRY_DAYS", "7"))
 JANITOR_INTERVAL = int(os.environ.get("AGENT_CHAT_JANITOR_INTERVAL", "3600"))
+# Where checkpoint() tees its lines. stdout stays the journal; this file exists so
+# the unlink watcher can see the one thing only this process witnesses: that a
+# TRUNCATE actually ran. Read-only consumer: wal-unlink-watch-verdict.py.
+BUS_CHECKPOINT_LOG = os.environ.get("AGENT_CHAT_BUS_CHECKPOINT_LOG") or os.path.expanduser(
+    "~/agents/agent-chat/bus-checkpoint.log")
 HUMAN_NAME = os.environ.get("AGENT_CHAT_HUMAN_NAME", "you")
 USAGE_JSON = os.environ.get(
     "USAGE_JSON", os.path.expanduser("~/.local/share/agent-usage/usage.json"))
@@ -253,14 +258,32 @@ def checkpoint(src="manual"):
                 return " PINNED"
             return ""
 
-        print("checkpoint-pre: busy=%d log=%d folded=%d src=%s%s"
+        def _emit(line):
+            # stdout unchanged byte-for-byte (journal consumers stay put), plus a
+            # timestamped copy the unlink watcher can read without journal access.
+            # The timestamp is what dates "a TRUNCATE ran" to an instant; journal
+            # adds its own prefix but nothing on disk carries one.
+            print(line, flush=True)
+            try:
+                with open(BUS_CHECKPOINT_LOG, "a") as f:
+                    f.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), line))
+            except OSError:
+                pass                    # a full/unwritable home must not break a checkpoint
+
+        _emit("checkpoint-pre: busy=%d log=%d folded=%d src=%s%s"
               % (pre_busy, pre_log, pre_folded, src,
-                 _tag(pre_busy, pre_log, pre_folded)), flush=True)
-        print("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s%s"
+                 _tag(pre_busy, pre_log, pre_folded)))
+        _emit("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s%s"
               % (busy, log, folded, pre_log - log, src,
-                 _tag(busy, log, folded, post=True)), flush=True)
+                 _tag(busy, log, folded, post=True)))
     except Exception as e:  # noqa: BLE001
         print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
+        try:
+            with open(BUS_CHECKPOINT_LOG, "a") as f:
+                f.write("%s checkpoint failed: src=%s err=%s\n"
+                        % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), src, e))
+        except OSError:
+            pass
 
 
 def backup():
