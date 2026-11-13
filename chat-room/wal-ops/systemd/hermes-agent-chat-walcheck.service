@@ -1,0 +1,10 @@
+[Unit]
+# CAUSE UNKNOWN (2026-11-13): "outside PrivateTmp" was the retracted theory — the option has been
+# off since 2026-11-12 21:35:31 and the `disk I/O error` class continued (410 lines on 11-12,
+# 76 on 11-13). This timer is a MITIGATION, not a fix. Reproduced mechanism: a `-wal` unlinked
+# while it still holds frames (bus.py:82). Watch: /mnt/nas/host-ops/agent-chat/wal-unlink-watch.log
+Description=Fold the agent chat room WAL into room.db (mitigation; cause unknown)
+
+[Service]
+Type=oneshot
+ExecStart=%h/agents/agent-chat/wal-checkpoint.sh

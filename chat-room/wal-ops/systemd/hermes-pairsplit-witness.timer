@@ -1,0 +1,11 @@
+[Unit]
+Description=Recurring split-pair witness tick (every 5 min; defers to the next slot)
+
+[Timer]
+OnCalendar=*-*-* *:0/5:00
+AccuracySec=1s
+Persistent=false
+Unit=hermes-pairsplit-witness.service
+
+[Install]
+WantedBy=timers.target

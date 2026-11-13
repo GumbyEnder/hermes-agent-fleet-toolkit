@@ -1,0 +1,17 @@
+[Unit]
+Description=Chat-room WAL sidecar unlink watcher with deferred fold verdict (read-only probe, own log)
+Documentation=file:/mnt/nas/host-ops/agent-chat/wal-unlink-watch-verdict.py
+After=hermes-agent-chat-bus.service
+# ADDITIVE to hermes-wal-unlink-watch.service on purpose: that unit's line format is the
+# evidence stream two agents parse, so it is left untouched and this one writes its own log
+# with the VERDICT line. Do not replace the older unit with this one mid-investigation.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /mnt/nas/host-ops/agent-chat/wal-unlink-watch-verdict.py --dir /home/gumbyender/agents/agent-chat --log /mnt/nas/host-ops/agent-chat/wal-unlink-verdict.log
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,19 @@
+[Unit]
+# Keeps the room.db -wal sidecar alive so hourly checkpoint pairs have frames to
+# contend over. Without it the bus's per-request connections hit "last close" and
+# SQLite deletes the sidecar, so every hourly slot folds a zero-frame database and
+# busy=0 is guaranteed on any build (measured 11:15:19 slot, #3792).
+# NOT a fix for the -wal unlink class -- see wal-unlink-watch / verdict.py.
+Description=Hold one idle connection on agent-chat room.db (WAL sidecar keeper)
+After=hermes-agent-chat-bus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /mnt/nas/host-ops/agent-chat/wal-keeper.py /home/gumbyender/agents/agent-chat/room.db --interval 60
+Restart=always
+RestartSec=5
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

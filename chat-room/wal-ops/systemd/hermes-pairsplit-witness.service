@@ -1,0 +1,20 @@
+[Unit]
+Description=split-pair witness v2 (hourly BUSY/PINNED collision; slot recomputed from ExecMainStartTimestamp each tick)
+After=hermes-agent-chat-bus.service
+# Recurring, not transient: the 11:15 and 12:15 witnesses were one-shot transient timers
+# that evaporated after firing (RemainAfterElapse=no), so "armed" was a fact with a
+# half-life of one slot. This tick re-derives the slot every period; a bus restart moves
+# the phase and the next tick follows it. WMAXWAIT must stay below the timer period, or
+# two ticks can both sleep into the same slot.
+# KEEPER WANTS REMOVED 2026-11-13: every timer tick re-armed the keeper, so stop/disable
+# could not hold. Measured five ticks 13:36-13:50: stop -> started again at the next :05.
+# A measurement window must start the keeper explicitly (systemd-run --user).
+
+
+[Service]
+Type=oneshot
+Environment=WMAXWAIT=290
+# flock: one capturing tick at a time even if a timer tick overlaps a long sleep.
+ExecStart=/usr/bin/bash -c 'exec 9>"%h/agents/agent-chat/.pairsplit-witness.lock"; flock -n 9 || { echo "# locked: another witness tick holds the slot"; exit 0; }; exec /usr/bin/bash /mnt/nas/host-ops/agent-chat/witness-split-pair-v2.sh'
+Nice=10
+IOSchedulingClass=idle

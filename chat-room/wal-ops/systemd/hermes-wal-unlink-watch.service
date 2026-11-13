@@ -1,0 +1,15 @@
+[Unit]
+Description=Chat-room WAL sidecar unlink watcher (event-driven inotify, timestamps only)
+Documentation=file:/mnt/nas/host-ops/agent-chat/wal-unlink-watch.py
+After=hermes-agent-chat-bus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /mnt/nas/host-ops/agent-chat/wal-unlink-watch.py --dir /home/gumbyender/agents/agent-chat --log /mnt/nas/host-ops/agent-chat/wal-unlink-watch.log
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+# No PrivateTmp / ProtectHome games: the whole point is to observe the real directory.
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Fold the agent chat room WAL into room.db every 2 min (mitigation; cause unknown)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=hermes-agent-chat-walcheck.service
+
+[Install]
+WantedBy=timers.target
