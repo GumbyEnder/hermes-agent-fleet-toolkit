@@ -155,7 +155,7 @@ def migrate():
         c.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 
-def checkpoint():
+def checkpoint(src="manual"):
     """TRUNCATE the WAL and REPORT the outcome.
 
     A blocked checkpoint is NOT an exception: PRAGMA wal_checkpoint returns
@@ -179,11 +179,11 @@ def checkpoint():
     try:
         with db() as c:
             busy, log, folded = c.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        print("checkpoint: busy=%d log=%d folded=%d%s"
-              % (busy, log, folded,
+        print("checkpoint: busy=%d log=%d folded=%d src=%s%s"
+              % (busy, log, folded, src,
                  " PINNED" if busy or folded < log else ""), flush=True)
     except Exception as e:  # noqa: BLE001
-        print("checkpoint failed:", e, flush=True)
+        print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
 
 
 def backup():
@@ -201,7 +201,7 @@ def backup():
 def backup_loop():
     while True:
         time.sleep(BACKUP_INTERVAL)
-        checkpoint()
+        checkpoint("backup")
         backup()
 
 
@@ -219,7 +219,7 @@ def janitor_loop():
                     f"DELETE FROM messages WHERE topic IN ({marks}) AND ts < ?",
                     (*sorted(TELEMETRY_TOPICS), cutoff))
                 _counters["purged"] += cur.rowcount or 0
-            checkpoint()
+            checkpoint("janitor")
         except Exception as e:  # noqa: BLE001
             print("janitor failed:", e, flush=True)
 
@@ -1308,7 +1308,7 @@ def main():
         print("agent-chat bus stopping: checkpoint + backup", flush=True)
         for srv in servers:
             srv.shutdown()
-        checkpoint()
+        checkpoint("shutdown")
         backup()
 
 
