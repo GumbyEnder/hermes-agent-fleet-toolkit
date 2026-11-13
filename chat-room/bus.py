@@ -251,10 +251,16 @@ def checkpoint(src="manual"):
         # printed pre 0|1568|0 PINNED and post 1|1568|0 -- the pre-line alone
         # carries it. A held write transaction printed post 1|0|0, untagged and
         # correct: log=0 means no frames are at risk.
-        def _tag(busy, log, folded, post=False):
+        # BUSY stays on both lines: it is a per-call outcome, and the TRUNCATE can
+        # fail on its own after a PASSIVE that ran. PINNED is suppressed on the post
+        # line only when the PRE line already printed it -- suppressing it
+        # unconditionally lost a pin that the pre tuple did not see (scripted
+        # 2026-11-13: pre 0|66|66 clean, post 1|66|20, no token on either line).
+        pre_pinned = pre_folded < pre_log
+        def _tag(busy, log, folded, pre_pinned=False):
             if busy and log < 0:
                 return " BUSY"
-            if not post and folded < log:
+            if folded < log and not pre_pinned:
                 return " PINNED"
             return ""
 
@@ -285,7 +291,7 @@ def checkpoint(src="manual"):
                  _tag(pre_busy, pre_log, pre_folded)))
         _emit("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s%s"
               % (busy, log, folded, pre_log - log, src,
-                 _tag(busy, log, folded, post=True)))
+                 _tag(busy, log, folded, pre_pinned)))
     except Exception as e:  # noqa: BLE001
         print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
         try:
