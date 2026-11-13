@@ -82,6 +82,21 @@ def make_case(name, exclude_flag=None, hermes_home=False, exclude_own_pid=False,
         f.write("%s DELETE      room.db-wal                  gone last_size=%d\n" % (old, size))
     held = p.pid if not (exclude_flag or own_unit) else int(
         sh("systemctl --user show -p MainPID --value %s" % unit).stdout.strip() or 0)
+    # Evidence, not convention: read the graded inputs of the live holder while
+    # it still exists. _class_of() keys on /proc/<pid>/environ and
+    # /proc/<pid>/cmdline (b"HERMES_HOME=" presence; "hermes-agent" and
+    # "/.hermes/" in argv). Its cwd is never read (grep: no /proc/*/cwd in
+    # wal-unlink-watch-verdict.py), so a *.hermes* PATH only matters when it
+    # reaches argv -- which is exactly what a future absolute-argv fixture would
+    # do, silently turning the class=other case into session-kernel. Capture the
+    # bytes and assert on them (frodo's candidate, 2026-11-13).
+    probe = {"env": b"", "cl": b""}
+    if held:
+        for k, path in (("env", "/proc/%d/environ" % held), ("cl", "/proc/%d/cmdline" % held)):
+            try:
+                probe[k] = open(path, "rb").read()
+            except OSError:
+                probe[k] = b"<unreadable>"
     cmd = ("python3 %s --dir %s --log %s/watch.log --bus-log %s/bus.log "
            "--stall-seconds 5 --seconds 12 --db-name room.db" % (WATCHER, d, d, d))
     if exclude_flag:
@@ -94,7 +109,7 @@ def make_case(name, exclude_flag=None, hermes_home=False, exclude_own_pid=False,
     sh("pkill -f 'holder.py %s/room.db'" % d)
     sh("systemctl --user stop %s; systemctl --user reset-failed %s" % (unit, unit))
     return {"name": name, "unit": unit, "pid": held, "frames": frames, "lines": lines,
-            "rc": run.returncode, "err": run.stderr[-400:]}
+            "rc": run.returncode, "err": run.stderr[-400:], "probe": probe}
 
 
 cases = [
@@ -164,6 +179,19 @@ elif ee["lines"]:
     checks.append(("E not misgraded session-kernel", ("%d:session-kernel" % ee["pid"]) not in l))
     checks.append(("E holders names the pid", ("holders=%d:" % ee["pid"]) in l))
     checks.append(("E excluded=none (nothing removed)", "excluded=none" in l))
+    # The three below make the class=other result EARNED rather than inherited.
+    # Without them the only thing keeping this fixture out of session-kernel is
+    # `env -u` and relative argv -- a convention in a comment (trap at
+    # _class_of(), wal-unlink-watch-verdict.py:137). Both are byte tests on the
+    # live holder here, so a fixture that drifts to `-E HERMES_HOME=` or to an
+    # absolute .../.hermes/ argv fails loudly instead of grading a different class.
+    pr = ee.get("probe") or {}
+    p_env, p_cl = pr.get("env", b""), pr.get("cl", b"")
+    checks.append(("E probe readable (env+argv)",
+                   p_env not in (b"", b"<unreadable>") and p_cl not in (b"", b"<unreadable>")))
+    checks.append(("E env has no HERMES_HOME token", b"HERMES_HOME=" not in p_env))
+    checks.append(("E argv has no /.hermes/ or hermes-agent",
+                   b"/.hermes/" not in p_cl and b"hermes-agent" not in p_cl))
 else:
     checks.append(("E produced a WAL line", False))
 print()
