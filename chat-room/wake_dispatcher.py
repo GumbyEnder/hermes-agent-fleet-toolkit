@@ -21,6 +21,9 @@ Env:
   WAKE_MAX_QUEUE         queued mentions allowed before 429 (default 20)
   WAKE_TIMEOUT           seconds per turn (default 900)
   WAKE_DEDUPE_TTL        seconds to remember a delivered mention (default 600)
+  WAKE_TEXT_MAX          last-resort cap on the mention body (default 100000);
+                         only reached when the re-fetch fails, and a cut is
+                         always marked in the prompt
 """
 import hashlib
 import hmac as hm
@@ -44,6 +47,8 @@ ALLOW = {p.strip() for p in os.environ.get("WAKE_ALLOW", "").split(",") if p.str
 MAX_CONC = max(1, int(os.environ.get("WAKE_MAX_CONCURRENCY", "2")))
 MAX_QUEUE = max(1, int(os.environ.get("WAKE_MAX_QUEUE", "20")))
 TIMEOUT = int(os.environ.get("WAKE_TIMEOUT", "900"))
+TEXT_MAX = int(os.environ.get("WAKE_TEXT_MAX", "100000"))
+BUS_URL = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090").rstrip("/")
 
 
 def _parse_overrides(raw):
@@ -129,11 +134,58 @@ def _post_reply(profile, topic, reply, parent_id=None):
         return 0
 
 
+def _row_text(message_id):
+    """Full stored text for a message id, straight from the bus; None if unavailable.
+
+    Reads are unsigned on this bus, so no secret is needed here. The row, not the
+    push payload, is the authority: a payload that crosses a hop with a length
+    bound arrives as a prefix, and a silently clipped post reads exactly like a
+    short one (see _mention_text).
+    """
+    if not isinstance(message_id, int) or message_id <= 0:
+        return None
+    url = f"{BUS_URL}/api/messages?since={message_id - 1}&limit=5"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            rows = json.loads(r.read() or b"[]")
+    except Exception as e:  # noqa: BLE001
+        log(evt="text_refetch_failed", message_id=message_id, error=str(e)[:200])
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") == message_id:
+            text = row.get("text")
+            return text if isinstance(text, str) and text else None
+    return None
+
+
+def _mention_text(payload):
+    """Return (text, source) for the mentioning post.
+
+    The old shape was `str(payload.get("text", ""))[:4000]`, which cut every long
+    post at 4,000 chars with no marker: the prompt ended mid-sentence and the
+    turn could neither see the missing clause nor tell it was missing. Re-fetch
+    the row by id (unbounded), and if that fails, cap at TEXT_MAX *visibly*.
+    """
+    mid = payload.get("message_id")
+    fetched = _row_text(mid)
+    if fetched is not None:
+        return fetched, "refetch"
+    text = str(payload.get("text", ""))
+    if len(text) > TEXT_MAX:
+        text = (text[:TEXT_MAX]
+                + f"\n\n[wake: body cut at {TEXT_MAX} of {len(text)} chars — message_id {mid}, "
+                  f"read the full row before answering]")
+        return text, "payload-cut"
+    return text, "payload"
+
+
 def _run_one(profile, payload):
     global _done, _failed
     started = time.time()
     message_id = payload.get("message_id") or 0
-    text = str(payload.get("text", ""))[:4000]
+    text, text_src = _mention_text(payload)
     prompt = (f"[Agent Chat Room — you were @mentioned by {payload.get('from')} "
               f"in topic '{payload.get('topic')}']\n\n{text}")
     budget = timeout_for(profile)
@@ -156,6 +208,7 @@ def _run_one(profile, payload):
             _done += 1
     log(evt="wake", profile=profile, message_id=message_id, rc=rc,
         dur_s=round(time.time() - started, 1), budget_s=budget,
+        prompt_chars=len(text), text_src=text_src,
         reply_chars=len(reply), posted_id=posted, error=(err[:200] or None))
 
 
