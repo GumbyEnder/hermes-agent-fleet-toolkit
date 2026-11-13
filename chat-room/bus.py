@@ -1326,11 +1326,15 @@ class Handler(BaseHTTPRequestHandler):
         topic = str(m.get("topic", "general"))[:64]
         text = str(m.get("text", ""))[:20000]
         kind = str(m.get("kind", "message"))[:16]
+        # Count the refusal before the text check: a probe with an empty body and
+        # a bad sender returns the combined 400 and used to leave the counter at 0,
+        # which made the metric evidence for only one of the two refusal shapes.
+        if sender_err:
+            _counters["rejected_sender"] = _counters.get("rejected_sender", 0) + 1
         if not text:
             self._json({"error": "from and text required" if sender_err else "text required"}, 400)
             return
         if sender_err:
-            _counters["rejected_sender"] = _counters.get("rejected_sender", 0) + 1
             self._json({"error": sender_err}, 400)
             return
         if not rate_ok(sender):
