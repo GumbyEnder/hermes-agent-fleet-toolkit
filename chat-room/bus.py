@@ -421,6 +421,15 @@ def backup(src="backup", slot=None):
     also writes `room.db.bak.<slot>` / `room.db-wal.bak.<slot>`, which nothing
     else writes, and records its name as `path`. The rolling name is kept as a
     restore-compat alias, but no verdict may cite it: cite `path`.
+
+    THE PER-SLOT WRITE IS TRUNCATE-THEN-STREAM, NOT ATOMIC. The name is opened
+    `wb` and the chunks are written through it, so a kill mid-copy leaves a SHORT
+    per-slot artifact under a name nothing rewrites -- a torn file that looks like
+    a complete one to any reader who trusts its presence. That is harmless today
+    for exactly one reason: the manifest row is appended AFTER both copies, so no
+    row ever attests bytes that were not all written. Moving that append earlier
+    (to record an intent, or to survive a kill) would make the row attest a torn
+    artifact -- do not, or write to `path + ".part"` and rename after fsync.
     """
     if not BACKUP_DIR:
         return None

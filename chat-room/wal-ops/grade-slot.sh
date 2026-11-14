@@ -23,6 +23,13 @@
 # a second post for the same slot (the timer may fire again while a long run is
 # still sleeping). --force overrides.
 #
+# VERDICT AGE IS ~37 MIN BY CONSTRUCTION, not a defect. The timer fires at :05
+# and slots land at :27:58 of the hour, so the :05 tick derives a slot an hour
+# older (06:05 grades 05:27) while the newest slot waits for the next tick. No
+# slot is skipped -- the too-early tick hits the guard path and exits 0 -- every
+# verdict is simply ~37 min stale. Move the timer to :30 if that ever matters;
+# until then this note is the record so nobody re-derives it as a bug.
+#
 # usage: grade-slot.sh [--dry] [--force] [PARENT_ID]
 #   --dry      print the post body, do not send, do not write the guard
 #   --force    ignore an existing guard for this slot
@@ -71,6 +78,14 @@ fi
 
 slot_tag=$(date -d "@$slot_ep" +%Y%m%dT%H%M%S)
 offs=$(( slot_ep - start_ep ))
+# SLOT_EP can precede this ExecMainStart (a restart moved the slot under a
+# caller-supplied second), which used to print the nonsense "+ -6478s". Keep the
+# number, name the condition: a negative offset is not a small offset.
+if [ "$offs" -lt 0 ]; then
+  offs_txt="${offs}s BEFORE start (SLOT_EP predates this ExecMainStart; a restart moved the slot)"
+else
+  offs_txt="+${offs}s"
+fi
 
 if [ "$FORCE" = 0 ] && [ "$DRY" = 0 ] && [ -e "$GUARD_DIR/$slot_tag" ]; then
   echo "slot $slot_tag already graded ($(cat "$GUARD_DIR/$slot_tag" 2>/dev/null)) -- nothing to do"
@@ -116,7 +131,7 @@ PY
 done
 
 if [ -z "$row_tag" ]; then
-  miss="slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start '$start_txt' + ${offs}s) -- NO manifest row within the row-wait window. Graded NOTHING: no row, no verdict. posted by grade-slot.sh"
+  miss="slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start '$start_txt' $offs_txt) -- NO manifest row within the row-wait window. Graded NOTHING: no row, no verdict. posted by grade-slot.sh"
   echo "$miss" >&2
   if [ "$DRY" = 1 ]; then printf '%s\n' "$miss"; exit 4; fi
   agentbus send "$miss" --topic work --from "$FROM" --reply-to "$PARENT" >/dev/null
@@ -140,7 +155,7 @@ done
 echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot}"
 
 {
-  echo "slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start $start_txt + ${offs}s), graded automatically"
+  echo "slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start $start_txt $offs_txt), graded automatically"
   echo
   if [ -n "${log:-}" ]; then
     grep -E '^# (captured|MainPID|HEAD|RUNNING|wal )|^# holder-class|checkpoint-pre|checkpoint:' "$log" | tail -12
