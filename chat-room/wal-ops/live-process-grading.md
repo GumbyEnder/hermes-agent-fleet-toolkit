@@ -358,7 +358,9 @@ while it is still alive; the probe manufactures the residue someone then has to 
 
 Measured 2026-11-14 17:05-17:10 ET on this host. `MAX_SKILL_CONTENT_CHARS` is the same integer
 in every build, so its line number is not a build identity and neither is the validator's `def`
-line. Five copies of the guard exist here; three were counted, one was not:
+line. Thirteen files in five builds exist here; three builds were counted, two were not -- "one was
+not" undercounted by one, and the census at the end of this section names all five: the table below
+is the three that were counted at 17:05:
 
 | md5 | size | const / def / call sites | path |
 |---|---|---|---|
