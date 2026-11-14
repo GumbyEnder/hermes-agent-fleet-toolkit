@@ -110,6 +110,16 @@ UI_TTL = int(os.environ.get("AGENT_CHAT_UI_TTL", str(12 * 3600)))
 
 START = time.time()
 _lock = threading.Lock()
+# One slot at a time: {checkpoint + copy} and {purge + checkpoint} are each a
+# single ordered unit, and the two daemon arms must not interleave inside one.
+# Measured 2026-11-13 19:27:50 vs 20:27:50 vs 21:27:50, same pid 2056350: the
+# first src= token was backup, then janitor, then janitor, so the order is
+# scheduler-dependent, not an invariant. At 21:27:50 the janitor's checkpoint
+# truncated the sidecar 189,552 B -> 0 B at .367198 and the backup arm copied
+# the 0 at .564974, printing `wal=copy:0` -- a state that reads like a fix and
+# is really two threads racing inside one slot. Neither arm may fix this by
+# assuming an order; they have to hold this lock across both steps.
+_slot_lock = threading.Lock()
 _buckets = {}                 # sender -> (tokens, last_ts)
 _active_polls = 0
 _fts = False                  # FTS5 available?
@@ -333,37 +343,78 @@ def checkpoint(src="manual"):
 
 
 def backup():
+    """Copy the pair and PUBLISH what was copied, per file, with a hash.
+
+    The decision is the evidence, so record it. `if os.path.exists(f)` is the
+    whole discriminator between "copied a quiet file" (stamp frozen, content
+    fresh) and "copied nothing at all" (stamp AND content from the previous
+    generation) -- two states indistinguishable from the .bak stamp alone,
+    because copy2 preserves the SOURCE mtime either way.
+
+    What the old line could NOT say, and what this one must: `wal=skip:absent`
+    and `wal=copy:0` are both possible outcomes and both look identical to a
+    reader who only has the artifact, so a skip got read as an hour of cost off
+    a timestamp gap (+7,951 s on 2026-11-13 19:46, refuted by the 20:27 and
+    21:27 slots that re-synced the pair). The manifest below is per-slot and
+    append-only: bytes AND sha256 of what landed, so identity is
+    birth+mtime+size+hash and never inode (a CIFS synthetic inode shifts
+    between mount windows on this host -- measured 2026-11-13 21:38,
+    room.db.bak ino 731973006, btime 2026-11-05 03:09:31.768, mtime moved).
+    A 0-byte sidecar is a LEGITIMATE state after a TRUNCATE fold; the manifest
+    is what keeps it from being read as a silent one.
+    """
     if not BACKUP_DIR:
-        return
+        return None
+    slot = time.strftime("%Y%m%dT%H%M%S%z")
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
-        # The decision is the evidence, so record it. `if os.path.exists(f)` is the
-        # whole discriminator between "copied a quiet file" (stamp frozen, content
-        # fresh) and "copied nothing at all" (stamp AND content from the previous
-        # generation) -- two states that are indistinguishable from the .bak stamp
-        # alone, because copy2 preserves the SOURCE mtime either way. Measured
-        # 2026-11-13 18:15:20: dir listing showed db.bak advancing to 18:15:21.431
-        # while the wal slot stayed frozen at 17:15:20.241, a +3,601.189 s gap whose
-        # only honest reading is the skip named here.
         states = []
+        rec = {"slot": slot, "src": "backup", "pid": os.getpid(), "db": DB_PATH,
+               "files": {}}
         for f in (DB_PATH, DB_PATH + "-wal"):
+            base = os.path.basename(f) + ".bak"
+            dst = os.path.join(BACKUP_DIR, base)
             if os.path.exists(f):
                 n = os.path.getsize(f)
-                shutil.copy2(f, os.path.join(BACKUP_DIR, os.path.basename(f) + ".bak"))
+                shutil.copy2(f, dst)
+                st = os.stat(dst)
+                h = hashlib.sha256()
+                with open(dst, "rb") as rh:
+                    for chunk in iter(lambda: rh.read(1 << 20), b""):
+                        h.update(chunk)
                 states.append("copy:%d" % n)
+                rec["files"][base] = {"bytes": st.st_size,
+                                      "sha256": h.hexdigest(),
+                                      "mtime_ns": st.st_mtime_ns}
             else:
                 states.append("skip:absent")
+                rec["files"][base] = {"bytes": None, "state": "absent"}
         _log_line("backup: main=%s wal=%s src=backup" % (states[0], states[1]))
+        rec["main"], rec["wal"] = states[0], states[1]
+        with open(os.path.join(BACKUP_DIR, "room.db.bak.manifest.jsonl"), "a") as mf:
+            mf.write(json.dumps(rec, sort_keys=True) + "\n")
+        return rec
     except Exception as e:  # noqa: BLE001
         print("backup failed:", e, flush=True)
         _log_line("backup failed: err=%s src=backup" % e)
+        return None
+
+
+def _slot(src):
+    """Run one slot atomically: the checkpoint that measures it and, for the
+    backup arm, the copy that consumes it. Anything that reads the sidecar
+    outside this lock can observe a fold it did not cause and cannot name."""
+    with _slot_lock:
+        checkpoint(src)
+        if src == "backup":
+            return backup()
+    return None
 
 
 def backup_loop():
     while True:
         time.sleep(BACKUP_INTERVAL)
-        checkpoint("backup")
-        backup()
+        _slot("backup")
 
 
 def janitor_loop():
@@ -380,7 +431,7 @@ def janitor_loop():
                     f"DELETE FROM messages WHERE topic IN ({marks}) AND ts < ?",
                     (*sorted(TELEMETRY_TOPICS), cutoff))
                 _counters["purged"] += cur.rowcount or 0
-            checkpoint("janitor")
+            _slot("janitor")
         except Exception as e:  # noqa: BLE001
             print("janitor failed:", e, flush=True)
 
