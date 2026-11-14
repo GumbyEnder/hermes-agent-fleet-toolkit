@@ -303,3 +303,27 @@ produce one (measured 309 vs 155 in one minute).
 - **A tick log can go silent across a restart and come back moving.** bus-checkpoint.log wrote
   `src=shutdown` at 23:48:32, then nothing for 60 minutes to 00:48:32, whose first tick was
   `moved=31 src=backup`. Silence in the tick log is not quiescence.
+- **A group census is pinned to (cut, key, completeness rule), never to a line count.** In
+  `bus-checkpoint.log` the pre-slot prose/header block is **106 rows and constant**, so
+  slot rows = lines − 106 — and that offset is itself a line-count artifact, so carry it with any
+  line-indexed census or the next reader recounts a different denominator. Counted on
+  `(full db path, slot token)` with consecutive-row grouping, one file gives **18 / 24 / 30 / 32 / 34
+  groups at cuts 153 / 168 / 183 / 188 / 193**, and `3·triples + 2·pairs` equals the slot-row count at
+  every cut (193: 87 slot rows = 19 triples + 15 pairs; cuts 188 and 193 are 26,406 B / `2a39958b…`
+  and 27,199 B / `9ca03b2c…`). Two artifact modes and one naming rule:
+  - **Basename key is latently wrong.** Grouping on `room.db` instead of the full path merges
+    physically distinct databases. It yields the identical groups over identical spans here only
+    because the file carries two `db=` values and no slot token is shared between them (measured
+    2026-11-14: 84 rows main path, 3 rows a scratch `busline2.QFp2` path) — "same answer today" is not
+    "equivalent key".
+  - **A cut taken mid-slot changes the trailing group**, so a group count quoted without its cut
+    cannot be re-measured; append-only growth adds one backup triple plus one janitor pair per hour
+    after the janitor offset change, with the tick phase locked at `:29:33`, not the old `:28:33` grid.
+  - **Name the pair's arm.** At 193 every pair is `src=janitor` and no triple is (14 backup + 5
+    shutdown triples), so "19 triples + 15 pairs" is unambiguous today but names no source class;
+    write the composition, and it can be checked against the file rather than against prose.
+  - **Straddling arms belong to the emission, not the cut.** Exactly four triples span two log seconds
+    at cuts 183, 188 and 193 — `011402.927213` (rows 107-109), `072758.761913` (144-146),
+    `102833.760681` (164-166), `132834.741915` (179-181) — in each, the `backup:` row lands one second
+    after its `checkpoint-pre:`/`checkpoint:` pair. Backup triples emitted inside one second (14:28,
+    15:28) do not straddle, so "four" is a property of those emissions and must be re-derived per cut.
