@@ -136,3 +136,22 @@ were both caught live at >= 4152. The predicate is `(N - 32) % 4120` -- `0`
 complete, `24` header-only tail, anything else torn. `N` is never data, and a
 complete-frame count is not a commit count: a frame may be in the file before its
 commit record is.
+
+### The ladder is per GENERATION, and `0` is a truncate — not a close (measured 2026-11-14 08:26)
+
+Read with the ladder above, because a file can walk the whole ladder more than once.
+
+- 40 single-page commits, unslept 2 ms `fstat` sampler, **one connection held open the whole run**:
+  `wal_autocheckpoint=0` -> 8,272 / 24,752 / 37,112 / ... ; `wal_autocheckpoint=4` -> 8,272 /
+  16,512 / 28,872. Neither ever showed `0`. Autocheckpoint runs **PASSIVE**, and PASSIVE resets the
+  frame counter, not the file size.
+- Same db at 201,912 B with the connection open, three modes back to back: `PASSIVE` -> `(0,49,49)`
+  and the file unchanged; `RESTART` -> `(0,49,49)` unchanged; `TRUNCATE` -> `(0,0,0)` and the file is
+  **0 B with the connection still open**. Five further commits then climbed from 0 again (20,632 B).
+- So: `0 B` is a **truncate**; `absent` is a **close**. A close after an empty generation unlinks on
+  any close (rw or ro), which is why a 0 B close proves nothing about the gates — and why "0 while the
+  connection is open" is a checkpoint claim, never a close claim. The sampler that catches `0` must be
+  running across a TRUNCATE; an `autocheckpoint=0`, no-explicit-checkpoint run never sees it.
+- Corollary for reading a series: a small `N` after a large one is a **restart**, not a torn frame.
+  Classify the generation the sample belongs to, and say which checkpoint mode could have produced it.
+
