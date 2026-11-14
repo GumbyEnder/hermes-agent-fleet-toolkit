@@ -1330,7 +1330,8 @@ something when `wal>0` at the instant of the close.
 reader shifts) derived from that tick's own tuple:
 
     wal_class=closed      wal=absent        last close completed and unlinked
-    wal_class=held_empty  wal=0             a connection is open now; nothing pending
+    wal_class=stranded    wal=0             pair present, ZERO frames; holder UNKNOWN
+                                            (NOT "a connection is open now")
     wal_class=resident    wal>0, folded==log  bytes at high-water, every frame in the db
     wal_class=unfolded    wal>0, folded<log   frames live ONLY in the -wal (pin=1)
 
@@ -1378,7 +1379,8 @@ something when `wal>0` at the instant of the close.
 reader shifts) derived from that tick's own tuple:
 
     wal_class=closed      wal=absent        last close completed and unlinked
-    wal_class=held_empty  wal=0             a connection is open now; nothing pending
+    wal_class=stranded    wal=0             pair present, ZERO frames; holder UNKNOWN
+                                            (NOT "a connection is open now")
     wal_class=resident    wal>0, folded==log  bytes at high-water, every frame in the db
     wal_class=unfolded    wal>0, folded<log   frames live ONLY in the -wal (pin=1)
 
@@ -1387,3 +1389,32 @@ reader shifts) derived from that tick's own tuple:
 `test-wal-class.sh` (4 arms, throwaway db, real holder processes — a holder that
 dies early turns every arm into `closed` and the harness would grade its own
 accident).
+
+### `wal=0` is `stranded`, not `held` — and this probe's own close is the discriminator
+
+Measured 2026-11-14, sqlite 3.53.1, scratch WAL db, inode recorded at each step:
+
+- A read-only open/select/close with **nothing else holding the file** leaves
+  `-wal` 0 B (ino 29518009) + `-shm` 32768 B (ino 29518010) standing, fd census 0.
+  So `wal=0` is not evidence that a connection is open now; it is evidence that
+  no close has yet been the last qualifying one. The class shipped as
+  `held_empty` with the wrong gloss; it is now `wal_class=stranded`, holder
+  UNKNOWN.
+- But a **holderless** 0 B pair does not survive *this* probe: same db, pair
+  present, probe alone → `rc=0 out=0|0|0 wal=absent wal_before=0 pin=absent
+  wal_class=closed`. The probe's rw open + PASSIVE checkpoint + close is a
+  qualifying close and unlinks it (harness arm `holderless_tidied`). Therefore
+  `wal=0` on a line this script wrote means *that tick's close was not the last
+  qualifying one* — a second connection at that instant, or a close that skipped
+  `walClose` (sqlite3_close returning BUSY leaves the sidecars; process exit
+  unlinks nothing).
+- Both readings are needed. "wal=0 ⇒ a connection is open now" is wrong as a
+  statement about the file and right (narrowly) about a line this probe wrote.
+- `fds=` is **not** a holder census: it is `ls /proc/<buspid>/fd | wc -l`, i.e.
+  the bus's own sockets — flat 6 across the log, and at rest the bus holds zero
+  db fds. It can never decide the holder; that needs a handle census over all
+  `/proc` resolved against the `-wal` inode, self excluded.
+- A long-poll is not a holder either: `bus.py` `/api/messages` opens and closes
+  `db()` **inside** the 0.4 s wait loop, so a `wait=25` request holds a
+  connection for milliseconds per iteration, not for 25 s. A `wait=25` in flight
+  across an event is a candidate, never a witness.
