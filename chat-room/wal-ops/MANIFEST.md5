@@ -19,7 +19,7 @@ b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 25638c8adf38ea5efd3f780d98460e62  grade-slot.sh
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 ee5890c0eaa2b15667945eaa0159e12a  check-manifest.sh
-e4d624568b98d6832855c3762e285a2b  check-wal-doc-links.sh
+08572bce057a81c862d6c0def3d35a9e  check-wal-doc-links.sh
 88ab9035620fe2688b84d3d71336c09a  test-grader-mixed-db.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
