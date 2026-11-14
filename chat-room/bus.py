@@ -32,7 +32,6 @@ import hmac as hmac_mod
 import json
 import os
 import re
-import shutil
 import signal
 import socket
 import sqlite3
@@ -357,9 +356,15 @@ def backup():
     a timestamp gap (+7,951 s on 2026-11-13 19:46, refuted by the 20:27 and
     21:27 slots that re-synced the pair). The manifest below is per-slot and
     append-only: bytes AND sha256 of what landed, so identity is
-    birth+mtime+size+hash and never inode (a CIFS synthetic inode shifts
-    between mount windows on this host -- measured 2026-11-13 21:38,
-    room.db.bak ino 731973006, btime 2026-11-05 03:09:31.768, mtime moved).
+    size+hash+the SOURCE inode read under the same fd that supplies the bytes,
+    and never the destination's mtime (a CIFS synthetic inode shifts between
+    mount windows on this host -- measured 2026-11-13 21:38, room.db.bak ino
+    731973006, btime 2026-11-05 03:09:31.768, mtime moved). The destination
+    mtime is not an identity leg at all: on /mnt/nas a copy2 lands with the
+    source's mtime and the SERVER restamps it to its own close time seconds
+    later (measured 2026-11-14 00:50: copy2 read back the source stamp exactly,
+    3 s later the stamp was the server's). So record src_mtime_ns from fstat
+    and copy_time_ns from our own clock, and never a post-copy stat of dst.
     A 0-byte sidecar is a LEGITIMATE state after a TRUNCATE fold; the manifest
     is what keeps it from being read as a silent one.
     """
@@ -374,18 +379,37 @@ def backup():
         for f in (DB_PATH, DB_PATH + "-wal"):
             base = os.path.basename(f) + ".bak"
             dst = os.path.join(BACKUP_DIR, base)
-            if os.path.exists(f):
-                n = os.path.getsize(f)
-                shutil.copy2(f, dst)
-                st = os.stat(dst)
-                h = hashlib.sha256()
-                with open(dst, "rb") as rh:
-                    for chunk in iter(lambda: rh.read(1 << 20), b""):
-                        h.update(chunk)
-                states.append("copy:%d" % n)
-                rec["files"][base] = {"bytes": st.st_size,
+            try:
+                fd = os.open(f, os.O_RDONLY)
+            except FileNotFoundError:
+                fd = None
+            except OSError as e:
+                # Unreadable is NOT absent: say so per file and keep the loop.
+                states.append("copy:unreadable")
+                rec["files"][base] = {"bytes": None, "state": "unreadable",
+                                      "error": str(e)}
+                continue
+            if fd is not None:
+                try:
+                    src = os.fstat(fd)          # same inode as the bytes below
+                    h = hashlib.sha256()
+                    copy_time_ns = time.time_ns()
+                    with os.fdopen(os.dup(fd), "rb") as rf, open(dst, "wb") as wf:
+                        for chunk in iter(lambda: rf.read(1 << 20), b""):
+                            h.update(chunk)
+                            wf.write(chunk)
+                    try:                        # best effort; CIFS may restamp
+                        os.utime(dst, ns=(src.st_atime_ns, src.st_mtime_ns))
+                    except OSError:
+                        pass
+                finally:
+                    os.close(fd)
+                states.append("copy:%d" % src.st_size)
+                rec["files"][base] = {"bytes": src.st_size,
                                       "sha256": h.hexdigest(),
-                                      "mtime_ns": st.st_mtime_ns}
+                                      "src_ino": src.st_ino,
+                                      "src_mtime_ns": src.st_mtime_ns,
+                                      "copy_time_ns": copy_time_ns}
             else:
                 states.append("skip:absent")
                 rec["files"][base] = {"bytes": None, "state": "absent"}

@@ -119,7 +119,8 @@ def bus(**over):
     # must never add lines there -- they would be graded as real TRUNCATE evidence by
     # wal-unlink-watch-verdict.py (measured: one suite run wrote 6 such lines).
     over.setdefault("AGENT_CHAT_BUS_CHECKPOINT_LOG", os.path.join(tmp, "bus-checkpoint.log"))
-    env = base_env(AGENT_CHAT_PORT=str(port), AGENT_CHAT_BACKUP="",
+    over.setdefault("AGENT_CHAT_BACKUP", "")   # tests opt in with their own dir
+    env = base_env(AGENT_CHAT_PORT=str(port),
                    AGENT_CHAT_JANITOR_INTERVAL="3600", **over)
     with Service(str(ROOT / "chat-room/bus.py"), env, f"http://127.0.0.1:{port}/health") as svc:
         yield f"http://127.0.0.1:{port}", tmp, svc
