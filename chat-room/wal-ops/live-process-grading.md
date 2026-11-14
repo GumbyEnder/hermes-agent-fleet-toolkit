@@ -438,3 +438,38 @@ unre-linked state and 0 after.
   `live-process-grading.md` at the next, both at `nlink=3`, both `-ef` TRUE across all three
   arms. Quote the inode *with the filename, size, md5 and the commit that produced it*, or it
   expires on arrival.
+
+## Census 2026-11-14 18:52 ET: five builds, thirteen files, and the path that hid two of them
+
+The two builds the earlier counts could not witness were never missing. They are environment
+snapshots under a directory named `installs`, not `install-envs`, and from `/` the file sits at
+depth 10:
+
+    ~/.hermes/installs/<install-id>/environments/<env-id>/workspace/tools/skill_manager_tool.py
+    /home 1  user 2  .hermes 3  installs 4  install-id 5  environments 6  env-id 7  workspace 8  tools 9  file 10
+
+Ten environment snapshots exist here; each froze the tool build current when the environment was
+created, so a retired build outlives the install that produced it. A `find /` capped at maxdepth 7
+returns three files and misses ten -- not because they are unreadable, but because the walk stopped
+two directories short.
+
+| md5 | size | cap / def | call sites | files |
+|---|---|---|---|---|
+| `5babc038` | 47,942 B | `:110 / :187` | `:470 :511 :558 :628` | 7 -- `~/.hermes/hermes-agent` + 6 env snapshots |
+| `b017004a` | 47,255 B | `:110 / :182` | `:455 :496 :543 :613` | 3 env snapshots (Oct 17) |
+| `91c149d7` | 47,116 B | `:110 / :182` | `:455 :496 :542 :610` | 1 env snapshot (Oct 10) |
+| `f922e2da` | 35,343 B | `:164 / :256` | `:389 :436 :529 :634` | 1 -- `/usr/local/lib/hermes-agent` |
+| `100d078e` | 27,226 B | `:85 / :182` | `:300 :347 :432 :500` | 1 -- `~/hermes-agent` (Apr 11 clone) |
+
+- **A copy count is a file count, not a distinct-hash count.** "Five builds" and "thirteen files"
+  are both true and describe different things; quoting one alone understates how many tool bodies
+  sit on the box.
+- **`MAX_SKILL_CONTENT_CHARS = 100_000` in all five.** Only the Apr-11 clone moves the constant off
+  `:110`. Two call-site dialects exist -- `if err := _validate_content_size(...)` in the three 47k
+  builds, `err = _validate_content_size(...)` in the two older ones. That is a refactor, not a line
+  shift, and it is why the md5 is the only anchor that survives.
+- **`/usr/local/lib` is not what a `hermes` on PATH loads here.** `/home/gumbyender/.local/bin/hermes`
+  is a 6-line wrapper: it unsets `PYTHONPATH`/`PYTHONHOME` and execs
+  `$HOME/.hermes/hermes-agent/venv/bin/hermes`, skipping `/usr/local/lib/hermes-agent/venv` because
+  that python is a symlink into `/root/.local/share/uv/...`. So the live tool build on this host is
+  `5babc038` -- the canonical copy, not the deepest `find` hit and not the one under `/usr/local`.
