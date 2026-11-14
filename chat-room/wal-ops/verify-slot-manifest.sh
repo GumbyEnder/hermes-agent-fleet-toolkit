@@ -9,10 +9,15 @@
 #
 # PER-SLOT ARTIFACTS (#4268 point 2). Rows written from 2026-11-14 carry
 # files.<base>.path = <base>.<slot>, a name nothing else writes, so bytes and
-# sha256 stay re-assertable for as long as retention holds the file --
-# AGENT_CHAT_BACKUP_KEEP slots (default 24, same default as bus.py). An artifact
-# missing while fewer than KEEP newer rows exist is a FAIL (a real deletion);
-# outside retention it is `INFO <artifact> PRUNED`.
+# sha256 stay re-assertable for as long as retention holds the file. Retention
+# is measured in ARTIFACTS ON DISK, not manifest rows: `_prune_slot_artifacts`
+# lists the directory and keeps the newest AGENT_CHAT_BACKUP_KEEP names per base,
+# while a row whose copy failed (`skip:absent`, `copy:unreadable`) still appends
+# a row and writes no file. Counting rows let a real deletion read as
+# `INFO PRUNED by retention` once enough failed rows had accumulated (found by
+# buzzy 2026-11-14). An artifact missing while fewer than KEEP newer artifacts
+# exist on disk is a FAIL (a real deletion); outside retention it is
+# `INFO <artifact> PRUNED`.
 #
 # LEGACY rolling rows (no `path`) are content-checkable only while they are the
 # newest row: room.db.bak / room.db-wal.bak are single rolling names that each
@@ -62,6 +67,26 @@ if not rows:
 row = rows[-1]
 newest = row['slot'] == all_rows[-1]['slot']
 newer = len(all_rows) - 1 - all_rows.index(row)      # rows written after this one
+
+SLOT_RE = re.compile(r'^\d{8}T\d{6}\.\d{6}[+-]\d{4}$')
+def newer_artifacts(base, slot):
+    """Count EXISTING per-slot artifacts of `base` that sort after `slot`.
+
+    Retention is decided by `_prune_slot_artifacts`, which lists the directory
+    and keeps the newest KEEP names per base -- so the window is measured in
+    artifacts on disk, never in manifest rows. A row whose copy failed still
+    appends a row (`skip:absent`/`copy:unreadable`) and writes no artifact;
+    counting rows would let a real deletion read as `INFO PRUNED`.
+    """
+    pref = base + '.'
+    try:
+        names = os.listdir(bdir)
+    except OSError:
+        return None
+    after = {n[len(pref):] for n in names
+             if n.startswith(pref) and SLOT_RE.match(n[len(pref):])
+             and n[len(pref):] > slot}
+    return len(after)
 print('row slot=%s pid=%s src=%s main=%s wal=%s%s' %
       (row['slot'], row['pid'], row['src'], row['main'], row['wal'],
        '' if newest else ' (not newest; %d newer)' % newer))
@@ -86,13 +111,17 @@ def check_artifact(base, state, meta):
     if path:
         dest = os.path.join(bdir, path)
         if not os.path.exists(dest):
-            if KEEP > 0 and newer >= KEEP:
+            slot_of_path = path[len(base) + 1:] if path.startswith(base + '.') else ''
+            n_art = (newer_artifacts(base, slot_of_path)
+                     if SLOT_RE.match(slot_of_path) else None)
+            if KEEP > 0 and n_art is not None and n_art >= KEEP:
                 info('%s PRUNED by retention' % base,
-                     'row names %s; %d newer slots, keep=%d' % (path, newer, KEEP))
+                     'row names %s; %d newer artifacts ON DISK, keep=%d'
+                     % (path, n_art, KEEP))
             else:
                 leg('%s present' % base, False,
-                    'row names %s -- missing INSIDE retention (%d newer, keep=%d)'
-                    % (path, newer, KEEP))
+                    'row names %s -- missing INSIDE retention (%s newer artifacts '
+                    'on disk, keep=%d)' % (path, n_art, KEEP))
             return
         st = os.stat(dest)
         h = sha(dest)
@@ -151,14 +180,18 @@ if m:
     n = int(m.group(1))
     wmeta = row['files'].get('room.db-wal.bak', {})
     wpath = wmeta.get('path')
+    wslot = (wpath[len('room.db-wal.bak') + 1:]
+             if wpath and wpath.startswith('room.db-wal.bak.') else '')
+    w_newer = newer_artifacts('room.db-wal.bak', wslot) if SLOT_RE.match(wslot) else None
     if wpath:
         side = os.path.join(bdir, wpath)
         if os.path.exists(side):
             got = os.path.getsize(side)
             leg('wal copy:N == artifact size', got == n,
                 'row N=%d disk=%d path=%s' % (n, got, wpath))
-        elif KEEP > 0 and newer >= KEEP:
-            info('wal copy:%d PRUNED by retention' % n, 'row names %s' % wpath)
+        elif KEEP > 0 and w_newer is not None and w_newer >= KEEP:
+            info('wal copy:%d PRUNED by retention' % n,
+                 'row names %s; %d newer artifacts on disk' % (wpath, w_newer))
         else:
             leg('wal artifact present', False, '%s missing inside retention' % wpath)
     elif not newest:
