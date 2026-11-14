@@ -27,6 +27,7 @@ AGENT_CHAT_MAX_BYTES, AGENT_CHAT_RATE_PER_MIN, AGENT_CHAT_RATE_BURST,
 AGENT_CHAT_TELEMETRY_TOPICS, AGENT_CHAT_TELEMETRY_DAYS,
 AGENT_CHAT_JANITOR_INTERVAL, AGENT_CHAT_UI_TTL.
 """
+import datetime
 import hashlib
 import hmac as hmac_mod
 import json
@@ -242,7 +243,20 @@ def _wal_state():
         return "absent"
 
 
-def checkpoint(src="manual"):
+def _slot_token():
+    """Unique per slot, not per second.
+
+    `time.strftime("%Y%m%dT%H%M%S%z")` is only unique at the production
+    BACKUP_INTERVAL of 3600 s. Rehearsed at 0.40 s the manifest carried 14 rows
+    under 6 distinct tokens, one token holding 3 rows -- so the manifest's own
+    key was not a key, and any harness pairing rows to slots by position was
+    grading the ordering assumption the lock exists to remove. Microseconds fix
+    it without a counter that would reset on restart.
+    """
+    return datetime.datetime.now().astimezone().strftime("%Y%m%dT%H%M%S.%f%z")
+
+
+def checkpoint(src="manual", slot=None):
     """TRUNCATE the WAL and REPORT the outcome.
 
     A blocked checkpoint is NOT an exception: PRAGMA wal_checkpoint returns
@@ -325,12 +339,14 @@ def checkpoint(src="manual"):
             # db= and may never assume "a line in this file is this database".
             _log_line(line)
 
-        _emit("checkpoint-pre: busy=%d log=%d folded=%d src=%s%s"
+        _emit("checkpoint-pre: busy=%d log=%d folded=%d src=%s%s%s"
               % (pre_busy, pre_log, pre_folded, src,
-                 _tag(pre_busy, pre_log, pre_folded)))
-        _emit("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s wal=%s%s"
+                 _tag(pre_busy, pre_log, pre_folded),
+                 "" if slot is None else " slot=" + slot))
+        _emit("checkpoint: busy=%d log=%d folded=%d moved=%d src=%s wal=%s%s%s"
               % (busy, log, folded, pre_log - log, src, _wal_state(),
-                 _tag(busy, log, folded, pre_pinned)))
+                 _tag(busy, log, folded, pre_pinned),
+                 "" if slot is None else " slot=" + slot))
     except Exception as e:  # noqa: BLE001
         print("checkpoint failed: src=%s err=%s" % (src, e), flush=True)
         try:
@@ -341,7 +357,7 @@ def checkpoint(src="manual"):
             pass
 
 
-def backup():
+def backup(src="backup", slot=None):
     """Copy the pair and PUBLISH what was copied, per file, with a hash.
 
     The decision is the evidence, so record it. `if os.path.exists(f)` is the
@@ -370,11 +386,12 @@ def backup():
     """
     if not BACKUP_DIR:
         return None
-    slot = time.strftime("%Y%m%dT%H%M%S%z")
+    slot = slot or _slot_token()
+    src = src or "backup"
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         states = []
-        rec = {"slot": slot, "src": "backup", "pid": os.getpid(), "db": DB_PATH,
+        rec = {"slot": slot, "src": src, "pid": os.getpid(), "db": DB_PATH,
                "files": {}}
         for f in (DB_PATH, DB_PATH + "-wal"):
             base = os.path.basename(f) + ".bak"
@@ -391,7 +408,7 @@ def backup():
                 continue
             if fd is not None:
                 try:
-                    src = os.fstat(fd)          # same inode as the bytes below
+                    sst = os.fstat(fd)          # same inode as the bytes below
                     h = hashlib.sha256()
                     copy_time_ns = time.time_ns()
                     with os.fdopen(os.dup(fd), "rb") as rf, open(dst, "wb") as wf:
@@ -399,46 +416,57 @@ def backup():
                             h.update(chunk)
                             wf.write(chunk)
                     try:                        # best effort; CIFS may restamp
-                        os.utime(dst, ns=(src.st_atime_ns, src.st_mtime_ns))
+                        os.utime(dst, ns=(sst.st_atime_ns, sst.st_mtime_ns))
                     except OSError:
                         pass
                 finally:
                     os.close(fd)
-                states.append("copy:%d" % src.st_size)
-                rec["files"][base] = {"bytes": src.st_size,
+                states.append("copy:%d" % sst.st_size)
+                rec["files"][base] = {"bytes": sst.st_size,
                                       "sha256": h.hexdigest(),
-                                      "src_ino": src.st_ino,
-                                      "src_mtime_ns": src.st_mtime_ns,
+                                      "src_ino": sst.st_ino,
+                                      "src_mtime_ns": sst.st_mtime_ns,
                                       "copy_time_ns": copy_time_ns}
             else:
                 states.append("skip:absent")
                 rec["files"][base] = {"bytes": None, "state": "absent"}
-        _log_line("backup: main=%s wal=%s src=backup" % (states[0], states[1]))
+        _log_line("backup: main=%s wal=%s src=%s slot=%s"
+                  % (states[0], states[1], src, slot))
         rec["main"], rec["wal"] = states[0], states[1]
         with open(os.path.join(BACKUP_DIR, "room.db.bak.manifest.jsonl"), "a") as mf:
             mf.write(json.dumps(rec, sort_keys=True) + "\n")
         return rec
     except Exception as e:  # noqa: BLE001
         print("backup failed:", e, flush=True)
-        _log_line("backup failed: err=%s src=backup" % e)
+        _log_line("backup failed: err=%s src=%s slot=%s" % (e, src, slot))
         return None
 
 
-def _slot(src):
+def _slot(src, copy=False):
     """Run one slot atomically: the checkpoint that measures it and, for the
-    backup arm, the copy that consumes it. Anything that reads the sidecar
-    outside this lock can observe a fold it did not cause and cannot name."""
+    copy arms, the backup that consumes it. Anything that reads the sidecar
+    outside this lock can observe a fold it did not cause and cannot name.
+
+    `copy` is explicit rather than `src == "backup"` so the shutdown folder is
+    a copy too: shutdown used to call checkpoint() then backup() from outside
+    the lock, which made a third folder and a second writer onto the same
+    room.db.bak destination -- a daemon arm mid-copy could be interleaved by
+    the shutdown copy and hand back a torn restore artifact. The token is
+    shared by the checkpoint and the manifest row for that folder, so a row
+    names its own pair instead of being paired by position.
+    """
+    slot = _slot_token()
     with _slot_lock:
-        checkpoint(src)
-        if src == "backup":
-            return backup()
+        checkpoint(src, slot=slot)
+        if copy:
+            return backup(src, slot=slot)
     return None
 
 
 def backup_loop():
     while True:
         time.sleep(BACKUP_INTERVAL)
-        _slot("backup")
+        _slot("backup", copy=True)
 
 
 def janitor_loop():
@@ -1561,8 +1589,7 @@ def main():
         print("agent-chat bus stopping: checkpoint + backup", flush=True)
         for srv in servers:
             srv.shutdown()
-        checkpoint("shutdown")
-        backup()
+        _slot("shutdown", copy=True)
 
 
 if __name__ == "__main__":
