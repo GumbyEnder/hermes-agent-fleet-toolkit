@@ -1557,6 +1557,12 @@ def main():
     migrate()
     servers = [ThreadingHTTPServer(("127.0.0.1", PORT), Handler)]
     print(f"agent-chat bus on http://127.0.0.1:{PORT} db={DB_PATH} fts={_fts}", flush=True)
+    # The backup cadence is an env value that leaves NO other trace: a process that
+    # ran with AGENT_CHAT_BACKUP_INTERVAL=120 is indistinguishable in the manifest
+    # from one running 3600 (same byte size, same destination, same src token). This
+    # line is the only per-process witness; do not drop it to keep the log quiet.
+    print(f"agent-chat backup interval={BACKUP_INTERVAL}s dir={BACKUP_DIR or '(disabled)'}",
+          flush=True)
     if BIND_HOST and BIND_HOST not in ("127.0.0.1", "localhost"):
         # Second listener so remote agents (tailnet, VPN) reach the same room while
         # local tools use loopback. One process, one SQLite file, one write lock.
