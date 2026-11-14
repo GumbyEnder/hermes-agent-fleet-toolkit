@@ -173,6 +173,20 @@ healthy() {
 
 say() { printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%:z')" "$*" | tee -a "$LOG" >&2; }
 
+# CAPTURE BEFORE REPAIR. systemd logs NOTHING when a calendar timer fails to
+# re-elapse (measured 2026-11-14: one `Finished` line at 06:28:07, then silence
+# until the repair), so the 06:29 unarmed state left no durable evidence and the
+# cause is still unexplained. This snapshot is the only carrier: it is taken
+# before any restart, so the next occurrence arrives with its own artifacts.
+pre_state() {
+    local props lt
+    props=$(systemctl --user show "$TIMER" \
+        -p ActiveState -p NextElapseUSecRealtime -p TimersCalendar \
+        -p LastTriggerUSec -p Result 2>/dev/null | tr '\n' ' ')
+    lt=$(systemctl --user list-timers --output=json --all "$TIMER" 2>/dev/null | tr -d '\n')
+    printf 'pre-state: %s list-timers: %s' "${props:-<none>}" "${lt:-<none>}"
+}
+
 if healthy; then
     # A flag left by a run that released normally is reaped here: the release
     # re-arms the timer, so a normal end is seen on THIS path, not in note_busy.
@@ -181,6 +195,7 @@ if healthy; then
 fi
 
 say "UNARMED timer=$TIMER -> restarting"
+say "$(pre_state)"
 systemctl --user reset-failed "$TIMER" >/dev/null 2>&1 || true
 systemctl --user restart "$TIMER" >/dev/null 2>&1 || { say "REPAIR FAILED: restart rc=$?"; exit 2; }
 

@@ -131,6 +131,18 @@ expect_count 2 "RUN ENDED:"
 TIMER=no-such-rehearsal.timer LOG=$LOG STUCK_AFTER=2 STUCK_FLAG=$FLAG timeout 30 bash "$GUARD" 2>/dev/null; rc=$?
 [ "$rc" = 2 ] && ok "F rc=2 REPAIR FAILED for an unknown timer (no hang)" || bad "F rc=$rc"
 expect_contains "F reports the failed repair" "REPAIR FAILED"
+expect_contains "F took a pre-state snapshot even for an unknown timer" "pre-state:"
+
+# --- H: the repair path CAPTURES the unarmed state before restarting ---------
+# systemd logs nothing when a calendar timer fails to re-elapse, so this snapshot
+# is the only carrier for the next occurrence (the 06:29 one left no evidence).
+systemctl --user stop "$TIMER" >/dev/null 2>&1
+TIMER=$TIMER LOG=$LOG STUCK_AFTER=2 STUCK_FLAG=$FLAG bash "$GUARD" 2>/dev/null; rc=$?
+[ "$rc" = 1 ] && ok "H rc=1 (repaired a genuinely stopped timer)" || bad "H rc=$rc, wanted 1"
+expect_contains "H logs the repair" "UNARMED timer=$TIMER -> restarting"
+expect_contains "H captures the pre-repair state" "pre-state:"
+expect_contains "H pre-state carries the calendar" "TimersCalendar="
+expect_contains "H pre-state carries the state" "ActiveState="
 
 echo
 if [ "$fails" = 0 ]; then echo "RESULT PASS (0 failed arms)"; exit 0; fi
