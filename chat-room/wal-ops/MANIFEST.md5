@@ -32,3 +32,5 @@ d4c8325394b5148b94db86900c6513b9  fanotify-close-actor.py
 d594d3ea4d58f04c1e797b2d73141935  qread.py
 afaef597b3d62b29e2248bfcd800d0d6  ro-open-audit.py
 874af3df48729aa948159d9823bbd4cd  witness-janitor-phase.sh
+5fc43fd95e68382b8987b73e3d56abde  restart-dispatcher-when-no-turns.sh
+0209449fe9f0d3dbdbc89c8e87a91a75  test-live-turns-cgroup.py

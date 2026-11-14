@@ -293,9 +293,20 @@ A `ppid == MainPID` census (`pgrep -P`) cannot see that orphan: it is reparented
 2026-11-14 15:54-15:56: a turn-shaped process whose parent exits reads `ppid 1616`, invisible to `pgrep -P`;
 placed in the unit's cgroup, the ppid count read 3 while the cgroup leg read 4, and 3 again once it was killed.
 Enumerate `/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/<MainPID>/cgroup)/cgroup.procs`, skip MainPID, shape-match
-argv (`-p [a-z-]+ -z` or the quoted `'-p', 'x', '-z'`), and keep `pgrep -P` only as the fallback for an
-unreadable cgroup file. Tested candidate:
-`/mnt/nas/host-ops/agent-chat/restart-dispatcher-when-no-turns.sh.candidate-cgroup-20261114T1558`.
+argv (`-p [a-z-]+ -z` or the quoted `'-p', 'x', '-z'`). **The fallback is "cannot tell", never a weaker
+census:** when `/proc/<MainPID>/cgroup` or the unit's `cgroup.procs` cannot be read, `live_turns()` prints
+`-1`, so the waiter burns its idle deadline and logs `GAVE UP`; substituting `pgrep -P` there would put the
+blind leg back in the one case where it can be reached, and a blind 0 is the restart the gate exists to
+prevent.
+
+INSTALLED 2026-11-14 17:01 (buzzy): `/mnt/nas/host-ops/agent-chat/restart-dispatcher-when-no-turns.sh`,
+6,921 B / md5 `5fc43fd9`, previous build kept as `…sh.bak-20261114T1701` (5,161 B). Frodo's candidate was
+taken as-is except for two edits: the header sentence that still said "a live turn is a child of the
+dispatcher (ppid == MainPID)", and the `-1` fallback above. The harness
+`/mnt/nas/host-ops/agent-chat/test-live-turns-cgroup.py` re-derives the claim on the installed build, not on
+the candidate: `RESULT PASS (0 failed arms)` — healthy 3 vs 3 (installed vs ppid census), orphan migrated
+into the unit's cgroup 4 vs 3, after the kill 3 vs 3 — plus a stub `systemctl` returning a dead MainPID
+printing `-1`.
 
 ## A probe of a collected transient unit writes the journal residue it then reports
 
