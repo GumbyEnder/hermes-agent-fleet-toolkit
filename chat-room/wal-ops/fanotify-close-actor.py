@@ -41,6 +41,18 @@ actor_pid, actor_start, comm, unit, cmdline.
 With --only, events whose file could not be named are still emitted (file=null)
 and counted in the closing `stop` line's `unresolved` field -- a name filter
 must never silently drop the events it cannot classify.
+
+THE `stop` FIELDS HAVE THREE DIFFERENT SCOPES; do not read them as one set.
+`closes` counts every CLOSE_WRITE event DELIVERED in the marked directory,
+before the --only filter (and after fanotify coalescing, so it is an event
+count, not a close count). `emitted` counts the rows actually written, i.e.
+named-and-matching plus every unnamed event. `unresolved` counts the events
+whose file could not be named; each one is also emitted, so `unresolved` is a
+SUBSET of `emitted` and equals the number of `file:null` rows in this log --
+never a count of rows the filter removed. Measured 2026-11-14 on a scratch dir,
+120 closes of other.txt + 120 of room.db-wal + 120 closed-and-unlinked:
+`closes=359 emitted=240 unresolved=120`, 120/120 file=null rows present with
+file_err=ESTALE, other.txt rows emitted=0.
 """
 import argparse, ctypes, ctypes.util, errno, json, os, platform, select, struct, sys, time
 
@@ -200,6 +212,12 @@ def main():
                 if handle:
                     fname, ferr, st = resolve(handle)
                 if fname is None:
+                    # Counted HERE, above the filter, on purpose: the filter below
+                    # only skips NAMED rows, so every unnamed event is emitted too.
+                    # unresolved is the count of file:null rows in this log, not a
+                    # count of rows removed. Moving this below the filter would
+                    # undercount it -- and would need a filter that drops unnamed
+                    # events, which is the thing this instrument refuses to do.
                     unresolved += 1
                 rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                        "mono": round(time.monotonic(), 6),
