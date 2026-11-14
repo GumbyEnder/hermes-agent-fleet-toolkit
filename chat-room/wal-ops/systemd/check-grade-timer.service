@@ -1,0 +1,13 @@
+[Unit]
+Description=Guard the agent-chat grade-slot.timer (re-arm it when it armed nothing)
+Documentation=file:///mnt/nas/host-ops/agent-chat/check-grade-timer.sh
+
+[Service]
+Type=oneshot
+# NAS is CIFS (nounix, file_mode=0644): the script cannot carry +x there, so run
+# it through bash. A 203/EXEC here is that, not a missing file (measured).
+ExecStart=/usr/bin/env bash /mnt/nas/host-ops/agent-chat/check-grade-timer.sh
+# rc 1 = "was unarmed, repaired" -- a repair is not a unit failure. rc 2 stays
+# failed on purpose so it is visible as a failed unit, not just a log line.
+SuccessExitStatus=1
+Nice=10

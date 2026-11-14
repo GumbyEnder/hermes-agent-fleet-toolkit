@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the grade-slot.timer guard every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Unit=check-grade-timer.service
+
+[Install]
+WantedBy=timers.target
