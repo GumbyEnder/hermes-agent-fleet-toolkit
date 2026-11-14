@@ -1280,14 +1280,29 @@ witness's `# wal <size> <mtime>` line). Measured 2026-11-13: `wal=copy:0` at 20:
   returns 638 (the token also appears in prose), while field-2 keying (`$2=="VERDICT"`) against the
   anchor gives 314. Quote the anchor and both snapshot sha256s with the number, or the count is not
   checkable.
-- **Count distinct EPISODES, and key them on PID intersection — holder-set equality splits one episode
-  into three.** Rule: Δt 540–660 s between rows (measured 600.0–600.4 s), `no_delete_for` rising by
-  ~600 s (601/602 occurs — 02:33:01 `ndf=2401`, 17:15:23 `ndf=602` — so allow ±2 s), and a non-empty
-  intersection of the `holders=` pid lists. Handover and extra connections are allowed. Measured
-  2026-11-14 on the 20-row artifact: 12 distinct pids → **10 episodes** under this key vs **14** under
-  holder-set equality; the 00:41:45→01:21:45 chain splits three ways (`3752901:4+7+9` →
-  `+11` → `4+7`) and 03:21:50→03:31:50 (`237701:5+8` → `5+8+10`) splits the same way. Distinct
-  holder count discriminates nothing — it grows in both readings (11 pids/19 rows, 12/20, 13/23).
+- **A token census names the parse, not only the token — and an append-only log needs its cut point.**
+  On the 2026-11-14 10:18 snapshot (1,358 lines / 117,230 B / sha256 `420e8f2e…`, i.e. every line
+  before the 10:20:39 tick) `grep -c ' fds='` = 899 and `grep -o` also 899; the same snapshot gives
+  **841** lines carrying `err=` and **875** carrying `streak=`. Three counts of "how many fds lines",
+  one pattern apart — and re-running them on the live file at 11:16 gives 870 and 904 because the file
+  only grows, so a count without its cut point is not a fact. Quote the
+  exact pattern (bare token vs whole-line regex), the field spelling, and the sha256 of the script
+  that emits it: `fds=` → `busfds=` landed at 08:19:17 (12,406 B, sha256 `5d2fd2c6…`), first new-token
+  tick 08:24:32 (line 1301), so from that second a grep for the old spelling returns the clean zero
+  of a rename, not of a healthy arm.
+- **Count distinct EPISODES, and key them on PID intersection — a holder-set run count is a different
+  quantity, not a stricter key.** Episode key: Δt 540–660 s between rows (measured 600.0–600.4 s),
+  `no_delete_for` rising by ~600 s (601/602 occurs — 02:33:01 `ndf=2401`, 17:15:23 `ndf=602` — so
+  allow ±2 s), and a non-empty intersection of the `holders=` pid lists. Handover and extra
+  connections are allowed. Measured 2026-11-14 on the 20-row artifact: 12 distinct pids → **10
+  episodes** under this key; the 00:41:45→01:21:45 chain splits three ways (`3752901:4+7+9` →
+  `+11` → `4+7`) and 03:21:50→03:31:50 (`237701:5+8` → `5+8+10`) splits the same way.
+  **Do not call the other column "holder-set equality":** runs of consecutive rows carrying an
+  identical verbatim `holders=` string (no Δt and no `no_delete_for` gate) gave 14/16/19/21 at
+  20 rows / 04:25 / 06:41 / 07:42, strict PID-set equality on the same cuts gives 12/13/16/18, and
+  distinct pids 12/13/17/19. Three different numbers, and the middle one is not an episode count at
+  all — name the quantity (episodes / runs / distinct values), never the "key".
+  Distinct holder count discriminates nothing — it grows in every reading (11 pids/19 rows, 12/20, 13/23).
 - **A holder can hand over mid-episode, so one episode is not one pid.** 22:48:22 `holders=3249971:4`,
   22:58:22 `holders=3249971:4,3314691:4+7+9`, 23:08:23 `holders=3314691:4+7+9` — three rows, two pids,
   one continuous idle run (`no_delete_for` 600→1200→1800, age 1232→1832→2432). Quote `holders=`
