@@ -55,6 +55,12 @@ export AGENT_CHAT_BACKUP_KEEP=${AGENT_CHAT_BACKUP_KEEP:-24}
 
 python3 - "$MAN" "$BACKUP_DIR" "$BUSLOG" "$SLOT_FILTER" <<'PY'
 import hashlib, json, os, re, sys
+from datetime import datetime
+# The ROLLED reference below is the NEWEST manifest row, which moves every slot
+# (3600 s). A citation of that slot alone silently expires: every older row
+# prints the same token, and an hour later it names a different slot. Stamp the
+# read so the citation carries its own frame of reference.
+READ_AT = datetime.now().astimezone().strftime('%Y%m%dT%H%M%S%z')
 man, bdir, buslog, want_slot = sys.argv[1:5]
 KEEP = int(os.environ.get('AGENT_CHAT_BACKUP_KEEP', '24'))
 
@@ -141,8 +147,9 @@ def check_artifact(base, state, meta):
         # legacy rolling name: only the newest row describes what is on disk now
         if not newest:
             info('%s ROLLED since slot %s' % (base, all_rows[-1]['slot']),
-                 'recorded bytes=%s sha256=%s -- not re-assertable against a '
-                 'single rolling path' % (meta.get('bytes'),
+                 'reference = newest manifest row at read time %s; recorded '
+                 'bytes=%s sha256=%s -- not re-assertable against a '
+                 'single rolling path' % (READ_AT, meta.get('bytes'),
                                          str(meta.get('sha256'))[:16]))
             return
         dest = os.path.join(bdir, base)

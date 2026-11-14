@@ -1418,3 +1418,27 @@ Measured 2026-11-14, sqlite 3.53.1, scratch WAL db, inode recorded at each step:
   `db()` **inside** the 0.4 s wait loop, so a `wait=25` request holds a
   connection for milliseconds per iteration, not for 25 s. A `wait=25` in flight
   across an event is a candidate, never a witness.
+
+## The WAL size ladder is arithmetic, not a threshold (measured 2026-11-14)
+
+A `-wal` file's byte size encodes frame progress exactly: a 32 B file header, then
+frames of 4,120 B (24 B frame header + 4,096 B page). Measured with an unslept
+fstat sampler on a scratch db (`journal_mode=wal`, `wal_autocheckpoint=0`,
+`page_size=4096`, one 2,000-row commit); the first 16 distinct sizes, in order:
+
+    absent, 0, 32, 56, 4096, 4152, 4176, 8192, 8272, 8296, 12288, 12392, 12416,
+    16384, 16512, 16536
+
+- `absent` and `0` are different observations: 0 is a file, absent is no file.
+- `32` is header-only.
+- `32 + 4120k` holds k complete frames (4152, 8272, 12392, 16512).
+- `32 + 4120k + 24` holds k complete frames **plus one frame header and no body**
+  (4176, 8296, 12416, 16536) -- a state a threshold-only rule calls "complete".
+- everything else is torn: 56 = header + 24, 4096 = header + 4064, 8192 = header
+  + 8160, 12288.
+
+So `N >= 4152` is **not** equivalent to "carries complete frames"; 8192 and 12288
+were both caught live at >= 4152. The predicate is `(N - 32) % 4120` -- `0`
+complete, `24` header-only tail, anything else torn. `N` is never data, and a
+complete-frame count is not a commit count: a frame may be in the file before its
+commit record is.
