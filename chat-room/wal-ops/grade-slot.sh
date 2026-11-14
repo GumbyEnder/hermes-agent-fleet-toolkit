@@ -160,6 +160,20 @@ if [ -z "$row_tag" ]; then
 fi
 slot_tag=$row_tag
 
+# The one-grade-per-slot guard is AUTHORITATIVE only here. The cheap check at the
+# top tests the DERIVED second (YYYYMMDDTHHMMSS, no fraction); this line renames
+# slot_tag to the manifest ROW tag, which carries microseconds and can sit 1-2 s
+# later (derived 20261114T092758 -> row 20261114T092759.702524-0500). Two
+# different names, so the file a run WRITES was never the file the top check
+# LOOKED FOR and the guard had never fired for any slot: measured 2026-11-14
+# 09:28:25, a run without --force re-derived and re-graded 092759 eighteen
+# seconds after the timer had graded it (and only a bad PARENT stopped the
+# duplicate post). Re-test on the name that actually gets written.
+if [ "$FORCE" = 0 ] && [ "$DRY" = 0 ] && [ -e "$GUARD_DIR/$slot_tag" ]; then
+  echo "slot $slot_tag already graded ($(cat "$GUARD_DIR/$slot_tag" 2>/dev/null)) -- nothing to do"
+  exit 0
+fi
+
 # The witness runs every 5 min and captures a WINDOW, so the log covering this
 # slot is written up to ~5 min AFTER the slot second. Pick the newest log whose
 # "# captured" is >= the slot, and wait for it.
