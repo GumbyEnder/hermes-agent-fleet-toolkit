@@ -144,10 +144,13 @@ commit record is.
 
 Read with the ladder above, because a file can walk the whole ladder more than once.
 
-- 40 single-page commits, unslept 2 ms `fstat` sampler, **one connection held open the whole run**:
+- ~~40 single-page commits, unslept 2 ms `fstat` sampler, **one connection held open the whole run**:
   `wal_autocheckpoint=0` -> 8,272 / 24,752 / 37,112 / ... ; `wal_autocheckpoint=4` -> 8,272 /
-  16,512 / 28,872. Neither ever showed `0`. Autocheckpoint runs **PASSIVE**, and PASSIVE resets the
-  frame counter, not the file size.
+  16,512 / 28,872.~~ **STRUCK 2026-11-14 12:41 — does not reproduce on a clean fixture (see the root cause
+  at the end of this section).** The reproducible ladder is `12,392 / 16,512 / 20,632 / 24,752 / 28,872 / …`,
+  `+4,120` per single-page commit, and `wal_autocheckpoint=4` is FLAT at 16,512 from the second commit.
+  Neither ever showed `0`. Autocheckpoint runs **PASSIVE**, and PASSIVE resets the frame counter, not the
+  file size.
 - Same db at 201,912 B with the connection open, three modes back to back: `PASSIVE` -> `(0,49,49)`
   and the file unchanged; `RESTART` -> `(0,49,49)` unchanged; `TRUNCATE` -> `(0,0,0)` and the file is
   **0 B with the connection still open**. Five further commits then climbed from 0 again (20,632 B).
@@ -166,4 +169,20 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   `RESTART` `(0,49,49)` leave 201,912 B untouched, `TRUNCATE` `(0,0,0)` takes it to 0 B with the
   connection open, and five commits then climb from 0 to 20,632 = 32 + 5×4120 (that one is
   arithmetic and does reproduce).
+
+### Root cause of the irreproducible arms: the pragma name, and an unstepped assignment (measured 2026-11-14 12:58)
+
+- **There is no `PRAGMA autocheckpoint` in SQLite 3.53.1.** `sqlite3 p.db "PRAGMA autocheckpoint=4;
+  PRAGMA wal_autocheckpoint;"` returns no row for the first and still prints the previous value (`1000`):
+  the assignment is silently discarded and the run proceeds on the default 1000-page threshold. So a
+  fixture spelled `autocheckpoint` measures one arm, not two — every sample is a rung of the same growing
+  ladder, and `8,272 / 24,752 / 37,112` are `32 + n×4,120` at n = 2, 4, 7. The setting is
+  `wal_autocheckpoint`; there is no alias.
+- **A `PRAGMA` assignment must be stepped to take effect under Python ≥ 3.12.** In CPython 3.12+
+  `execute()` prepares and binds without stepping, so `c.execute("PRAGMA wal_autocheckpoint=4")` on its own
+  can leave the old value in force; `c.execute("PRAGMA wal_autocheckpoint=4").fetchone()` applies it. Read
+  the value back in the same fixture and print it — an unread pragma is an unmeasured arm.
+- **A ladder rung is not a commit number.** Bootstrap (`CREATE TABLE` + first `INSERT` = 3 frames = 12,392 B)
+  then N commits gives `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
+  frames in the `PASSIVE`/`RESTART` tuple `(0,43,43)`. Quote the formula, not a terminal rung.
 
