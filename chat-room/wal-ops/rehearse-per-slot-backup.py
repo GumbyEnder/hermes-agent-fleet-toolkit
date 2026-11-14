@@ -27,8 +27,13 @@ arg_dir = None
 if len(sys.argv) > 1 and sys.argv[1] == "--dir":
     arg_dir = sys.argv[2]
 
-root = arg_dir or tempfile.mkdtemp(prefix="rehearse-slot-", dir=os.path.expanduser(
+# The live DB is local (home); only the backup destination is on CIFS. Keep that
+# split here too: a WAL-mode sqlite on /mnt/nas is not what the bus does.
+root = tempfile.mkdtemp(prefix="rehearse-slot-", dir=os.path.expanduser(
     "~/.hermes/profiles/frodo/cache/scratch"))
+bak_root = arg_dir or root
+if arg_dir:
+    os.makedirs(bak_root, exist_ok=True)
 db = os.path.join(root, "room.db")
 
 c = sqlite3.connect(db)
@@ -48,7 +53,7 @@ def check(name, ok, detail=""):
 
 
 def run(phase, keep):
-    bak = os.path.join(root, "backup-" + phase)
+    bak = os.path.join(bak_root, "backup-" + phase)
     os.makedirs(bak, exist_ok=True)
     os.environ["AGENT_CHAT_BACKUP"] = bak
     os.environ["AGENT_CHAT_BACKUP_KEEP"] = str(keep)
@@ -100,5 +105,6 @@ check("[keep2] prune deleted the OLDEST slot",
       not any(SLOTS[0] in n for n in left_b), str(left_b))
 
 print("\nRESULT %s (%d failed)" % ("PASS" if not fails else "FAIL", len(fails)))
-print("scratch kept at %s" % root)
+print("db scratch kept at %s" % root)
+print("backup destination %s" % bak_root)
 sys.exit(0 if not fails else 1)
