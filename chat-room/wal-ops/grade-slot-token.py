@@ -50,6 +50,7 @@ def legs(path):
                 "line": i,
                 "ts": dt.datetime.strptime(m.group("ts"), "%Y-%m-%dT%H:%M:%S%z"),
                 "kind": m.group("kind"),
+                "db": m.group("db"),
                 "body": body,
                 "slot": tok.group(1) if tok else None,
                 "src": src.group(1) if src else None,
@@ -101,6 +102,15 @@ def main(argv):
             fails.append("C1 %s appears %d times (want 1)" % (need, kinds.count(need)))
     if len(grp) != 3:
         fails.append("C1 %d legs under token %s (want 3)" % (len(grp), token))
+    # A token is unique per slot, but bus-checkpoint.log is SHARED across DBs, so a
+    # fixture or a rehearsal writing the same token to a different db would otherwise
+    # satisfy "three legs, one token" from two files' legs. The durable key is
+    # (token, db): enforce it here, do not leave it to the human reader.
+    leg_dbs = sorted({l["db"] for l in grp})
+    if len(leg_dbs) != 1:
+        fails.append(
+            "C1 legs under token %s span %d dbs: %s" % (token, len(leg_dbs), leg_dbs)
+        )
     try:
         inst = dt.datetime.strptime(token, TOKEN_FMT)
     except ValueError as e:
@@ -111,6 +121,12 @@ def main(argv):
     if len(rows) != 1:
         fails.append("C1 %d manifest rows carry token %s (want 1)" % (len(rows), token))
     row = rows[0][1] if rows else None
+    # The other half of the (token, db) key: the journal row that attests the copy
+    # must name the same db as the three log legs, or the token means two things.
+    if row is not None and len(leg_dbs) == 1 and row.get("db") not in (None, leg_dbs[0]):
+        fails.append(
+            "C1 manifest row db %r != leg db %r" % (row.get("db"), leg_dbs[0])
+        )
 
     # ---- C2: zero interleaving --------------------------------------------
     idx = sorted(l["line"] for l in grp)
