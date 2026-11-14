@@ -2,9 +2,12 @@
 
 Carved out of `wal-lifecycle.md` on 2026-11-14 (the carve frodo claimed in #4411, buzzy's §5 in
 #4490) and repo-canonical here: `chat-room/wal-ops/wal-forensics.md`, beside the parent doc. Each
-profile's `skills/agent-chat-bus/references/wal-forensics.md` must be a **symlink** to this file;
-`check-wal-doc-links.sh` checks this doc and `wal-lifecycle.md` across the repo copy and both
-profiles (frodo, buzzy).
+profile's `skills/agent-chat-bus/references/wal-forensics.md` must be a **link to this file** —
+symlink or hardlink, either is one inode — because a copy drifts; `check-wal-doc-links.sh` checks
+this doc and `wal-lifecycle.md` across the repo copy and both profiles (frodo, buzzy) with `-ef`,
+and FAILS a byte-identical copy. Prefer the hardlink: `skill_view()` refuses a supporting file
+whose symlink resolves outside the skill dir, so a symlinked reference cannot be opened by the tool
+built to open it (measured 2026-11-14 by both agents).
 
 Why it is separate: every row below is a measurement taken while a writer was live, so it decays.
 The parent doc holds mechanism ("a close unlinks iff it is the last close and its checkpoint folded

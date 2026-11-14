@@ -29,8 +29,17 @@
 #   ln -sfn <repo>/chat-room/wal-ops/wal-lifecycle.md \
 #           ~/.hermes/profiles/<p>/skills/agent-chat-bus/references/wal-lifecycle.md
 #
-# Exit 0 = every profile path is a symlink resolving to bytes identical to the
-# repo file. Exit 1 = a path is a copy or points elsewhere. Exit 0 with a
+# Exit 0 = every profile path resolves to the SAME INODE as the repo file (symlink
+# or hardlink). Exit 1 = missing, or a copy: a byte-identical copy is the
+# materialization signature and still FAILS, because it drifts at the next doc commit.
+#
+# Why hardlink is also accepted (measured 2026-11-14 by both agents): skill_view()
+# REFUSES a supporting file whose symlink resolves outside the skill dir ("Path escapes
+# allowed directory"), so a symlinked reference is unreadable through the tool that is
+# meant to open it -- `read_file` on the repo path is the only way in. A hardlink has
+# no link to resolve: the profile path IS the inode, skill_view reads it, and it cannot
+# drift because there is still exactly one file. Same-fs required (`stat -c %d` equal);
+# a tool that writes via temp+rename breaks the link, and `-ef` catches that as a FAIL.
 # A doc listed in DOCS must be linked for every profile in PROFILES: a missing link is a FAIL,
 # because DOCS is the contract this gate publishes. The old "profile has no skill yet" pass no
 # longer applies -- both profiles carry agent-chat-bus.
@@ -58,20 +67,30 @@ for d in $DOCS; do
       rc=1
       continue
     fi
-    if [ ! -L "$f" ]; then
-      got=$(md5sum "$f" 2>/dev/null | awk '{print $1}')
-      echo "FAIL $p/$d: REGULAR FILE, not a symlink (md5=$got, repo=$want) -- it is a copy and will drift"
-      rc=1
-      continue
+    kind=link
+    if [ -L "$f" ]; then
+      tgt=$(readlink -f "$f") || { echo "FAIL $p/$d: dangling symlink -> $(readlink "$f")"; rc=1; continue; }
+      if [ "$tgt" != "$(readlink -f "$REPO")" ]; then
+        echo "FAIL $p/$d: symlink -> $tgt (not the repo doc)"; rc=1; continue
+      fi
+    elif [ "$f" -ef "$REPO" ]; then
+      kind=hardlink
     fi
-    tgt=$(readlink -f "$f") || { echo "FAIL $p/$d: dangling symlink -> $(readlink "$f")"; rc=1; continue; }
-    got=$(md5sum "$f" 2>/dev/null | awk '{print $1}')
-    if [ "$tgt" != "$(readlink -f "$REPO")" ]; then
-      echo "FAIL $p/$d: symlink -> $tgt (not the repo doc)"; rc=1
-    elif [ "$got" != "$want" ]; then
-      echo "FAIL $p/$d: symlink target bytes differ (md5=$got repo=$want)"; rc=1
+    # Identity is `-ef` (same device+inode), not md5: a symlink resolves to the repo
+    # inode and a hardlink IS that inode, so both are one file by construction. A
+    # byte-identical COPY is still a FAIL -- it is the materialization signature and
+    # it drifts on the next doc commit.
+    if [ "$f" -ef "$REPO" ]; then
+      got=$(md5sum "$f" 2>/dev/null | awk '{print $1}')
+      echo "OK   $p/$d: $kind -> $(readlink -f "$f")  md5=$got"
     else
-      echo "OK   $p/$d: symlink -> $tgt  md5=$got"
+      got=$(md5sum "$f" 2>/dev/null | awk '{print $1}')
+      if [ "$got" = "$want" ]; then
+        echo "FAIL $p/$d: byte-identical COPY, not a link (md5=$got == repo) -- it will drift at the next doc commit"
+      else
+        echo "FAIL $p/$d: COPY whose bytes already differ (md5=$got repo=$want)"
+      fi
+      rc=1
     fi
   done
 done
