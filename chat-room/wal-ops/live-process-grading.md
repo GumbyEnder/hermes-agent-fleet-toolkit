@@ -68,6 +68,40 @@ the dispatcher turned over from 433923 to 1025672 at 06:17:02, 68 minutes after
 a peer had re-stated 433923 as current. State the measurement instant next to
 every pid you quote.
 
+## A COLLECTED transient unit reads `success` — grade the JOURNAL by unit name
+
+`systemctl --user show -p ActiveState -p ExecMainStatus -p Result <unit>` discriminates only
+while the waiter is alive (`ActiveState=active`). After collection the unit object answers
+`ActiveState=inactive`, `ExecMainStatus=0`, `Result=success`, with EMPTY
+`ExecMainStartTimestamp`/`ExecMainExitTimestamp` — measured 2026-11-14 on
+`wake-dispatcher-reload-6a840d3.service`, a unit whose journal shows `Main process exited,
+code=exited, status=1/FAILURE` at 13:11:29. That report is a 0-status, and it lies in the
+HARMLESS direction: it would tell the next reader the service succeeded, or never ran.
+
+    systemctl --user show -p ActiveState -p ExecMainStatus -p Result wake-dispatcher-reload-6a840d3.service
+    -> Result=success / ExecMainStatus=0 / ActiveState=inactive / (both timestamps empty)
+
+`systemctl --user list-units 'wake-*' --all` is the same trap from the other side: it listed
+`0 loaded units` for a transient that had just failed, because a collected transient has no
+unit file left to list.
+
+The authority is the journal, keyed by the unit NAME:
+
+    journalctl --user -u <unit> -o short-iso | tail -20
+
+which printed Started 09:11:28 -> `Main process exited, code=exited, status=1/FAILURE`
+13:11:29 -> `Failed with result 'exit-code'` -> `Consumed 2min27.404s CPU time`. After collection
+the journal also carries `Failed to open .../transient/<unit>: No such file or directory` on every
+later `systemctl --user show` — the transient file is gone, and those rows are what survive.
+
+Two rules:
+- In flight, a `Started` line with NO terminal line means the waiter is STILL INSIDE ITS LOOP —
+  resolve the process (pid, `ActiveState`) before calling it killed. Measured 2026-11-14: a
+  waiter was declared dead 3 h into a 4 h00m01s window that then ran to its idle deadline
+  (`GAVE UP waiting for live turns (live_turns=3)`).
+- After collection, quote the journal or say nothing. The unit object cannot distinguish
+  FAILURE, SUCCESS and NEVER-RAN, so a verdict built on it settles nothing in either direction.
+
 ## Name the RUNNING code by the commit it equals, never by "HEAD, tree clean"
 
 `git status` clean says the worktree matches HEAD. It says nothing about what the
