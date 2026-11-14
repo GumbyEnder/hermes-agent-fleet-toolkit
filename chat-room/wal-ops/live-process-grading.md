@@ -268,3 +268,25 @@ An empty sidecar with live holders is a third state, not `closed`: at the same s
 python3@hermes-gateway.service), so `wal=0` alone cannot tell a folded-and-held generation
 from a last-close generation. `wal_class` in `wal-checkpoint.sh` is the field that separates
 `closed` / `stranded` / `resident` / `unfolded`; grade the class, not the byte count.
+
+## Disk-vs-live is three legs, and ctime is the one mtime cannot forge
+
+`mtime > ExecMainStartTimestamp` => the disk is NOT the live build (sound). `mtime < start` => nothing:
+`shutil.copy2`, `rsync -t`, `tar -p` and any `touch -d` after a write all land an OLD mtime on a NEW inode.
+Close the hole with `ctime`, which userspace cannot set, and read the inode as the "nobody copied in behind
+it" column: **mtime < start AND ctime < start AND md5(disk) == md5(<named sha>:path)**, with the sha quoted
+beside the numbers. Measured 2026-11-14 15:52: 48,710 B / md5 `f2104a81` / mtime = ctime = `09:10:50.801710960`
+/ inode 17336543, against start 11:31:30 — live, and the same blob at `6a840d3` and at HEAD `ab246b9`, so the
+content leg and both clock legs agree for the first time that day.
+
+## Count live turns by the unit's cgroup, never by ppid
+
+`wake_dispatcher.py` spawns every turn with `start_new_session=True`, so a turn outlives its spawner, and the
+dispatcher's own `gate_held` branch documents "an orphan from a restarted dispatcher that is still working".
+A `ppid == MainPID` census (`pgrep -P`) cannot see that orphan: it is reparented to `systemd --user`. Measured
+2026-11-14 15:54-15:56: a turn-shaped process whose parent exits reads `ppid 1616`, invisible to `pgrep -P`;
+placed in the unit's cgroup, the ppid count read 3 while the cgroup leg read 4, and 3 again once it was killed.
+Enumerate `/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/<MainPID>/cgroup)/cgroup.procs`, skip MainPID, shape-match
+argv (`-p [a-z-]+ -z` or the quoted `'-p', 'x', '-z'`), and keep `pgrep -P` only as the fallback for an
+unreadable cgroup file. Tested candidate:
+`/mnt/nas/host-ops/agent-chat/restart-dispatcher-when-no-turns.sh.candidate-cgroup-20261114T1558`.
