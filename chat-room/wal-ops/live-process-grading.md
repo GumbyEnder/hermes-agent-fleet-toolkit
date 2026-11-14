@@ -102,6 +102,24 @@ Two rules:
 - After collection, quote the journal or say nothing. The unit object cannot distinguish
   FAILURE, SUCCESS and NEVER-RAN, so a verdict built on it settles nothing in either direction.
 
+## `/health` `failed` is attributable — replay the increment condition, not `rc`
+
+`_failed += 1` fires on `if err and not reply:` (`wake_dispatcher.py`, in the wake handler),
+where `err` is `stderr[:400]` when `rc != 0` or the reply is empty. So the counter is neither
+`rc != 0` nor "no reply":
+- `rc=2` WITH a posted reply is a `done` (measured: game, id 4710, rc 2, 4000 reply chars).
+- `rc=-15` with EMPTY stderr and no reply is also a `done`, because `err` stays `""` (measured:
+  frodo, id 4682, 13:28:00, 68.5 s, `posted_id 0`). A killed turn with nothing to show is
+  booked as a success. Grade a wake by `posted_id`, never by the counter.
+- Only `err` truthy AND reply empty increments `failed`.
+
+Attributing one is a journal replay, not a guess: `journalctl --user -u
+hermes-wake-dispatcher.service --since <ExecMainStartTimestamp> -o cat`, parse each
+`{"evt": "wake", ...}` line, apply the condition. Measured 2026-11-14: `failed: 1` since the
+11:31:30 start resolved to exactly one event -- id 4626, profile buzzy, rc -9, duration
+1350.4 s against a 900 s budget, `error: " killed at hard cap 1350s"`, `posted_id 0`. The
+counter resets on restart, so `failed=1` is always "one since MainPID", never "one ever".
+
 ## Name the RUNNING code by the commit it equals, never by "HEAD, tree clean"
 
 `git status` clean says the worktree matches HEAD. It says nothing about what the
@@ -122,6 +140,23 @@ Procedure, in this order:
 
 Corollary for slots: a behaviour change sitting on disk but not in the process is
 attested by no row yet. Rows written before the next restart grade the old path.
+
+## A quoted number is a sample, not a state — re-take it at send time
+
+Every number in a room post is a reading of a moving object, and the reader who checks it
+reads later than you did. Measured 2026-11-14: a post written 13:56 said HEAD 776b0f4 and
+`live-process-grading.md` 10,706 B / md5 276a5012; at 14:56 HEAD was 18d9f9e (six commits
+later, pushed, tree clean) and the same file was 12,821 B / md5 ab98d002 / inode 17695065 /
+nlink=3. Both SKILL.md copies had moved too (buzzy 94,646 B @14:40:10, frodo 92,231 B
+@14:22:52 against 91,063 and 90,770). The rule bites both ways: by 15:15 the reviewer's own
+HEAD quote was two commits stale (2d28a34). Do not defend the earlier number — re-take it.
+
+- Quote `size`, `mtime`, `inode` and `nlink` from ONE stat of ONE path, and say when you took
+  it. A size without an mtime cannot be checked; an md5 without a path can be another inode.
+- `git rev-parse HEAD` AND `git rev-parse origin/master` at send time is the only honest way
+  to say "nothing is open". "HEAD is <sha>" in prose is a timestamp, not a state.
+- A shared inode proves the DOC is one file (`-ef`), never that two skill COPIES are equal:
+  `nlink=1` on SKILL.md means only the `references/` entries are hardlinked.
 
 ## `pgrep -af` counts the caller's own argv, so a count is never a census
 
@@ -192,17 +227,41 @@ Measured 2026-11-14 13:28:34 (src=backup, slot `20261114T132834.741915-0500`):
     backup:         main=copy:11681792 wal=copy:0
 
 28 frames existed at the slot second and all 28 moved into the main copy before the sidecar
-was read (`bus-checkpoint.log`). All 25 rows of `room.db.bak.manifest.jsonl` carry wal bytes
-0, and `bus-checkpoint.log` holds zero `busy=1` lines -- every copy slot so far folded clean.
+was read (`bus-checkpoint.log`). At 2026-11-14 14:28 the manifest held 26 rows: 16 with
+`files."room.db-wal.bak".bytes = 0` (`wal: "copy:0"`) and 10 with `{"state": "absent",
+"bytes": null}` (`wal: "skip:absent"`), zero rows with non-zero wal bytes, and zero `busy=1`
+lines in `bus-checkpoint.log`. Every copy slot so far folded clean -- but "folded clean" is
+two different shapes, and only one of them is a fold this arm performed.
 
-Two rules for a verdict:
+Three rules for a verdict:
 - The only shape that CAN produce a non-empty `wal.bak` is a BLOCKED fold (`busy=1`,
   `checkpointed < log`, a holder inside a read transaction at the slot second). When one
   appears, the non-empty sidecar is a WARNING that the main copy is short those frames --
   never a win, and never read as "we finally caught a WAL".
-- Never cite `wal=copy:0` as proof that the hour's writes were captured. Cite the checkpoint
-  line's `log=N folded=N moved=N`, which names what moved into `main=copy:<bytes>`; the
-  sidecar row only proves the fold ran.
+- A 0-byte sidecar with `moved=N>0` names what moved: cite the checkpoint line's
+  `log=N folded=N moved=N` into `main=copy:<bytes>`. `wal=copy:0` alone only proves the fold
+  ran, never that the hour's writes were captured.
+- An ABSENT sidecar is its own class -- not a 0-byte one, and not a missing measurement. It
+  says the `-wal` file did not exist at the slot second because a close had already folded
+  and removed it, so this arm moved nothing (`moved=0`). Grade it by the MAIN COPY GROWING,
+  never by `moved`, and never by `fuser`: no inode existed to hold, so the holders line is
+  `n/a` by construction and cannot be cited either way. `wal_class` cannot answer for it
+  either -- `already-closed` sits upstream of `closed`/`stranded`/`resident`/`unfolded`.
+
+Measured 2026-11-14 14:28:35 (src=backup, slot `20261114T142835.099172-0500`,
+`pairsplit2-20261114T142835.log`):
+
+    checkpoint-pre: busy=0 log=0 folded=0
+    checkpoint:     busy=0 log=0  folded=0  moved=0  wal=absent
+    backup:         main=copy:11898880 wal=skip:absent
+    holders:        n/a (sidecar absent at capture; fuser not run)
+
+`main` grew 11,681,792 -> 11,898,880 (+217,088 B) from the 13:28 copy, and the manifest row
+carries `{"state": "absent", "bytes": null}` for the wal. That growth is cumulative between
+two copies, not a per-slot frame count: cite it as "the copy grew by N B since the previous
+copy", never as `moved=N`. `verify-slot-manifest.sh` already enforces the mechanical half --
+leg `wal skip:absent agrees with pre` requires `pre log <= 0` -- so an absent sidecar whose
+pre reading was non-zero is a FAIL, not this class.
 
 An empty sidecar with live holders is a third state, not `closed`: at the same second
 `fuser` named two holders on the 0-byte inode (2870271, 2973582, both
