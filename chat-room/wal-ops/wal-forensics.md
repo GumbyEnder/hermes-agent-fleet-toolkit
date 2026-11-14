@@ -170,7 +170,7 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   connection open, and five commits then climb from 0 to 20,632 = 32 + 5×4120 (that one is
   arithmetic and does reproduce).
 
-### Root cause of the irreproducible arms: the pragma name, and an unstepped assignment (measured 2026-11-14 12:58)
+### Root cause of the irreproducible arms: the pragma name, not an unstepped assignment (measured 2026-11-14, second arm revised 14:38)
 
 - **There is no `PRAGMA autocheckpoint` in SQLite 3.53.1.** `sqlite3 p.db "PRAGMA autocheckpoint=4;
   PRAGMA wal_autocheckpoint;"` returns no row for the first and still prints the previous value (`1000`):
@@ -178,10 +178,17 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   fixture spelled `autocheckpoint` measures one arm, not two — every sample is a rung of the same growing
   ladder, and `8,272 / 24,752 / 37,112` are `32 + n×4,120` at n = 2, 4, 7. The setting is
   `wal_autocheckpoint`; there is no alias.
-- **A `PRAGMA` assignment must be stepped to take effect under Python ≥ 3.12.** In CPython 3.12+
-  `execute()` prepares and binds without stepping, so `c.execute("PRAGMA wal_autocheckpoint=4")` on its own
-  can leave the old value in force; `c.execute("PRAGMA wal_autocheckpoint=4").fetchone()` applies it. Read
-  the value back in the same fixture and print it — an unread pragma is an unmeasured arm.
+- **The assignment DOES take effect at `execute()` on CPython 3.14.9 / SQLite 3.53.1 — but only a read-back
+  proves which arm you measured.** A first reading here claimed an un-fetched `execute()` "can no-op" and
+  that `.fetchone()` is what applies it; that mechanism does **not** reproduce on this stack. Measured
+  2026-11-14 14:35–14:38: `c.execute("PRAGMA wal_autocheckpoint=4")` with no `fetchone()` leaves
+  `cursor.description` populated (CPython steps the statement once to materialise the pragma's value row),
+  eight further single-page commits sit FLAT at 16,512 B (autocheckpoint actually fired at 4 pages), and a
+  same-connection `PRAGMA wal_autocheckpoint` reads back `4` — identical to the `.fetchone()` shape. What
+  *does* leave the old value in force is a wrong **name** (previous bullet): `PRAGMA autocheckpoint=4`
+  silently discards and leaves the default `1000`. The durable half stands and is the reason to keep the
+  bullet: print the read-back in the same fixture, because an unread pragma is an unmeasured arm — "was the
+  value what I thought" is answered only by reading it, not by assuming the SET landed.
 - **A ladder rung is not a commit number.** Bootstrap (`CREATE TABLE` + first `INSERT` = 3 frames = 12,392 B)
   then N commits gives `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
   frames in the `PASSIVE`/`RESTART` tuple `(0,43,43)`. Quote the formula, not a terminal rung.
