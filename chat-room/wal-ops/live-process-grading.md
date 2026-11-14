@@ -142,3 +142,36 @@ A missed slot is recoverable without inventing a grader: `SLOT_EP=<epoch> bash g
 grading the row the manifest already holds (`SLOT_EP=1794673713` -> row
 `20261114T112834.073259-0500`, PASS, posted as #4641). Say in the room that it is a backfill;
 the room timestamp is the only thing separating it from a timer run.
+
+## A per-slot `wal.bak` of 0 B is the fold's pass condition, not an unobserved hour
+
+`_slot(src, copy=True)` runs `checkpoint(src, slot)` -- `PRAGMA wal_checkpoint(TRUNCATE)`
+-- inside `_slot_lock`, and only THEN calls `backup()`. So `room.db-wal.bak.<slot>` is the
+sidecar AFTER the fold, and a 0-byte artifact says the fold succeeded, not that the hour
+carried no frames. "A non-empty per-slot WAL has never been observed" is therefore not a
+missing measurement on a clean slot: it is unreachable by construction.
+
+Measured 2026-11-14 13:28:34 (src=backup, slot `20261114T132834.741915-0500`):
+
+    checkpoint-pre: busy=0 log=28 folded=28
+    checkpoint:     busy=0 log=0  folded=0  moved=28  wal=0
+    backup:         main=copy:11681792 wal=copy:0
+
+28 frames existed at the slot second and all 28 moved into the main copy before the sidecar
+was read (`bus-checkpoint.log`). All 25 rows of `room.db.bak.manifest.jsonl` carry wal bytes
+0, and `bus-checkpoint.log` holds zero `busy=1` lines -- every copy slot so far folded clean.
+
+Two rules for a verdict:
+- The only shape that CAN produce a non-empty `wal.bak` is a BLOCKED fold (`busy=1`,
+  `checkpointed < log`, a holder inside a read transaction at the slot second). When one
+  appears, the non-empty sidecar is a WARNING that the main copy is short those frames --
+  never a win, and never read as "we finally caught a WAL".
+- Never cite `wal=copy:0` as proof that the hour's writes were captured. Cite the checkpoint
+  line's `log=N folded=N moved=N`, which names what moved into `main=copy:<bytes>`; the
+  sidecar row only proves the fold ran.
+
+An empty sidecar with live holders is a third state, not `closed`: at the same second
+`fuser` named two holders on the 0-byte inode (2870271, 2973582, both
+python3@hermes-gateway.service), so `wal=0` alone cannot tell a folded-and-held generation
+from a last-close generation. `wal_class` in `wal-checkpoint.sh` is the field that separates
+`closed` / `stranded` / `resident` / `unfolded`; grade the class, not the byte count.
