@@ -88,12 +88,17 @@ mkfuture "$KEEP"
 # or newer_artifacts() cannot see them and the case tests nothing.
 python3 - "$W/bdir" "$row_slot" "$KEEP" <<'PY'
 import os, sys
+from datetime import datetime, timedelta
 d, slot, keep = sys.argv[1], sys.argv[2], int(sys.argv[3])
-# row slot is <date>T<HHMMSS>.<micro>-<off>; one second later sorts after it and
-# still satisfies SLOT_RE, which is what newer_artifacts() matches on.
-later = slot[:13] + '%02d' % ((int(slot[13:15]) + 1) % 60)   # ...:59
+# A synthetic artifact is "newer" only if its SLOT TOKEN sorts after the row's
+# token -- newer_artifacts() compares the token strings lexicographically. Build
+# real timestamps, never a hand-rolled HHMMSS+1: 08:27:59 + 1 read as a minute
+# carry and produced ...T082700.000001, which sorts BEFORE ...T082759.421389, so
+# the case counted 0 newer artifacts and tested nothing (measured 2026-11-14,
+# keep=3 and keep=24 both read `0 newer artifacts on disk`).
+t = datetime.strptime(slot, '%Y%m%dT%H%M%S.%f%z')
 for i in range(1, keep + 1):
-    n = 'room.db.bak.%s.%06d-0500' % (later, i)
+    n = 'room.db.bak.%s' % (t + timedelta(seconds=i)).strftime('%Y%m%dT%H%M%S.%f%z')
     open(os.path.join(d, n), 'wb').write(b'x')
 PY
 expect "outside retention (KEEP newer ARTIFACTS) is INFO PRUNED, not FAIL" \
