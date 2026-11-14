@@ -214,19 +214,23 @@ class SpillTests(unittest.TestCase):
                              "a turn was spawned for an already-answered mention")
 
     def test_a_killed_turn_is_re_spilled_and_abandoned_at_the_cap(self):
-        """E: err-and-no-reply holds the record; RETRY_MAX then abandons it.
+        """E: a turn killed at the HARD cap is re-spilled, then abandoned at the cap.
 
         Live case: 4164 ran 900.1 s against a 900 s budget, rc null, posted 0, and
         was dropped from the spill even though the orphan child posted #4200
         eleven seconds later. A killed turn is not a finished turn.
+
+        The kill point is now the hard cap, not the budget: the budget only
+        reports (see test_wake_budget.py — killing the client at the budget
+        released the gate while the gateway turn ran on). The stub sleeps 120 s
+        behind a 3 s hard cap, so this also pins that the kill reaches the whole
+        process group: otherwise communicate() waits on the grandchild's pipe.
         """
         with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b, _t, _s):
             port = free_port()
-            # The stub outlives the 1 s budget by ~1 s: that is the real shape of
-            # the defect — subprocess.run gives up at the budget, but the pipe is
-            # held by the grandchild, so the wrapper cannot even return promptly.
-            with self._launch(b, port, STUB_SLEEP="2", WAKE_TIMEOUT="1",
-                              WAKE_RETRY_MAX="2") as svc:
+            started = time.time()
+            with self._launch(b, port, STUB_SLEEP="120", WAKE_TIMEOUT="1",
+                              WAKE_HARD_CAP="3", WAKE_RETRY_MAX="2") as svc:
                 url = f"http://127.0.0.1:{port}"
                 st, body = post(url + "/wake/alpha",
                                 {"from": "t", "topic": "wake", "text": "@alpha dies",
@@ -245,6 +249,9 @@ class SpillTests(unittest.TestCase):
                 with open(self.count) as fh:
                     starts = fh.read().count("start")
             self.assertEqual(starts, 3, f"expected 3 spawns (1 + 2 retries), got {starts}")
+            self.assertLess(time.time() - started, 60,
+                            "the wrapper blocked on the grandchild's pipe: the hard-cap "
+                            "kill did not reach the process group")
 
     def test_a_turn_killed_by_a_stop_is_re_spilled(self):
         """G: rc=-15 with no reply is not a finished turn either.

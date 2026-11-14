@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+The gate covers the turn, not the request that asked for one.
+
+`hermes -p P -z` does not run a turn: it is a client of `hermes-gateway.service`
+that hands the prompt over and waits (gateway_agent.py: "never runs a tool and
+never writes state.db: the turn runs in the gateway"). So the flock delivered by
+`pass_fds` lived in a client whose death is not the turn's death — and systemd's
+default `KillMode=control-group` made `systemctl restart` exactly that death: the
+client was SIGTERMed (rc -15, posted 0), the lock was released, and the resumed
+record acquired it legitimately and spawned a rival turn under the same mention
+(buzzy/4205 -> 4254 at 419.5 s, then 4257).
+
+- `systemd/hermes-wake-dispatcher.service`: `KillMode=process`. A restart signals
+  the dispatcher alone; the turn clients live on and keep their gates.
+- `wake_dispatcher.py`: the budget no longer kills. `_run_one` polls the child and
+  logs `wake_over_budget` at the budget with `gate=held`; it kills at
+  `WAKE_HARD_CAP` (default `budget + max(60, budget/2)`), and kills the whole
+  process group so a grandchild holding the pipe cannot stall the wrapper. An
+  honest overshoot now posts its one reply instead of being killed and re-run.
+- `_stamp_holder`: the lock file names the *waiter's* pid after spawn (it named
+  the dispatcher's before — dead by construction, and it proved nothing). The
+  flock is still the gate; the line is only for diagnosis.
+- Tests: new `tests/test_wake_budget.py` (an over-budget turn finishes once under
+  a gate that stays shut; the lock file names a waiter whose cmdline is the turn
+  client) and `tests/probe-unit-killmode.py`, which starts two transient units
+  with identical process trees and shows that `KillMode=control-group` frees the
+  lock on stop while `KillMode=process` keeps the holder. Case E now exercises
+  the hard cap; 79 tests total.
+
 ## 0.5.0
 
 Analytics tab.

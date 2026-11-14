@@ -19,7 +19,12 @@ Env:
   WAKE_ALLOW             comma list of profiles that may be woken (empty = none)
   WAKE_MAX_CONCURRENCY   parallel agent turns (default 2)
   WAKE_MAX_QUEUE         queued mentions allowed before 429 (default 20)
-  WAKE_TIMEOUT           seconds per turn (default 900)
+  WAKE_TIMEOUT           seconds per turn (default 900). This is a REPORT, not a
+                         kill: `hermes -p P -z` is a gateway client holding the
+                         per-profile flock, so killing it at the budget released
+                         the gate while the turn ran on (buzzy/4205 -> 4254+4257)
+  WAKE_HARD_CAP          seconds per turn before the client and its process group
+                         are actually killed (default: budget + max(60, budget/2))
   WAKE_DEDUPE_TTL        seconds to remember a delivered mention (default 600)
   WAKE_RETRY_MAX         re-spills for a turn that died with no reply, before it
                          is abandoned (default 2; 0 disables retries)
@@ -83,6 +88,24 @@ TIMEOUT_OVERRIDES = _parse_overrides(os.environ.get("WAKE_TIMEOUT_OVERRIDES", ""
 def timeout_for(profile):
     """Per-profile turn budget; long-running agents (e.g. game) need more than 15 min."""
     return TIMEOUT_OVERRIDES.get(profile, TIMEOUT)
+
+
+HARD_CAP = int(os.environ.get("WAKE_HARD_CAP", "0") or 0)
+
+
+def hard_cap_for(profile):
+    """Point at which a turn is killed, as opposed to merely reported as slow.
+
+    The budget is no longer a kill (see `_run_one`): the wrapper is a *client*
+    of the gateway, so killing it releases the gate while the turn runs on. The
+    hard cap exists only so a wedged client cannot hold a profile's gate for
+    ever; it is deliberately past the budget, so an honest overshoot posts its
+    reply instead of being killed and re-run as a duplicate.
+    """
+    if HARD_CAP:
+        return HARD_CAP
+    budget = timeout_for(profile)
+    return budget + max(60, budget // 2)
 
 
 DEDUPE_TTL = int(os.environ.get("WAKE_DEDUPE_TTL", "600"))
@@ -462,6 +485,23 @@ def _acquire_profile_lock(profile):
     return fd, ""
 
 
+def _stamp_holder(fd, profile, pid):
+    """Write 'pid profile ts' into the lock file for diagnosis only.
+
+    The pid is the *waiter*, not the turn: `hermes -p P -z` is a gateway client,
+    so the turn runs under hermes-gateway.service. That is why the flock, not
+    this line, is the gate — and why `_run_one` re-stamps it with the waiter's
+    pid once there is one (the dispatcher's own pid was dead by construction).
+    """
+    if not isinstance(fd, int) or fd < 0:
+        return
+    try:
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, f"{pid} {profile} {int(time.time())}\n".encode(), 0)
+    except OSError:
+        pass
+
+
 def _run_one(profile, payload, lock_fd=-1):
     global _done, _failed
     started = time.time()
@@ -470,24 +510,48 @@ def _run_one(profile, payload, lock_fd=-1):
     prompt = (f"[Agent Chat Room — you were @mentioned by {payload.get('from')} "
               f"in topic '{payload.get('topic')}']\n\n{text}")
     budget = timeout_for(profile)
+    hard = hard_cap_for(profile)
     rc, reply, err = None, "", ""
-    kwargs = {}
+    kwargs: dict = {"start_new_session": True}   # so the hard cap can kill the group
     if isinstance(lock_fd, int) and lock_fd >= 0:
         kwargs["pass_fds"] = (lock_fd,)
+    late, abandoned = False, False
     try:
-        r = subprocess.run([BIN, "-p", profile, "-z", prompt],
-                           capture_output=True, text=True, timeout=budget,
-                           stdin=subprocess.DEVNULL, **kwargs)
-        rc, reply = r.returncode, (r.stdout or "").strip()[-4000:]
-        err = (r.stderr or "")[:400]
-    except subprocess.TimeoutExpired:
-        # TimeoutExpired's str() carries the whole argv, i.e. the entire prompt,
-        # which would put the mention in the journal a second time. And the kill
-        # reached this wrapper, not necessarily the turn: the child can outlive
-        # it and post later (4164 -> orphan #4200, 11 s after we gave up).
-        err = f"timeout after {budget}s"
-    except Exception as e:  # noqa: BLE001
-        err = str(e)[:400]
+        p = subprocess.Popen([BIN, "-p", profile, "-z", prompt],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, stdin=subprocess.DEVNULL, **kwargs)
+        # The flock this child inherits is the only thing standing between a
+        # restarted dispatcher and a rival turn under the same mention, so the
+        # budget must not be a kill: `hermes -z` is a gateway *client*, and
+        # killing it releases the fd while the turn runs on (buzzy's 4205:
+        # wrapper rc -15, the turn posted 4254 419.5 s later).
+        _stamp_holder(lock_fd, profile, p.pid)
+        while True:
+            try:
+                out, errs = p.communicate(timeout=1.0)
+                break
+            except subprocess.TimeoutExpired:
+                now = time.time()
+                if not late and now - started >= budget:
+                    late = True
+                    log(evt="wake_over_budget", profile=profile,
+                        message_id=message_id, budget_s=budget,
+                        hard_cap_s=hard, gate="held")
+                if now - started >= hard:
+                    abandoned = True
+                    try:
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                    except OSError:
+                        p.kill()
+                    out, errs = p.communicate()
+                    break
+        rc = p.returncode
+        reply = (out or "").strip()[-4000:]
+        err = (errs or "")[:400] if rc != 0 or not reply else ""
+        if abandoned:
+            err = f"{err or ''} killed at hard cap {hard}s (budget {budget}s)"
+    except Exception as e:  # noqa: BLE001  (no argv in the message: it is the prompt)
+        err = f"{type(e).__name__}: {str(e)[:200]}"
     posted = _post_reply(profile, payload.get("topic", "general"), reply,
                          message_id if isinstance(message_id, int) and message_id else None) \
         if reply else 0

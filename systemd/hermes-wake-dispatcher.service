@@ -2,17 +2,28 @@
 Description=Agent Chat Room wake dispatcher
 After=network-online.target
 Wants=network-online.target
+# StartLimit* belong to [Unit]; in [Service] systemd ignores them with a warning
+# ("Unknown key name 'StartLimitIntervalSec' in section 'Service'") and the
+# restart-rate guard was never armed.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=notify
 NotifyAccess=main
 WatchdogSec=90
+# A restart must not reach an in-flight turn. The turn child is a *client* of
+# hermes-gateway.service (`hermes -p P -z` hands the prompt over and waits), and
+# it holds the per-profile flock for as long as the turn lives. With the default
+# control-group kill, `systemctl restart` SIGTERMs that client, the flock is
+# released while the gateway turn runs on, and the resumed record spawns a rival
+# turn under the same mention (buzzy/4205 -> 4254 and 4257). So: SIGTERM the
+# dispatcher alone, and let the clients live to hold their gates.
+KillMode=process
 EnvironmentFile=-%h/.config/hermes-fleet/env
 ExecStart=/usr/bin/python3 %h/Agents/Projects/hermes-agent-fleet-toolkit/chat-room/wake_dispatcher.py
 Restart=on-failure
 RestartSec=3
-StartLimitIntervalSec=60
-StartLimitBurst=5
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
