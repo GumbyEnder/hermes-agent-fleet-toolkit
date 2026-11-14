@@ -28,6 +28,23 @@
 # the same commit" was false. /mnt/nas/host-ops/agent-chat/test-witness-wal-line.sh is an
 # installed copy of this file, not a second source.
 #
+# HOW TO READ THIS OUTPUT (measured 2026-11-13 21:02-21:20 ET, see README):
+#   * rc IS the failure count (exit "$FAILS" below): 0,1,2,4 measured. Quote the
+#     FAIL names, never "rc=N" as a signature -- rc=2 also fits a 4-failure run.
+#   * E is the only test that stands alone for the class-line-absent class (delete
+#     the `echo "# holder-class` line -> FAIL E count=0, rc=1). Every walk mutation
+#     fails E *and* F service/scope/app together (loop-direction reverse -> rc=4),
+#     so F is not redundant: do not drop the fixtures because E fires too.
+#   * EXTRACT FAILED is textual coupling, not a broken gate: this harness lifts the
+#     awk PROGRAM TEXT out of the shipped script (the `UNIT_PROG=` sed, matching
+#     `_unit="$(awk -F/ '...'`) and runs the
+#     fixtures through it. Re-shape the walk -- even correctly, into a helper -- and
+#     you get `EXTRACT FAILED -- unit-walk awk missing`, rc=1, before any output
+#     test runs. Fix the anchor, then judge the witness.
+#   * F "session slice (no own unit)" passes under the correct walk and the reversed
+#     one alike. It pins that user@1000.service means "no unit of its own"; it is not
+#     coverage of deepest-wins.
+#
 # Usage: test-witness-wal-line.sh [path-to-witness-script] [path-to-real-1615-log]
 set -u
 WIT="${1:-/mnt/nas/host-ops/agent-chat/witness-split-pair-v2.sh}"

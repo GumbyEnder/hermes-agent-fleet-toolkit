@@ -59,6 +59,37 @@ VACUOUS (STRUCTURAL). It is versioned here on purpose: it lived at
 committed, so "the test landed in the same commit" could not be true. The file
 at the NAS path is an installed copy.
 
+### Reading a harness failure (measured 2026-11-13 21:02-21:20 ET)
+
+Four things about `test-witness-wal-line.sh` that its own output does not say.
+Each was measured by mutating the shipped script, not inferred.
+
+1. **`rc` is the FAILURE COUNT, not a fixed code.** `exit "$FAILS"` — measured
+   rc=1 (one FAIL), rc=2 (two), rc=4 (four), rc=0 (all pass). Quote the FAIL
+   names, not `rc=N`: "rc=2" quoted as *the* pre-fix signature will misread a
+   four-failure run as if it were that signature.
+2. **E is not the only test holding the walk; F overlaps.** Mutating only the
+   loop direction (`for(i=NF;i>0;i--)` -> `for(i=1;i<=NF;i++)`, awk shape kept so
+   extraction still succeeds) fails **E, F service, F scope, F app scope**, rc=4.
+   E is *uniquely* load-bearing only for the class-line-absent class (delete the
+   `echo "# holder-class$_cls"` line -> FAIL E, `count=0`, everything else PASS,
+   rc=1). Written as "E is the only thing holding the line", a reader concludes F
+   is redundant and drops the fixtures.
+3. **`EXTRACT FAILED` is textual coupling, not a broken gate.** The harness does
+   not call the shipped script's walk; it lifts the awk *program text* out of it
+   (the `UNIT_PROG=` sed, which matches `_unit="$(awk -F/ '...'`) and drives the
+   fixtures with it. Re-shape the walk — even
+   correctly, into a helper — and it exits `EXTRACT FAILED -- unit-walk awk
+   missing`, rc=1, before any output test runs. A good refactor and a break
+   produce the same token, so read `EXTRACT FAILED` as "the harness's anchor
+   moved", then re-anchor the `sed` (or teach the harness the new shape) before
+   concluding anything about the witness.
+4. **F's `session slice (no own unit)` fixture discriminates nothing about
+   direction.** It passes under the correct walk and the reversed one alike (both
+   yield `user@1000.service`). It pins the *meaning* — `user@1000.service` is a
+   token for "no unit of its own", never a unit — but do not count it as coverage
+   of deepest-wins; `F service deepest` and `F scope deepest` are that coverage.
+
 `test-wal-holder-exclusion.py` covers the four classes the watcher can assign:
 
 - A `keeper` in an excluded unit -> `WAL-IDLE holders=none excluded=<pid>:keeper/...`

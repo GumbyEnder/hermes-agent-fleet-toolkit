@@ -2,7 +2,7 @@
 2bbd0c25562b8fd34221d664e6a7e902  wal-unlink-watch.py
 23f2d0d7257bd156665be09463db6ab4  test-wal-holder-exclusion.py
 5e223e475405e36d1a13275a1a901744  test-wal-verdict-stall.py
-985da575553c9589707d68da6993fedc  test-witness-wal-line.sh
+bd4df5ea7f9741be0b5f54a02c54a0a0  test-witness-wal-line.sh
 1e76948ef109380b692a21773ec9c045  wal-checkpoint.sh
 59385e74449e7833f03f146f8b8b28e8  witness-split-pair-v2.sh
 5271966c1a06f1aa591d3f598fefd9d8  wal-keeper.py
