@@ -367,7 +367,10 @@ requires each profile's reference to be `-ef` the repo file and to carry that sa
 arm count with it (5 DOCS x 2 profiles = 10 on `b5dc7290`), because rc=0 proves only the arms the
 gate's own build declares -- the earlier `c7a74079` build proved 8.
 
-Measured 2026-11-14: this file was 21,025 B / `a837cc63` / inode 17695276 / nlink 3 at 16:40, and
+Every triple below is the generation this paragraph replaced, never the current one -- a doc
+cannot hash itself, so take the current one from the gate. Measured 2026-11-14: this file was 21,025 B / `a837cc63` / inode 17695276 / nlink 3 at 16:40, and
 24,128 B / `c8ff9810` / inode 17695276 / nlink 3 at 18:26. An in-place edit keeps the inode (so
 `-ef` and `nlink` survive a doc change) while size and md5 move with every commit to it -- which
-is why the gate md5s per arm and never trusts a remembered triple.
+is why the gate md5s per arm and never trusts a remembered triple. The inode is a replace
+detector, not a clock: 17695276 has now carried 18,695 -> 21,025 -> 24,128 -> 25,131 without moving,
+while 17695197 -> 17695276 at 17:16 marked a replace, not an edit.
