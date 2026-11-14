@@ -100,6 +100,17 @@ mk; ins 10; holder mark >/dev/null; sleep 0.6; ins 200
 stat -c '  before arm: wal=%s' "$DB-wal" 2>/dev/null || echo "  before arm: wal=absent"
 run_arm unfolded unfolded;       wait
 
+# THE rc!=0 ARM: no connection ever formed, so no qualifying close happened. A
+# pre-existing 0 B pair that the failed open never touched must NOT read `stranded`
+# (that claims a bystander); it reads `unprobed`. Built with a garbage main file plus
+# a pre-seeded 0 B -wal, which is exactly the shape frodo named as latent: 0 rows
+# carried rc!=0 when this arm was added, so nothing had ever exercised it.
+rm -f "$DB" "$DB-wal" "$DB-shm"
+printf 'this is not a sqlite database\n' >"$DB"
+: >"$DB-wal"
+stat -c '  before arm: wal=%s (garbage db, rc must be != 0)' "$DB-wal"
+run_arm unprobed unprobed
+
 echo "--- full lines ---"
 for f in "$W"/*.log; do echo "[$(basename "$f")]"; sed 's/^/  /' "$f"; done
 rm -rf "$W"

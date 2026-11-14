@@ -3,8 +3,8 @@
 23f2d0d7257bd156665be09463db6ab4  test-wal-holder-exclusion.py
 5e223e475405e36d1a13275a1a901744  test-wal-verdict-stall.py
 bd4df5ea7f9741be0b5f54a02c54a0a0  test-witness-wal-line.sh
-8c8299a3b8a34d0de64edefc4a3f2571  test-wal-class.sh
-408ce33008eaec22767116b3ec6f7f3e  wal-checkpoint.sh
+6053951e1ed0091e00757c342f23f127  test-wal-class.sh
+a11a0feba201c05f87751973edb361e6  wal-checkpoint.sh
 59385e74449e7833f03f146f8b8b28e8  witness-split-pair-v2.sh
 5271966c1a06f1aa591d3f598fefd9d8  wal-keeper.py
 e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
@@ -26,3 +26,4 @@ a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 45dfad832e8c773f49e3eea1622a8bfc  systemd/check-grade-timer.timer
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 b353d16170fed15f36cb81f8bd6636ad  rehearse-verify-rolled-and-pruned.sh
+6a899e6b894139334e080f0f49ba6741  fanotify-close-actor.py

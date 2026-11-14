@@ -31,13 +31,19 @@ wal_before=$(stat -c%s "$DB-wal" 2>/dev/null || echo absent)
 # (deployed 02:31:47) the bus opened one sqlite3 connection per request and never
 # closed it, pinning the -wal (85 handles on the live inode measured 02:25:29) so a
 # "last connection close" was unreachable by construction. The context manager now
-# closes, so this census is a LEAK DETECTOR, not a precondition: healthy is fds in
+# closes, so this census is a LEAK DETECTOR, not a precondition: healthy is busfds in
 # single digits with wal=absent (measured 9/9 ticks 02:39:35-02:55:36), and a
 # climbing count means the leak is back and the sidecar will pin again. Read the
 # wal pair only when wal_before is numeric — absent/absent is a tautology, and since
 # the fix it is also the steady state, so it cannot discriminate anything.
 buspid=$(systemctl --user show -p MainPID --value hermes-agent-chat-bus.service 2>/dev/null)
-fds=$(ls "/proc/${buspid:-0}/fd" 2>/dev/null | wc -l)
+# Field renamed fds= -> busfds= (2026-11-14): the old name invited "descriptor census of
+# the DB" and a peer read `fds=6` as six handles on room.db. It is not. It is the TOTAL
+# descriptor count of the bus process, and at rest the bus holds ZERO db fds — every one
+# of the six is a socket. It cannot decide a holder in either direction, so it is named
+# for what it counts. This is a deliberate break of the "existing tokens keep their
+# positions" rule; the rename is why, and there is no parser that reads it positionally.
+busfds=$(ls "/proc/${buspid:-0}/fd" 2>/dev/null | wc -l)
 out=$(sqlite3 "$DB" ".timeout 5000" "PRAGMA wal_checkpoint(PASSIVE);" 2>&1)
 rc=$?
 wal_after=$(stat -c%s "$DB-wal" 2>/dev/null || echo absent)
@@ -122,9 +128,20 @@ if [ "$pin" != absent ]; then printf '%s\n' "$streak" >"$STREAK_FILE" 2>/dev/nul
 #                             It unlinks only when a qualifying close is the last one.
 #   unfolded    wal>0, folded<log -- frames exist ONLY in the -wal. The single row-at-
 #                             risk state; this is what `pin=1` means.
+#   unprobed    rc!=0       -- sqlite3 never became a connection (locked, EIO, not a
+#                             database, CLI missing), so NO qualifying close happened
+#                             and this tick observed nothing about the sidecar's holder.
+#                             Without this arm the class was derived from wal_after
+#                             alone, and a pre-existing 0 B pair that the failed open
+#                             never touched would print `stranded` with no bystander
+#                             anywhere -- a false holder claim in exactly the direction
+#                             this field exists to prevent. Gate before deriving.
 # Derived from this tick's own tuple, not from `pin`: pin is about read marks on the
 # PRE side and collapses absent/0 into one token, so it cannot carry the class.
 wal_class=unknown
+if [ "$rc" -ne 0 ] 2>/dev/null || [ -z "${rc:-}" ]; then
+  wal_class=unprobed
+else
 case "$wal_after" in
   absent) wal_class=closed ;;
   0) wal_class=stranded ;;
@@ -135,9 +152,12 @@ case "$wal_after" in
          else wal_class=resident; fi ;;
      esac ;;
 esac
-# APPENDED LAST, deliberately: rc/out/wal/wal_before/fds/pin/streak/err keep their
-# positions, so a peer's positional read of this line does not shift under it.
-echo "$(date -Is) rc=$rc out=$out wal=$wal_after wal_before=$wal_before fds=$fds pin=$pin streak=$streak err=$err wal_class=$wal_class" >>"$LOG"
+fi
+# APPENDED LAST, deliberately: rc/out/wal/wal_before/busfds/pin/streak/err keep their
+# order, so a reader that parses this line by field position does not shift under it.
+# `fds=` was renamed `busfds=` on 2026-11-14 (see the census comment above) -- that is
+# the one deliberate rename, and it is a name fix, not a column move.
+echo "$(date -Is) rc=$rc out=$out wal=$wal_after wal_before=$wal_before busfds=$busfds pin=$pin streak=$streak err=$err wal_class=$wal_class" >>"$LOG"
 
 # Keep the log from growing forever. One line per run — except the first record (2026-11-11T03:56:08),
 # whose out= held a newline and so spans two — and the real cadence is the timer's
