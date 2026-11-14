@@ -717,7 +717,7 @@ class H(BaseHTTPRequestHandler):
 
 
 def main():
-    global _draining, _seq
+    global _draining, _seq, _skipped_answered
     if not SECRET:
         raise SystemExit("AGENT_CHAT_SECRET not set")
 
@@ -730,6 +730,8 @@ def main():
     for profile, payload, attempts in _spill_load():
         mid = payload.get("message_id")
         if _already_answered(profile, mid):
+            with _lock:
+                _skipped_answered += 1
             log(evt="spill_skip_answered", profile=profile, message_id=mid)
             continue
         seq = _spill_add(profile, payload, attempts)
