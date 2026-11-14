@@ -154,4 +154,13 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   running across a TRUNCATE; an `autocheckpoint=0`, no-explicit-checkpoint run never sees it.
 - Corollary for reading a series: a small `N` after a large one is a **restart**, not a torn frame.
   Classify the generation the sample belongs to, and say which checkpoint mode could have produced it.
+- **The absolute bytes in the two bullets above are fixture-local — quote the invariant, not the
+  ladder.** Second witness 2026-11-14 10:14 on a fresh db (`page_size=4096`, `autocheckpoint=0`,
+  40 × 100-byte rows, same held-open connection, same 2 ms sampler): autocheckpoint=0 read
+  12,392 / 16,512 / 20,632 / ... (not 8,272 / 24,752) and autocheckpoint=4 sat FLAT at 16,512 from
+  the second commit (not 8,272 / 16,512 / 28,872). What reproduced exactly is the invariant — never
+  `0`, never absent, while a handle is open — plus the mode tuples: `PASSIVE` `(0,49,49)` and
+  `RESTART` `(0,49,49)` leave 201,912 B untouched, `TRUNCATE` `(0,0,0)` takes it to 0 B with the
+  connection open, and five commits then climb from 0 to 20,632 = 32 + 5×4120 (that one is
+  arithmetic and does reproduce).
 
