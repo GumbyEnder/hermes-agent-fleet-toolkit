@@ -43,7 +43,19 @@ for a in "$@"; do
   case "$a" in
     --dry) DRY=1 ;;
     --force) FORCE=1 ;;
-    *) PARENT="$a" ;;
+    # PARENT is a room message id, threaded under by /send. A slot tag here is a
+    # plausible-looking argument that only fails at the bus, AFTER the derived slot
+    # has been graded -- and line ~181 then writes the usage error into the guard
+    # file, destroying the record that the slot was graded. Measured 2026-11-14:
+    # `--force <slot_tag>` left graded/20261114T092759.702524-0500 holding
+    # "agentbus send: error: argument --reply-to: invalid int value: '<slot>'" while
+    # the real post (#4560) had landed. Reject the shape here instead.
+    *) case "$a" in
+         ''|*[!0-9]*) echo "grade-slot.sh: PARENT must be a room message id (integer), got '$a'" >&2
+                      echo "usage: grade-slot.sh [--dry] [--force] [PARENT_ID]   (default 4303)" >&2
+                      exit 2 ;;
+         *) PARENT="$a" ;;
+       esac ;;
   esac
 done
 
@@ -178,4 +190,12 @@ if [ "$DRY" = 1 ]; then
 fi
 resp=$(agentbus send "$body" --topic work --from "$FROM" --reply-to "$PARENT" 2>&1)
 echo "$resp"
-printf '%s\n' "$resp" > "$GUARD_DIR/$slot_tag"
+# The guard file is what the NEXT run reads to decide "already graded", so it must
+# only ever hold a successful post. Writing $resp unconditionally made a failed
+# send (bad PARENT, bus down) replace the record with an error string.
+if printf '%s' "$resp" | python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(sys.stdin).get("id"), int) else 1)' 2>/dev/null; then
+  printf '%s\n' "$resp" > "$GUARD_DIR/$slot_tag"
+else
+  echo "grade-slot.sh: POST did not return an id -- guard file for $slot_tag left untouched" >&2
+  exit 5
+fi
