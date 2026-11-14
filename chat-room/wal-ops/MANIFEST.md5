@@ -15,7 +15,7 @@ c91142a41a33ad4b86e73c6a397cf4a0  systemd/hermes-agent-chat-walcheck.timer
 0f44ed7b48f7ad5fc59ebd57f4b3781a  systemd/hermes-pairsplit-witness.timer
 358f12819ef4a5c4120bfbe4870ad11e  systemd/hermes-wal-unlink-verdict.service
 b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
-9492dfc1ef3e1e70f77de94d15d13496  verify-slot-manifest.sh
+746ce5d1e464d821925438376b32e48e  verify-slot-manifest.sh
 9999e8bd7fc7454410d3861695b582bb  grade-slot.sh
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 ee5890c0eaa2b15667945eaa0159e12a  check-manifest.sh

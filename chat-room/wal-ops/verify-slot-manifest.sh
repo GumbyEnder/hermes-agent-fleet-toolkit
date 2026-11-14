@@ -17,7 +17,15 @@
 # `INFO PRUNED by retention` once enough failed rows had accumulated (found by
 # buzzy 2026-11-14). An artifact missing while fewer than KEEP newer artifacts
 # exist on disk is a FAIL (a real deletion); outside retention it is
-# `INFO <artifact> PRUNED`.
+# `INFO <artifact> PRUNED`. Both numbers are printed on every retention branch
+# (artifacts on disk AND newer rows) precisely because their divergence is the
+# finding; the artifact count alone is what the verdict uses.
+#
+# CAVEAT (shared with the pruner, unfixed): retention order is LEXICOGRAPHIC on
+# the slot name, and the slot token carries a local UTC offset. Across a
+# -0400 -> -0500 change the order is wrong in `_prune_slot_artifacts` AND here,
+# so this verifier mirrors that error instead of catching it. At KEEP=24 hourly
+# slots the window spans a DST boundary about once a year.
 #
 # LEGACY rolling rows (no `path`) are content-checkable only while they are the
 # newest row: room.db.bak / room.db-wal.bak are single rolling names that each
@@ -116,12 +124,12 @@ def check_artifact(base, state, meta):
                      if SLOT_RE.match(slot_of_path) else None)
             if KEEP > 0 and n_art is not None and n_art >= KEEP:
                 info('%s PRUNED by retention' % base,
-                     'row names %s; %d newer artifacts ON DISK, keep=%d'
-                     % (path, n_art, KEEP))
+                     'row names %s; %d newer artifacts ON DISK, %d newer rows, keep=%d'
+                     % (path, n_art, newer, KEEP))
             else:
                 leg('%s present' % base, False,
                     'row names %s -- missing INSIDE retention (%s newer artifacts '
-                    'on disk, keep=%d)' % (path, n_art, KEEP))
+                    'on disk, %d newer rows, keep=%d)' % (path, n_art, newer, KEEP))
             return
         st = os.stat(dest)
         h = sha(dest)
@@ -191,9 +199,12 @@ if m:
                 'row N=%d disk=%d path=%s' % (n, got, wpath))
         elif KEEP > 0 and w_newer is not None and w_newer >= KEEP:
             info('wal copy:%d PRUNED by retention' % n,
-                 'row names %s; %d newer artifacts on disk' % (wpath, w_newer))
+                 'row names %s; %d newer artifacts on disk, %d newer rows, keep=%d'
+                 % (wpath, w_newer, newer, KEEP))
         else:
-            leg('wal artifact present', False, '%s missing inside retention' % wpath)
+            leg('wal artifact present', False,
+                '%s missing inside retention (%s newer artifacts on disk, %d newer '
+                'rows, keep=%d)' % (wpath, w_newer, newer, KEEP))
     elif not newest:
         info('wal copy:%d not re-assertable' % n,
              'sidecar rolled by slot %s' % all_rows[-1]['slot'])
