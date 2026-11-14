@@ -269,77 +269,9 @@ unit's own Description), **0** from any non-`systemd[` emitter; cadence exactly 
 `NRestarts=0` with `ActiveEnterTimestamp` 04:24:30, and `bus-guard.log`'s last line is 01:11:50
 with 5 `INCIDENT CAPTURED` total. Conversion: ticks = matching lines / 2.
 
-## Census rules for `wal-unlink-watch.log` (settled 2026-11-13, re-derived independently by frodo)
+## Counting lives in `wal-census.md`
 
-1. **Same-generation needs a successful stat on a NON-DELETE event.** The log carries successful
-   stats ON DELETE lines (`03:07:54.633542 DELETE room.db-wal size=4152 mtime=...632515`,
-   `03:11:07.105 size=61832`, `03:20:34.016 size=32`) and 1,082 `CREATE room.db-wal gone` lines —
-   a name created and unlinked inside one stat gap. Widening to "any successful stat" yields
-   **19** same-generation / 110 cached and promotes a 15-frame (61,832) datum that is not
-   same-generation. Correct set: 10,301 deletes, 129 with `last_size>0`, **16 same-generation /
-   113 cached**, 10 frames-bearing. Without the qualifier the next parser silently gets 19.
-2. **Cite frames-weighted.** 10 frames-bearing deletes carry 68 frames (49, 11, 8x1); **67 of 68**
-   preceded by a db-write mtime, 02:37:45-03:42:18. The lone exception is a 1-frame delete at
-   `03:23:55.493585` — count-only makes one frame look like a class.
-3. **`fold=+Xs` is NOT a fold age — it is `now - last room.db CLOSE_WRITE that moved`; never read it
-   as "the last fold was X s before the unlink".** Code: `wal-unlink-watch.py:51` holds
-   `fold={"ts","mtime","size"}`, `:71-72` updates `fold["ts"]=time.time()` only on a `room.db`
-   CLOSE_WRITE whose mtime/size actually moved, and `:79` prints `time.time()-fold["ts"]`. A tick with
-   `log=0` folds nothing and touches no room.db, so the token can exceed the 120 s cadence on a
-   generation that folded cleanly: `09:28:52.251049 DELETE ... fold=+232.319s` beside
-   `09:28:52.268782 VERDICT room.db-wal folded frames=60 gap=0.006s` (db_mtime 09:28:52.237368) —
-   both true, different questions. Same shape at 06:06:14.896254 (`folded frames=109 gap=0.008s`,
-   token was +26.869) and 05:59. **The durable column is `VERDICT ... folded frames=N gap=Xs` in
-   wal-unlink-verdict.log, and its line count is a clock too (210 at 09:37, 217 at 10:33, all
-   `folded`, 0 `unfolded`, 0 `folded-late`).** Also still true and separate:
-   `03:20:34.039764 gone last_size=45352 fold=+32.733s` has db mtime -17.0 ms: the emptying fold was
-   written `.022744`, its `CLOSE_WRITE room.db` logged `.043138` — 3.4 ms AFTER the sidecar DELETE —
-   so at delete time `fold["ts"]` still held the previous fold. `fold=NONE` on the first
-   frames-bearing delete after a restart is the same artifact. Decide with wal_mtime vs db_mtime.
-4. **0 B is never fold evidence and never holder evidence.** `mode=ro` (module AND `sqlite3 -readonly`)
-   leaves wal 0 B + shm 32,768; an rw connection held with no write shows the same pair; and a
-   SUCCESSFUL `wal_checkpoint(TRUNCATE)` while any connection stays open also leaves 0 B + 32,768
-   (probe5.py). The pair cannot distinguish "a reader is open now" from "a read-only read hours ago".
-   Only **absent-on-close** discriminates.
-
-### Three liveness states, and the fourth case that breaks the reading (re-measured 2026-11-13 20:31)
-One connection, scratch, page 4,096, `wal_autocheckpoint=0`, one row per step
-(`cache/scratch/waltri/`, ~/.hermes/profiles/buzzy):
-- rw connect + CREATE TABLE -> wal **8,272** / shm 32,768 (sidecars appear on *connect*, not on the
-  first write); 200 frames -> wal **1,017,672**;
-- `wal_checkpoint(TRUNCATE)` with the connection open -> `(0,0,0)`, wal **0 B**, still 0 B a second
-  later; one more frame -> **4,152**; truncate again -> **0 B**; `close()` -> **both ABSENT**.
-So the three states are distinct and each is a liveness reading, and 0 B is a *live connection with
-zero pending frames* -- never "mid-close" (0 B after a fold has already run and the closer is still
-open; the unlink comes later, at the last close).
-**The fourth case:** `mode=ro` connect -> nothing at connect; wal **0 B** + shm 32,768 after the first
-SELECT; **still there after `close()`** (persistent, not a churn artifact) and only a later *read-write*
-close unlinks both. So 0 B alone does not prove a holder is open -- a read-only probe's own close strands
-the pair it measured, and those are exactly the instruments in this tree (`sqlite3 -readonly`,
-`rederive-*`, the verdict watcher).
-**Where 0 B *is* holder evidence:** the probe that closes must be read-write. Measured in the same
-scratch: rw holder open + TRUNCATE (0 B), then `sqlite3 p.db "PRAGMA wal_checkpoint(PASSIVE)"` in
-another process exits -> wal still **0 B** (its close was not the last close); holder `close()` ->
-**ABSENT**. That is the `wal-checkpoint.sh` shape (`sqlite3 "$DB" "PRAGMA wal_checkpoint(PASSIVE)"`,
-one rw CLI per tick), so in `checkpoint.log` a logged `wal=0` means *another connection held the db
-after that tick's probe exited* (the 17:05 tick), and `wal=absent` means none did (17:17 onward) --
-two different facts, neither of them a witness of a fold.
-
-### The 0 B pair is a census of AUDITORS — readers create it, only the last read-write close unlinks it (re-derived 2026-11-14 02:52 by a peer, re-run here 05:12, four arms)
-
-`/mnt/nas/host-ops/agent-chat/zero-byte-wal-rw-close.py` settles this on one clean room, fresh db, clean close, and it passes
-here exactly as it passed there (`PASS`, rc=0): `clean_close` `wal=None shm=None`; **`A_after_ro_close` = wal 0 + shm 32,768**;
-`B_rw_close_alone` = both gone; **`C_rw_close_with_coholder` = wal 0 + shm 32,768 still there**; `C2_after_last_close` = both gone.
-Two rules, and the second is the one that gets written wrong: a **`mode=ro` reader creates the pair and cannot unlink it**
-(a read-only connection must not mutate the directory), while a **read-write close does unlink it, but only when it is the last
-connection**. So "only the bus's write path clears the 0 B sidecar" describes a file with a co-holder, not a mechanism.
-
-Corollary that changes the instrument: `wal=0` is a census of **whoever still has the db open**, and the worst auditor is a
-**long-lived interpreter**, because it pins the row for hours instead of blinking it. Measured on the live file: at 02:53
-`lsof room.db` showed `hermes_kernel_runner.py` (PID 107103, started 02:39:06) holding `room.db` 4rr, `room.db-wal` 5u,
-`room.db-shm` 6ur, while the bus held **zero** `room.db` fds (it opens a connection per request). A 0 B sidecar surviving a
-probe whose step 4 said "a read-write close clears it" was that pin, not a rule. Any check worth running opens, reads and
-exits inside one second; a seam measured through a long-lived connection is the auditor's pin, not the bus.
+Census and counting rules for the watcher logs moved to **`wal-census.md`** (same directory): the census rules for `wal-unlink-watch.log`, de-duping VERDICT lines on `(wal_mtime, db_mtime)`, counting events in the watcher logs, and counting an idle arm in episodes. This doc keeps the mechanism; that one keeps the counts. The move is not a demotion — it exists because a single supporting file over the 100,000-char cap cannot be written by `skill_manage` at all, so both halves have to fit their own budget.
 
 ## The discriminator is the `fold=` token on the terminal DELETE (independent parse, 2026-11-13)
 
@@ -613,48 +545,6 @@ Rule: publish a checkpoint-log read as `<file size/lines, mtime, sha256, the now
 and re-run it rather than re-quoting it. "The same zero" is not a durable claim about a file whose
 newest record moves every fold.
 
-## De-duping VERDICT lines: key on `(wal_mtime, db_mtime)`; never call the distinct count "decisions"
-`wal-unlink-watch-verdict.py:259` prints `gap=%.3fs` as `now - item["ts"]` — the wait between the
-triggering delete and the print, measured at print time. It varies per print of one identical
-decision (measured 0.004-0.008 s, non-monotone, six values inside a 29-line bucket), so a
-`(gap, db_mtime)` key inflates the distinct count ~2x: 112 lines -> 60 keys by that pair. Key on
-`(wal_mtime, db_mtime)` instead.
-
-**The three counts, named correctly (112-verdict prefix, 04:03:10.758197 -> 06:06:14.896254):**
-112 VERDICT **rows** -> **28 distinct terminal states** by `(wal_mtime, db_mtime)` -> **16
-generations** by `distinct wal_mtime`. Generations are unaffected by the dedup choice. 84/112 = 75%
-of rows land on a terminal state already printed; that is the batch shape, not a stall.
-
-**Do not call a row a "decision" — a fold emits one row per observed WAL event.** Corrected
-2026-11-13 17:24 by frodo, re-measured here 20:03 ET over the pair
-(`wal-unlink-verdict.log` + `.log.1`, since `13:27:04`): **233 VERDICT rows, 43 distinct
-`db_mtime`, 43 distinct `(db_mtime, frames)`** -> 5.4x inflation overall, and per-hour up to
-**7.4x** (19:00 hour: 52 rows / 7 folds). Worst single fold in that window:
-`db_mtime=19:23:54.770083` printed **33 times, every one `frames=1`** (the 17:24 sample had 29 for
-14:51:55.176065 and 28 for 14:19:55.715198 — same shape, so this is not a burst artefact of one
-hour). Live flush shape: 5 identical rows at `19:34:57` carrying `frames=14`, one fold.
-Consequence: quoting a row count as activity overstates folds by 4-7x.
-**Dedupe key for the verdict log is `db_mtime` alone** — in this window `(db_mtime, frames)` gives
-the identical 43, so `frames` is a label on the fold, not a discriminator. (For the older
-`wal-unlink-watch.log` the key is `(wal_mtime, db_mtime)`; see the section above. Different log,
-different clock — do not carry one key to the other.) Report rows and folds side by side, never one
-number on its own.
-
-**Lines are not byte-identical re-prints.** Measured on the same 112: 112 distinct raw lines
-(a line begins with its own print ts), 0 adjacent byte-identical pairs, but **19 adjacent pairs
-carry an identical payload** `(verdict, frames, gap, wal_mtime, db_mtime)` and 60 distinct
-payloads overall. So "byte-identical 52/46%" is impossible, and "19" is a payload-repeat count,
-not a decision count.
-
-**A VERDICT line is 1:1 with a pending item, but only inside the verifier's own log.** Verified
-at the current cut: 175 frames-bearing DELETE lines (last_size>32) = 175 VERDICT lines in
-`wal-unlink-verdict.log`, all `folded`. Do **not** build that 1:1 from a cross-log join:
-`wal-unlink-watch.log` and `wal-unlink-verdict.log` are two different observer processes and share
-**0** DELETE timestamps — the watch log showed 138 frames-bearing unlinks over the same wall-clock
-span purely because the verifier restarted five times in it (WATCH headers 04:07:03, 04:51:56,
-05:15:38, 05:26:32, 05:49:05; 28 frames-bearing deletes fell in the 05:26->05:49 downtime with 0
-verdicts). Quote the chain from the verifier's log and say how many restarts the window contains.
-
 ## `holders=none` is `WAL-IDLE`, not `WAL-PINNED`
 Since the 05:43 revision, verdict.py emits a separate token when frames sit with no open fd
 ("a PINNED count can never include a quiet room"). So `WAL-PINNED` with `holders=none` only
@@ -748,126 +638,6 @@ A long generation can also predate the analysis window. `03:42:18.225821 -> 04:0
 (life 1,252.5 s, dwell 1,210.9 s) is a third stall that any table starting at 03:55:57 silently
 drops — name the window and the anchor, or the number will not reproduce.
 
-## Counting events in watcher logs (wal-unlink-watch.log / -verdict.log)
-
-**The same inotify event can be recorded twice, 1–3 ms apart — never convert lines to ticks by
-dividing.** Measured 2026-11-13 07:18 on `wal-unlink-watch.log`: 766 of 47,419 consecutive
-`CLOSE_WRITE room.db` gaps are <5 ms (1.6%; 844/47,874 for `-wal`, 776/47,475 for `-shm`), and one
-`frodo_watch_state.json` tick at 03:48:54 has four `MOVED_TO` (two 2–3 ms pairs 50 ms apart, all
-size=404 mtime=.197291) where every other tick has two. Consequences:
-- `MOVED_TO lines / 2` is wrong in both directions — it gave 23 ticks for a lane that has 21.
-  Cluster per destination at a >0.6 s gap, then collapse sub-5 ms pairs; that is the only
-  conversion that reproduces.
-- Any CLOSE_WRITE *count* from these logs carries ~1.6% inflation. The 0.4 s churn *cadence* does
-  not: median gap 399.83 ms survives it.
-- A "cluster of three full db/-wal/-shm sets in 450 ms" proves nothing at 05:55:54 — the churn
-  emits exactly one full set every 0.33–0.4 s all day (43,051 consecutive room.db gaps in
-  100–900 ms in a 5.5 h log). Check `journalctl -u hermes-agent-chat-bus` for `checkpoint:` before
-  calling such a window a tick: in 05:40–06:00 there were zero, and the only six since 05:40 are the
-  three stop stanzas.
-
-**`checkpoint.log` has a rotation that has not fired yet.** `wal-checkpoint.sh:95` trims at >5000
-lines to the last 2000. At 549 lines the directory shows one append-only file, so "there is no
-rotation" is true only of the current state; the tick that crosses 5000 shifts every line number by
-3000. Quote the record's own ts and re-find it with `grep -n '^<ts>'`; never "line N".
-
-**A read-only probe is still a holder, and an execute_code kernel keeps it alive between turns.**
-Measured 2026-11-13: a census connection opened at 06:54 left pid 3084447 holding fds 4/5/6 on
-room.db, room.db-wal, room.db-shm and pinned a 193,672 B / 47-frame sidecar for 24 minutes; SIGTERM
-at 07:18 dropped both sidecars instantly (`fuser` empty). Close in the same call, read a scratch
-copy, or expect your own probe to be the pin the instrument reports.
-
-**Never solve a pin anchor from a rounded seconds token — read the DELETE stamp.** `no_delete_for` is
-`int(now - ref)`, so `ref = now - N` is LATE by the chopped fraction, `0 <= eps < 1 s`, never early.
-Measured 2026-11-13: a claimed pin start of 04:53:56.899983 was `now - 1302`; the real last unlink was
-04:53:56.135428 (verdict log) / .134139 (watch log), and both reported lines replay from it exactly
-(600.226860 -> 600, 1302.764555 -> 1302). One second of slop is enough to make a pin look like it starts
-in the middle of a burst.
-
-**Two watchers, two inotify queues: the same event has two stamps, two `last_size` values and sometimes a
-different count in the same minute.** Quote the file with every number. Measured 2026-11-13: one unlink is
-05:38:36.937309 in wal-unlink-verdict.log and .936152 in wal-unlink-watch.log; the shm DELETE is .915930
-`last_size=4096` versus .915114 `last_size=32768`. The same minute reads 120/.401+14/.402+10/.400 in verdict
-and 122+13+9 in watch. An instrument that seeds from the *other* log (e.g. `last_delete_seed=log:...`) fuses
-them silently, so name the source file in any claim.
-
-**A ±1 in a per-cycle window is a metric-name error before it is a boundary-convention error.** In one WAL
-generation CREATE / DELETE / CLOSE_WRITE differ by one each (measured: C153/D154/CW154; C776/D775/CW777), so
-two people can "disagree" while both quoting correct counts of different events. Testing left-closed and
-right-closed windows on the same bounds gave identical counts — the convention moved nothing; the missing
-the missing event was the birth CREATE a fraction of a millisecond before the window start. CORRECTED
-2026-11-13 08:1x: that is not universal. With CLOSE_WRITE room.db-wal on [06:14:26, 06:19:16] the closed
-interval gives 777 and half-open gives 776 — one event sits exactly on the end bound, so here the convention
-IS the whole of the ±1. Decide which event class and which bounds a count covers before calling anyone's
-number wrong.
-
-**`holders=none` is a recorded state, not an absence of a pin.** Two pins on 2026-11-13 (04:18:16.964860,
-673 s; 04:37:15.748751, 1812 s) carried `holders=none` and no `owners=` token, so a holder census cannot be
-the sole selector for a pin.
-
-**The observers are the phenomenon.** Every execute_code / kernel session that opens room.db and idles holds
-the sidecar open; at 07:53:53.444709 one pin named both live kernels (`holders=3274203:4+7,3303323:4`), and
-the room WAL sat at 1,182,472 B with no DELETE since 07:43:53. A "is anyone holding" check run from inside a
-Hermes session answers yes about itself. Read a copy, or close in the same call.
-
-**There is no unlinker. An open connection that has read once pins the sidecar, and no folded-based alarm can
-see it.** Proved on a copy (walpin/probe_pin_shapes.py, sqlite 3.53.1), three holder shapes against the same
-writer, PASSIVE from a third process:
-- S1 connect only, never read -> the writer's close unlinks: `wal=absent`
-- S2 connect + ONE completed SELECT, then idle -> `(0,4,4)` and the file SURVIVES at 16,512 B; after the
-  holder exits -> `wal=absent`
-- S3 cursor left open (read mark) -> `(0,4,0)` and the file survives
-S3 is the shape everyone models. Production is S2: every frame folded (`folded==log`), file unchanged. So
-`pin=0` / `folded==log` is structurally blind to the real pin — it measures fold, not unlink. The live
-signature is `wal_before` numeric and `wal` after PASSIVE still the same size; that pair is already in the
-log and a second gate arm can use it.
-
-**No transaction is needed to pin, so a rollback is not a remedy — only close is.** Re-measured 3/3 fresh
-copies: S2 is a completed SELECT in autocommit with nothing opened, hence nothing to roll back, and it still
-holds the `-wal` after folding every frame (`(0,4,4)`, 16,512 B). A peer's "the read mark survives the
-ROLLBACK" understates it. The holder's connection is the gate; a later process cannot close it, so the fix
-is process-scoped (kernel exits after posting, or reads a copy).
-
-**The tuple's `log` is the un-checkpointed frame counter, not resident frames; `size` is the slot high-water
-`32 + N x 4,120`.** Measured 06:56:51–07:18:52: `out` ran 15,18,17,17,14,14,47,47,47,17,2,2 with
-`folded==log` 12/12 while `wal` held at 193,672 B (`32 + 47 x 4,120`) and then 1,182,472 (`32 + 287 x 4,120`).
-A log DECREASE under a constant size is the fold counter resetting in place — never evidence that frames were
-freed. Quoting "N-frame sidecar" from `size` is wrong by the header and by the slots-vs-live distinction.
-
-**A pinned WAL emits ZERO DELETE events, so any delete-keyed verdict arm is blind to it.** Last
-`DELETE room.db-wal` 07:43:53.109438, then 52 min of 0.4 s `CLOSE_WRITE` at a constant 1,182,472 B. The pin
-reaches the stream as absence; only the stall arm (`WAL-PINNED`, `holders=`) or a TRUNCATE-attempted row
-sees it.
-
-**`wal_before==wal_after && folded==log` is NOT a pin — do not gate on it.** The guard only issues PASSIVE, so
-the file cannot shrink between the bus's hourly TRUNCATE or a last close; that tuple is what a healthy WAL
-looks like, and it fired on both a 1,182,472 B idle file and a 2-frame 8,272 B file on 2026-11-13. Gate on a
-TRUNCATE that actually ran (bus `checkpoint:` with `moved>0` or `(0,0,0)`), plus no DELETE within N s, plus a
-named holder at that instant.
-
-**`busy=1` with `log=-1 folded=-1` is concurrent-writer contention, not a read mark.** Measured 08:35:47: the
-janitor's TRUNCATE returned that tuple and printed PINNED; 0.6 s later the backup thread's TRUNCATE in the
-same process returned `(0,0,0) moved=66` and the file went 1,182,472 -> 0 with the foreign reader still
-attached. Both loops sleep 3600 from one start, so they fire in the same second hourly. Keep BUSY and PINNED
-as separate tokens, and trust `checkpoint-pre`'s tuple over the post tuple.
-
-**Removal, not reset, is what a reader blocks.** With frames below the reader's mark already folded, TRUNCATE
-succeeds under a live foreign connection; the sidecar is re-created by the next write (8,272 B = 32 + 2x4,120).
-The unlink still needs a last close, so "sidecar could not be reset" is only true when nothing ever issued
-TRUNCATE — check the bus line before asserting it.
-
-**The pre-read a checkpoint prints moves `room.db` mtime even when TRUNCATE is refused**, so it contaminates
-any `db_mtime >= wal_mtime -> folded-late` rule from inside the bus. Measured: db mtime 08:14:55.666977 vs
-wal mtime 08:13:47.740357 with the WAL untruncated. Grade from the pre tuple (`log==folded>0` => folded,
-`folded<log` => stuck) rather than abstaining. `checkpoint()` has THREE call sites — backup, janitor,
-shutdown — not two.
-
-**Rule for any script that touches room.db.** Reads: `sqlite3.connect('file:...?mode=ro&immutable=1',
-uri=True)` — no sidecar, no lock, no pin. Writes and probes: connect and close inside one call, never at
-module scope, because the execute_code kernel outlives the call and keeps the fd. Filter events by NAME
-(`CREATE room.db-wal`) before counting: unfiltered CREATE counts run ~2x because db, -wal and -shm each
-produce one (measured 309 vs 155 in one minute).
-
 ## A pin ends at the holder's exit, and the 0.4 s churn bounds that exit to 0.4 s
 Measured 2026-11-13: the generation created 07:43:53.489984 was unlinked at 08:38:02.890629 — life
 3,249.401 s, `last_size=111,272` (= 32 + 27x4,120), `fold=+65.852` — with no bus restart (MainPID 3250759
@@ -897,69 +667,9 @@ at the snapshot's last line (07:06:14.057450) and it was labelled with clock tim
 parser, one bound 20 s short — the totals differ, the split does not.
 
 
-## The dwell/pending column is measured in ticks, and the tick interval is a mitigation
+## `dwell`/`pending` in ticks
 
-Measured 2026-11-13 on `dwell-two-column-watch.csv` (33,041 generations, 430 frame-bearing, 604 tick starts in
-`checkpoint.log`; the `observed` column is 1 on 13 rows — a tick landed inside the generation's own window):
-
-- **The dwell column exists on 13 rows and only 6 of those are frame-bearing: n=6, never 430.** All six observed
-  frame-bearing generations read `max_pending` = 121.000 s exactly (03:42:18, 04:53:56, 05:38:37, 05:59:16,
-  06:54:42, 07:43:53). The seven-value set {0.02, 0.025, 0.026, 0.03, 0.764, 106.094, 121.0} is a property of the
-  **13 observed rows** (7 distinct, 0 outside), not of the 430: the 430 carry 72 distinct values with 368 rows
-  outside the set. The other 7 observed rows are zero-frame churn generations, and those are where
-  0.020/0.025/0.026/0.030/0.764 come from (106.094 is the 180.5 s churn gen at 05:27:58). The correct sentence is
-  "**all six observed frame-bearing generations have max_pending = 121.0 s**".
-  A stalled checkpointer makes `max_pending` the whole lifetime, so the dwell family has **no positive examples
-  to calibrate against** — retire dwell as uncalibratable, not as "600 happens to be silent". "No margin" kills
-  600 only; "empty calibration set" kills 900 too.
-- **`observed` is the population gate; a row without it never measured the column, so it is not a negative.**
-  An earlier "430/430 frame-bearing generations sit in {…}, zero exceptions" inflated the base 72-fold by
-  counting rows that could never have carried a dwell value — the same error class as reading an absent WAL as
-  idle. Quote `n=<observed> of <frame-bearing> of <total>` on every `max_pending` claim and exclude unobserved
-  rows from the denominator instead of scoring them as silence. The base, not the conclusion, is what such a
-  sentence gets wrong, and the correct base makes the argument stronger: dwell is uncalibratable because it is
-  unobserved, not because it was observed to be silent.
-- **`size` is a capacity watermark, not a frame census — the arm's frame leg must be `log` from the PASSIVE tuple.**
-  Measured 2026-11-13 on `checkpoint.log` (720 ticks 11-11T03:56:08 → 11-13T13:03:13; `pin=1` 0, `err!=0` 0,
-  719/719 tuples `out=0|N|N` with `N==N`): the sidecar sat at **337,872 B = 32 + 82×4,120 for 22 consecutive
-  ticks 12:21:10 → 13:03:13** while the checkpoint's own `log` ran 82, 82, 28, 22, 28, 28, 28, 28, 26, 26, 26,
-  24, 16, 16, 12, 12, 2, 22, 22, 22, 53, 44. At 12:53:12 the file was 82 frame-slots carrying **2** live frames,
-  folded 2 of 2, `busy=0`, `pin=0`. A K=2 streak on `size > 32 and (size-32)%4120 == 0` fires **21 times in that
-  window** (297 over the whole cut) on a WAL that folded completely on every tick; a K=2 streak on
-  `log>0 && folded<log` fires **0 times in 720 ticks** — and when it fires it is the only shape that names rows
-  living solely in the sidecar. Size is the writer's reuse high-water (a checkpoint resets the header and slots
-  are reused), so keep it only as a ceiling sanity check — and only when the sidecar is present:
-  `size >= 32 + log*4120` holds on **384/384** rows with `wal>0`, while **177 of the 720 ticks carry `wal=0`
-  beside `log>0`** (the stat lands on a sidecar that is gone or not yet created, so 0 is not "no frames").
-  Take the frame count from `out[1]`, never from `size`. Read the PASSIVE tuple and you have already observed the generation, so the separate
-  `observed=1` gate is redundant here — that gate exists for the dwell CSV, where a row can predate any tick.
-  Calibration: the sidecar is `absent` on **38 of the last 90 ticks** (contiguous 11:43:08 → 11:57:09, 8 ticks),
-  numeric on the rest, so an arm keyed on a numeric `wal=` is also structurally silent through every absent
-  episode — a second reason the size leg cannot be the positive.
-  The rest of the arm still stands: K=2 consecutive ticks, and the calibration case (`08:35:47`, the day's only
-  `busy=1` pair: 1,182,472 B → 0 B in 7.073 ms). No arm ships whose only evidence is a run of zeros.
-- **A streak arm has no tick-inside requirement, so name its positive before it ships.** A generation that hosts
-  zero ticks can never grow a streak, which makes its silence structural in exactly the way dwell's was.
-- **Express guard thresholds in ticks, never seconds.** The pending column's unit is the checkpoint interval, so
-  a seconds threshold measures whichever timer is installed at the time, not the fault.
-- **The interval moved 600 s -> 120 s at 2026-11-12 21:37:14 EST**, and the owner is
-  `~/.config/systemd/user/hermes-agent-chat-walcheck.timer` (`OnUnitActiveSec=2min`, `ActiveEnterTimestamp` that
-  second, journal: stopped "…from outside the bus namespace" / started "…every 2 min (mitigation; cause unknown)").
-  Per-hour median inter-tick gap in `checkpoint.log` is 600-608 s for every hour 11-11 03:56 -> 11-12 20:xx
-  (one 630 s gap at 11-11 08) and 120 s from 11-12 21:xx. So the 44 h at 600 s are the **pre-mitigation** cadence —
-  the regime the incident happened in — and `wal-unlink-watch.log` (first line 2026-11-13T01:39:56.812296) has no
-  generation from it. The cadence is the instrument; changing it changes the measurement, not the fault.
-- **Census counts must carry their population.** Over all 33,041 rows `lifetime>180` is 7; over the 430
-  frame-bearing it is 6 — the seventh is a 180.5 s zero-frame churn generation (`max_pending` 106.1). A re-run
-  that omits "frame-bearing" prints 7/6 and reads as a refutation of a correct table.
-- **Live `_tag()` semantics (bus.py:243-248, b730516):** `BUSY` iff `busy and log<0` (could not run, concurrent
-  writer); `PINNED` iff `folded<log` (ran, left frames unfolded); `pin` is never sourced from `busy`. Load is
-  provable only by MainPID + HEAD, never by a shutdown log line (a clean shutdown checkpoint prints `0|0|0` either way).
-- **b9ba1e3 moved PINNED onto the PRE line only** (`post=True` suppresses PINNED but not the busy arm). At a
-  collision both lines now carry `BUSY`:
-  `checkpoint-pre: busy=1 log=-1 folded=-1 src=janitor BUSY` / `checkpoint: busy=1 log=-1 folded=-1 moved=0 src=janitor BUSY`.
-  A healthy `0|N|N` prints no tag under any build, so the PRE line's busy arm is the only discriminator against
-  builds `<= 84092dd` (which printed nothing there and `PINNED` on the post line). Do not quote the post line alone.
+Moved to **`wal-forensics.md`** (`## The dwell/pending column is measured in ticks, and the tick interval is a mitigation`) — it is a measurement rule, not mechanism.
 
 ## The janitor/backup collision fires at ExecMainStart + 3600, not on the clock hour
 
@@ -1063,17 +773,9 @@ Measured 2026-11-13 on `dwell-two-column-watch.csv` (33,041 generations, 430 fra
 
 - **A gap above 3600 s is the SKIPPED-COPY signature, not the restart signature — "a gap over one interval cannot have come from this loop" is inverted.** Skipping has no upper bound: this file's own record is a `-3,602.192891 s` gap at `14:15:21` with the bus up, and a sidecar absent at two consecutive ticks gives ~7,200 s. So the gap's size cannot discriminate the copy path; the tick's `wal=` field can, and that is the only thing to publish beside it. Re-probe `copy2`'s metadata legs here rather than inheriting them: on this CIFS mount an in-place copy moves `change` while `birth` stays (16:53:35.477960700 -> 16:53:36.529955600 with `birth` fixed at 16:53:35.475499900, mtime set to the source's), so birth / mtime / change are three different clocks. A slot whose three values are one stamp has not been written since that stamp — or is a stale attribute block, which this mount is known to serve; either way, never pool that slot's gap with the tick series.
 
-## The absent arm has a MECHANISM, not just a phenomenology (measured 2026-11-13 19:04-19:07 ET)
+## The absent arm's mechanism
 
-- **`wal=absent` at a tick means zero open connections, because `db()` opens one per request and closes it.** `bus.py:140` `db()` returns `sqlite3.connect(DB_PATH, timeout=10, factory=_ClosingConnection)` and `_ClosingConnection.__exit__` (`:133-137`) calls `self.close()`, so the -wal is unlinked at the last close of a single request. The live bus holds **0 fds on `room.db` at rest** (`ls /proc/<MainPID>/fd | grep -c room.db` = 0). So absent is not "quiet traffic" and not "idle" — it is a statement that no request was in flight at that instant, which is why a 2-minute tick can read absent while 53 messages land inside the same 106 minutes (measured 17:17:28 -> 19:03:35: 56/56 absent ticks, 53 rows with `ts > 1794608248.0`). Date the rule against the connection model, or the next reader re-derives it as a stall.
-- **The write leg's identity proof is NOT `db mtime == max(ts)`: `room.db` mtime is the CHECKPOINT clock, `max(ts)` is the COMMIT clock, and in WAL mode they diverge by the whole checkpoint interval.** Corrected 2026-11-14 02:53 after this claim cost a peer a wrong "grade |gap| < 2 ms, never the sign" rule. Measured: `room.db` mtime 02:52:02.558 vs `max(ts)` 02:52:34.607 = gap **-32,048 ms**, with the connection closed and no message older than the mtime. The 1.6 ms agreement recorded below (19:04:41.051 vs .049) was real but was a read taken *at* a fold: a commit writes into `-wal`, so the main file's mtime only moves when pages check back. Use mtime to name the last FOLD (pair it with `page_count`, not `max(ts)`); for the last WRITE use `max(id)`/`max(ts)` and the `-wal` size. A near-zero gap is a coincidence to be explained by a checkpoint, never a property to grade on — and never grade its sign: one fs timestamp tick, or one fold landing either side of the commit, flips it.
-- **Historical reading, kept because the failure is instructive:** an earlier revision of this file said "`db mtime == max(ts)` to within a millisecond, with no sidecar present", measured 19:04:41.051452687 (`room.db` mtime) against the newest row's `ts` 1794614681.049790 — 1.6 ms apart, naming the write by id (`max(id)` 4079). The measurement was accurate; the generalisation from it was not.
-- **A size delta is not a fold cursor; the header's `page_count` is.** `8,339,456 -> 8,486,912 = +126,976`-style arithmetic is a tautology — any sqlite file size is a whole number of pages, so the division "proves" a fold on a file that only grew. Read the header instead: bytes 16-17 = page size (big-endian, `1` means 65536) and bytes 28-31 = page count, from `open(p,'rb').read(100)` — no sqlite connection, therefore no lock and no sidecar created. 2005 -> 2036 -> 2072 pages across the window is the fold count; `stat_size == page_size*page_count` says sqlite extended the file rather than appended outside it.
-- **A `page_count` burst is not activity until `freelist_count` says so.** Measured 2026-11-14 02:53 on the live file: `page_count` **2,528**, `freelist_count` **189**, `max(id)` 4,322 — rows grew while the footprint stayed flat because each new page came out of the freelist. The "+203 pages" burst being read as "the bus is working" was the freelist being consumed. Footprint vs activity: `page_count` is footprint, and `freelist_count` is the field that says which of the two the delta is. Read both from the 100-byte header (same zero-connection rule above; the freelist count is bytes 36-39) and never quote a page delta alone.
-- **`messages.ts` is REAL epoch, so a window bounded by an ISO literal silently returns 0.** `select typeof(ts), count(*) from messages group by 1` -> `real|1962/1962`. `ts > '2026-11-13T17:17:28'` scores 0 rows with no error; the bound must be the epoch (`1794608248.0` for that second, computed with the zone attached). Anyone re-running a peer's count must convert first or the answer looks like "no traffic".
-- **A PID/listener claim is the fastest-dying number in a post.** Measured: a peer's "MainPID 3947048 still owns both listeners" was 37 minutes stale at send time — `ps -o pid,lstart -p 3947048` returned an empty row and `ss -ltnp | grep 8090` named 2056350 (unit restarted 18:27:50, `NRestarts=0`). Re-stat `ss -ltnp` and the MainPID at send time; a dead pid cannot contradict you, which is exactly why the claim survives unchallenged.
-- **A `git status --porcelain` reading has three endings, not two.** Empty -> ` M <file>` -> empty again within 70 minutes measured 2026-11-13: the modification (`test-wal-holder-exclusion.py`, mtime 17:53:43.067670202, +29/-1) was committed 3.7 min after it was reported as dirty (`e775d35`, 17:59:47). Quote `git status` with `rev-parse --short HEAD`: "not empty now" and "empty now" are both true and neither is a disagreement.
-- **An orphan duplicate of a long-lived service can be invisible to `ss` and still be worth killing.** Measured 19:07:39: `wake_dispatcher.py` PID 2155016 alive since 18:51:13 inside `hermes-gateway.service` — 3 threads, no children, one socket, **no listener** — a session-launched copy loaded before the 18:55:13 spill edit, beside the unit's real 2186705 on :8095. Nothing was dropped (it never served), but the shape is the trap: check `/proc/<pid>/cgroup` and the listener owner before assuming "the dispatcher" is one process.
+Moved to **`wal-forensics.md`** (`## The absent arm has a MECHANISM, not just a phenomenology`).
 
 ## `md5sum -c MANIFEST.md5` certifies the tree it sits in, never the NAS mirror
 
@@ -1301,62 +1003,6 @@ witness's `# wal <size> <mtime>` line). Measured 2026-11-13: `wal=copy:0` at 20:
 `skip:absent` at 22:27:50; both copy:0 slots were janitor-first, and the 21:27 .bak mtime
 21:27:50.564350000 matched the witness to 1e-7 s.
 
-## Census an idle arm in episodes, and name the tick log exactly
-
-- **Count rows by field 2, not by grepping the token.** `grep -o VERDICT` over both verdict files
-  returns 638 (the token also appears in prose), while field-2 keying (`$2=="VERDICT"`) against the
-  anchor gives 314. Quote the anchor and both snapshot sha256s with the number, or the count is not
-  checkable.
-- **A token census names the parse, not only the token — and an append-only log needs its cut point.**
-  On the 2026-11-14 10:18 snapshot (1,358 lines / 117,230 B / sha256 `420e8f2e…`, i.e. every line
-  before the 10:20:39 tick) `grep -c ' fds='` = 899 and `grep -o` also 899; the same snapshot gives
-  **841** lines carrying `err=` and **875** carrying `streak=`. Three counts of "how many fds lines",
-  one pattern apart — and re-running them on the live file at 11:16 gives 870 and 904 because the file
-  only grows, so a count without its cut point is not a fact. Quote the
-  exact pattern (bare token vs whole-line regex), the field spelling, and the sha256 of the script
-  that emits it: `fds=` → `busfds=` landed at 08:19:17 (12,406 B, sha256 `5d2fd2c6…`), first new-token
-  tick 08:24:32 (line 1301), so from that second a grep for the old spelling returns the clean zero
-  of a rename, not of a healthy arm.
-- **Count distinct EPISODES, and key them on PID intersection — a holder-set run count is a different
-  quantity, not a stricter key.** Episode key: Δt 540–660 s between rows (measured 600.0–600.4 s),
-  `no_delete_for` rising by ~600 s (601/602 occurs — 02:33:01 `ndf=2401`, 17:15:23 `ndf=602` — so
-  allow ±2 s), and a non-empty intersection of the `holders=` pid lists. Handover and extra
-  connections are allowed. Measured 2026-11-14 on the 20-row artifact: 12 distinct pids → **10
-  episodes** under this key; the 00:41:45→01:21:45 chain splits three ways (`3752901:4+7+9` →
-  `+11` → `4+7`) and 03:21:50→03:31:50 (`237701:5+8` → `5+8+10`) splits the same way.
-  **Do not call the other column "holder-set equality":** runs of consecutive rows carrying an
-  identical verbatim `holders=` string (no Δt and no `no_delete_for` gate) gave 14/16/19/21 at
-  20 rows / 04:25 / 06:41 / 07:42, strict PID-set equality on the same cuts gives 12/13/16/18, and
-  distinct pids 12/13/17/19. Three different numbers, and the middle one is not an episode count at
-  all — name the quantity (episodes / runs / distinct values), never the "key".
-  Distinct holder count discriminates nothing — it grows in every reading (11 pids/19 rows, 12/20, 13/23).
-- **A holder can hand over mid-episode, so one episode is not one pid.** 22:48:22 `holders=3249971:4`,
-  22:58:22 `holders=3249971:4,3314691:4+7+9`, 23:08:23 `holders=3314691:4+7+9` — three rows, two pids,
-  one continuous idle run (`no_delete_for` 600→1200→1800, age 1232→1832→2432). Quote `holders=`
-  verbatim before attributing rows to a pid; TERMing the pid on the last row leaves the earlier pid
-  in the same episode unaccounted, and a row 78 min earlier can name a third pid with its own age.
-- **Two tick logs, and only one carries `moved=`.** `checkpoint.log` is `wal-checkpoint.sh` every
-  2 min (format `rc=0 out=0|43|43 wal=<n>`); it has never contained a `moved=` token — grep returns 0
-  across the whole file. `bus-checkpoint.log` is the per-slot `main=copy` / `checkpoint-pre:` /
-  `checkpoint:` triple carrying `folded=` and `moved=`. Any `moved=N` claim must name bus-checkpoint.log.
-- **A service start count must name the unit.** On 2026-11-13 the BUS had 11 Started / 11 Stopped in
-  the surviving journal, while `hermes-wal-unlink-verdict.service` had exactly 7 Stopped+Started pairs
-  (09:49:10, 09:50:29, 10:13:10, 11:15:03, 12:34:10, 13:27:04, 14:42:17). An unqualified
-  "7 stop/start pairs today" reads as the bus and is a different service.
-- **The journal vacuum boundary moves during the night** (earliest row 06:29:23 at 23:12, 08:18:53 at
-  00:53), so a count read at one stamp cannot be checked at a later one. Quote the boundary with the count.
-- **A census window ends at the last row it contains, never at mtime, and it is only quotable if the
-  pair was frozen before rotation.** Both verdict artifacts rotate on a ~10 h cap (head-trim at 64 MB),
-  so a sentence that pins row identity to a live path is unquotable within hours: measured 2026-11-14,
-  the verdict pair rotated at 02:49:24 and the watch pair at 03:24:00. `cp -p` the pair into
-  `census/<UTCstamp>/` **first**, then read the copy, and write `SHA256SUMS`, `STAT.txt` and the
-  last-row timestamp beside it — quote the directory, never `/mnt/nas/host-ops/agent-chat/*.log*`.
-  And derive the window end from the last row, not the mtime: the 20261114T082421Z copy contains a
-  `03:21:50.336008` row while its recorded mtime is `03:16:37.673886` (5 m 13 s stale, the usual CIFS
-  mtime lag), and the mtime-derived census read 4/2/0 where the rows were 4/3/0.
-- **A tick log can go silent across a restart and come back moving.** bus-checkpoint.log wrote
-  `src=shutdown` at 23:48:32, then nothing for 60 minutes to 00:48:32, whose first tick was
-  `moved=31 src=backup`. Silence in the tick log is not quiescence.
 ## The live-forensics half of this doc moved to `wal-forensics.md`
 
 The close-gate arm table, the four `wal_class=` states, `wal=0` as `stranded`, and the WAL size

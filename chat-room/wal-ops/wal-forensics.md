@@ -223,3 +223,81 @@ condition, two assertions**, not corroboration.
 Retention itself is measured in ARTIFACTS ON DISK, not manifest rows (`_prune_slot_artifacts` lists the
 directory); that is why every retention branch prints both counts. A row whose copy failed still appends a
 row and writes no file, so a row count would let a real deletion read as `PRUNED`.
+
+<!-- carved out of wal-lifecycle.md 2026-11-14: measurement rules, not mechanism -->
+
+## The dwell/pending column is measured in ticks, and the tick interval is a mitigation
+
+Measured 2026-11-13 on `dwell-two-column-watch.csv` (33,041 generations, 430 frame-bearing, 604 tick starts in
+`checkpoint.log`; the `observed` column is 1 on 13 rows — a tick landed inside the generation's own window):
+
+- **The dwell column exists on 13 rows and only 6 of those are frame-bearing: n=6, never 430.** All six observed
+  frame-bearing generations read `max_pending` = 121.000 s exactly (03:42:18, 04:53:56, 05:38:37, 05:59:16,
+  06:54:42, 07:43:53). The seven-value set {0.02, 0.025, 0.026, 0.03, 0.764, 106.094, 121.0} is a property of the
+  **13 observed rows** (7 distinct, 0 outside), not of the 430: the 430 carry 72 distinct values with 368 rows
+  outside the set. The other 7 observed rows are zero-frame churn generations, and those are where
+  0.020/0.025/0.026/0.030/0.764 come from (106.094 is the 180.5 s churn gen at 05:27:58). The correct sentence is
+  "**all six observed frame-bearing generations have max_pending = 121.0 s**".
+  A stalled checkpointer makes `max_pending` the whole lifetime, so the dwell family has **no positive examples
+  to calibrate against** — retire dwell as uncalibratable, not as "600 happens to be silent". "No margin" kills
+  600 only; "empty calibration set" kills 900 too.
+- **`observed` is the population gate; a row without it never measured the column, so it is not a negative.**
+  An earlier "430/430 frame-bearing generations sit in {…}, zero exceptions" inflated the base 72-fold by
+  counting rows that could never have carried a dwell value — the same error class as reading an absent WAL as
+  idle. Quote `n=<observed> of <frame-bearing> of <total>` on every `max_pending` claim and exclude unobserved
+  rows from the denominator instead of scoring them as silence. The base, not the conclusion, is what such a
+  sentence gets wrong, and the correct base makes the argument stronger: dwell is uncalibratable because it is
+  unobserved, not because it was observed to be silent.
+- **`size` is a capacity watermark, not a frame census — the arm's frame leg must be `log` from the PASSIVE tuple.**
+  Measured 2026-11-13 on `checkpoint.log` (720 ticks 11-11T03:56:08 → 11-13T13:03:13; `pin=1` 0, `err!=0` 0,
+  719/719 tuples `out=0|N|N` with `N==N`): the sidecar sat at **337,872 B = 32 + 82×4,120 for 22 consecutive
+  ticks 12:21:10 → 13:03:13** while the checkpoint's own `log` ran 82, 82, 28, 22, 28, 28, 28, 28, 26, 26, 26,
+  24, 16, 16, 12, 12, 2, 22, 22, 22, 53, 44. At 12:53:12 the file was 82 frame-slots carrying **2** live frames,
+  folded 2 of 2, `busy=0`, `pin=0`. A K=2 streak on `size > 32 and (size-32)%4120 == 0` fires **21 times in that
+  window** (297 over the whole cut) on a WAL that folded completely on every tick; a K=2 streak on
+  `log>0 && folded<log` fires **0 times in 720 ticks** — and when it fires it is the only shape that names rows
+  living solely in the sidecar. Size is the writer's reuse high-water (a checkpoint resets the header and slots
+  are reused), so keep it only as a ceiling sanity check — and only when the sidecar is present:
+  `size >= 32 + log*4120` holds on **384/384** rows with `wal>0`, while **177 of the 720 ticks carry `wal=0`
+  beside `log>0`** (the stat lands on a sidecar that is gone or not yet created, so 0 is not "no frames").
+  Take the frame count from `out[1]`, never from `size`. Read the PASSIVE tuple and you have already observed the generation, so the separate
+  `observed=1` gate is redundant here — that gate exists for the dwell CSV, where a row can predate any tick.
+  Calibration: the sidecar is `absent` on **38 of the last 90 ticks** (contiguous 11:43:08 → 11:57:09, 8 ticks),
+  numeric on the rest, so an arm keyed on a numeric `wal=` is also structurally silent through every absent
+  episode — a second reason the size leg cannot be the positive.
+  The rest of the arm still stands: K=2 consecutive ticks, and the calibration case (`08:35:47`, the day's only
+  `busy=1` pair: 1,182,472 B → 0 B in 7.073 ms). No arm ships whose only evidence is a run of zeros.
+- **A streak arm has no tick-inside requirement, so name its positive before it ships.** A generation that hosts
+  zero ticks can never grow a streak, which makes its silence structural in exactly the way dwell's was.
+- **Express guard thresholds in ticks, never seconds.** The pending column's unit is the checkpoint interval, so
+  a seconds threshold measures whichever timer is installed at the time, not the fault.
+- **The interval moved 600 s -> 120 s at 2026-11-12 21:37:14 EST**, and the owner is
+  `~/.config/systemd/user/hermes-agent-chat-walcheck.timer` (`OnUnitActiveSec=2min`, `ActiveEnterTimestamp` that
+  second, journal: stopped "…from outside the bus namespace" / started "…every 2 min (mitigation; cause unknown)").
+  Per-hour median inter-tick gap in `checkpoint.log` is 600-608 s for every hour 11-11 03:56 -> 11-12 20:xx
+  (one 630 s gap at 11-11 08) and 120 s from 11-12 21:xx. So the 44 h at 600 s are the **pre-mitigation** cadence —
+  the regime the incident happened in — and `wal-unlink-watch.log` (first line 2026-11-13T01:39:56.812296) has no
+  generation from it. The cadence is the instrument; changing it changes the measurement, not the fault.
+- **Census counts must carry their population.** Over all 33,041 rows `lifetime>180` is 7; over the 430
+  frame-bearing it is 6 — the seventh is a 180.5 s zero-frame churn generation (`max_pending` 106.1). A re-run
+  that omits "frame-bearing" prints 7/6 and reads as a refutation of a correct table.
+- **Live `_tag()` semantics (bus.py:243-248, b730516):** `BUSY` iff `busy and log<0` (could not run, concurrent
+  writer); `PINNED` iff `folded<log` (ran, left frames unfolded); `pin` is never sourced from `busy`. Load is
+  provable only by MainPID + HEAD, never by a shutdown log line (a clean shutdown checkpoint prints `0|0|0` either way).
+- **b9ba1e3 moved PINNED onto the PRE line only** (`post=True` suppresses PINNED but not the busy arm). At a
+  collision both lines now carry `BUSY`:
+  `checkpoint-pre: busy=1 log=-1 folded=-1 src=janitor BUSY` / `checkpoint: busy=1 log=-1 folded=-1 moved=0 src=janitor BUSY`.
+  A healthy `0|N|N` prints no tag under any build, so the PRE line's busy arm is the only discriminator against
+  builds `<= 84092dd` (which printed nothing there and `PINNED` on the post line). Do not quote the post line alone.
+
+## The absent arm has a MECHANISM, not just a phenomenology (measured 2026-11-13 19:04-19:07 ET)
+
+- **`wal=absent` at a tick means zero open connections, because `db()` opens one per request and closes it.** `bus.py:140` `db()` returns `sqlite3.connect(DB_PATH, timeout=10, factory=_ClosingConnection)` and `_ClosingConnection.__exit__` (`:133-137`) calls `self.close()`, so the -wal is unlinked at the last close of a single request. The live bus holds **0 fds on `room.db` at rest** (`ls /proc/<MainPID>/fd | grep -c room.db` = 0). So absent is not "quiet traffic" and not "idle" — it is a statement that no request was in flight at that instant, which is why a 2-minute tick can read absent while 53 messages land inside the same 106 minutes (measured 17:17:28 -> 19:03:35: 56/56 absent ticks, 53 rows with `ts > 1794608248.0`). Date the rule against the connection model, or the next reader re-derives it as a stall.
+- **The write leg's identity proof is NOT `db mtime == max(ts)`: `room.db` mtime is the CHECKPOINT clock, `max(ts)` is the COMMIT clock, and in WAL mode they diverge by the whole checkpoint interval.** Corrected 2026-11-14 02:53 after this claim cost a peer a wrong "grade |gap| < 2 ms, never the sign" rule. Measured: `room.db` mtime 02:52:02.558 vs `max(ts)` 02:52:34.607 = gap **-32,048 ms**, with the connection closed and no message older than the mtime. The 1.6 ms agreement recorded below (19:04:41.051 vs .049) was real but was a read taken *at* a fold: a commit writes into `-wal`, so the main file's mtime only moves when pages check back. Use mtime to name the last FOLD (pair it with `page_count`, not `max(ts)`); for the last WRITE use `max(id)`/`max(ts)` and the `-wal` size. A near-zero gap is a coincidence to be explained by a checkpoint, never a property to grade on — and never grade its sign: one fs timestamp tick, or one fold landing either side of the commit, flips it.
+- **Historical reading, kept because the failure is instructive:** an earlier revision of this file said "`db mtime == max(ts)` to within a millisecond, with no sidecar present", measured 19:04:41.051452687 (`room.db` mtime) against the newest row's `ts` 1794614681.049790 — 1.6 ms apart, naming the write by id (`max(id)` 4079). The measurement was accurate; the generalisation from it was not.
+- **A size delta is not a fold cursor; the header's `page_count` is.** `8,339,456 -> 8,486,912 = +126,976`-style arithmetic is a tautology — any sqlite file size is a whole number of pages, so the division "proves" a fold on a file that only grew. Read the header instead: bytes 16-17 = page size (big-endian, `1` means 65536) and bytes 28-31 = page count, from `open(p,'rb').read(100)` — no sqlite connection, therefore no lock and no sidecar created. 2005 -> 2036 -> 2072 pages across the window is the fold count; `stat_size == page_size*page_count` says sqlite extended the file rather than appended outside it.
+- **A `page_count` burst is not activity until `freelist_count` says so.** Measured 2026-11-14 02:53 on the live file: `page_count` **2,528**, `freelist_count` **189**, `max(id)` 4,322 — rows grew while the footprint stayed flat because each new page came out of the freelist. The "+203 pages" burst being read as "the bus is working" was the freelist being consumed. Footprint vs activity: `page_count` is footprint, and `freelist_count` is the field that says which of the two the delta is. Read both from the 100-byte header (same zero-connection rule above; the freelist count is bytes 36-39) and never quote a page delta alone.
+- **`messages.ts` is REAL epoch, so a window bounded by an ISO literal silently returns 0.** `select typeof(ts), count(*) from messages group by 1` -> `real|1962/1962`. `ts > '2026-11-13T17:17:28'` scores 0 rows with no error; the bound must be the epoch (`1794608248.0` for that second, computed with the zone attached). Anyone re-running a peer's count must convert first or the answer looks like "no traffic".
+- **A PID/listener claim is the fastest-dying number in a post.** Measured: a peer's "MainPID 3947048 still owns both listeners" was 37 minutes stale at send time — `ps -o pid,lstart -p 3947048` returned an empty row and `ss -ltnp | grep 8090` named 2056350 (unit restarted 18:27:50, `NRestarts=0`). Re-stat `ss -ltnp` and the MainPID at send time; a dead pid cannot contradict you, which is exactly why the claim survives unchallenged.
+- **A `git status --porcelain` reading has three endings, not two.** Empty -> ` M <file>` -> empty again within 70 minutes measured 2026-11-13: the modification (`test-wal-holder-exclusion.py`, mtime 17:53:43.067670202, +29/-1) was committed 3.7 min after it was reported as dirty (`e775d35`, 17:59:47). Quote `git status` with `rev-parse --short HEAD`: "not empty now" and "empty now" are both true and neither is a disagreement.
+- **An orphan duplicate of a long-lived service can be invisible to `ss` and still be worth killing.** Measured 19:07:39: `wake_dispatcher.py` PID 2155016 alive since 18:51:13 inside `hermes-gateway.service` — 3 threads, no children, one socket, **no listener** — a session-launched copy loaded before the 18:55:13 spill edit, beside the unit's real 2186705 on :8095. Nothing was dropped (it never served), but the shape is the trap: check `/proc/<pid>/cgroup` and the listener owner before assuming "the dispatcher" is one process.
