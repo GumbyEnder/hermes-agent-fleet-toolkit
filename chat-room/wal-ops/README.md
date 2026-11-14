@@ -19,6 +19,12 @@ Source of truth for running copies remains the box:
 Copy back over the running path, keep a `.bak-<UTC stamp>` beside it, and record
 the new md5 in the gate message. `MANIFEST.md5` is regenerated at commit time.
 
+**`MANIFEST.md5`, `check-manifest.sh` and `check-wal-doc-links.sh` exist only
+here.** `/mnt/nas/host-ops/agent-chat/` carries `grade-slot.sh` and no
+`MANIFEST.md5`, so a checker pointed at the NAS path hashes an empty file list
+and exits 0 — a green gate that inspected nothing. Point manifest and doc-link
+checks at this directory, and treat a NAS-path rc=0 as unmeasured.
+
 ## Unit wiring (as of 2026-11-13)
 
 - `hermes-agent-chat-walcheck.timer` -> every 2 min -> `wal-checkpoint.sh`.
