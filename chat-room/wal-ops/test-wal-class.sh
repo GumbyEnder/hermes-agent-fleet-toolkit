@@ -4,7 +4,10 @@
 # history is untouched. Pins the contract:
 #
 #   wal=absent            -> closed       (last close completed, sqlite unlinked)
-#   wal=0                 -> held_empty   (a connection is open now, nothing pending)
+#   wal=0                 -> stranded     (pair present, zero frames, HOLDER UNKNOWN --
+#                                          an unqualified close leaves this with nobody
+#                                          holding the file, so it must not read as
+#                                          "a connection is open now")
 #   wal>0, folded==log    -> resident     (bytes at high-water, all frames in the db)
 #   wal>0, folded<log     -> unfolded     (frames live only in the -wal; pin=1)
 #
@@ -70,9 +73,24 @@ echo "scratch=$W  script=$SCRIPT  hold=${HOLD_SECS}s"
 
 mk;                              run_arm closed closed
 
+# The arm the old wording could not express: 0 B pair, NO HOLDER AT ALL.
+# A read-only open/close strands this pair and exits; nothing holds the file.
+# Graded `closed`, NOT `stranded`, because this probe's own rw open + PASSIVE
+# checkpoint + close is a qualifying close and unlinks it. That asymmetry is the
+# whole reading: `wal=0` in this log means the tick's close was not the last
+# qualifying one -- never "a holderless pair, again".
+mk
+python3 - "$DB" <<'PY'
+import sqlite3,sys
+c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True)
+c.execute("SELECT COUNT(*) FROM t").fetchone(); c.close()
+PY
+stat -c '  before arm: wal=%s' "$DB-wal" 2>/dev/null || echo "  before arm: wal=absent"
+run_arm holderless_tidied closed
+
 mk; holder idle >/dev/null; sleep 0.6
 stat -c '  before arm: wal=%s' "$DB-wal" 2>/dev/null || echo "  before arm: wal=absent"
-run_arm held_empty held_empty;   wait
+run_arm stranded stranded;        wait
 
 mk; holder idle >/dev/null; sleep 0.6; ins 40
 stat -c '  before arm: wal=%s' "$DB-wal" 2>/dev/null || echo "  before arm: wal=absent"

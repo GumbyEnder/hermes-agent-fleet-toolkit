@@ -105,12 +105,21 @@ if [ "$pin" != absent ]; then printf '%s\n' "$streak" >"$STREAK_FILE" 2>/dev/nul
 # not three, and they are not interchangeable readings (measured 2026-11-14):
 #   closed      wal=absent  -- no sidecar at the tick; the last close completed and
 #                             sqlite unlinked it. Says nothing about frames.
-#   held_empty  wal=0       -- a generation exists with zero pending bytes, i.e. some
-#                             connection is open RIGHT NOW (a read-only close strands
-#                             this pair; the closer was not the last one).
+#   stranded    wal=0       -- a generation exists with zero frames and NO close has
+#                             yet been the last qualifying one. It does NOT mean a
+#                             connection is open RIGHT NOW: a read-only open/close with
+#                             nothing else holding the file leaves exactly this pair
+#                             (measured 2026-11-14, arm A: 0 B -wal + 32768 B -shm, fd
+#                             census 0, standing for hours). Holder UNKNOWN -- and the
+#                             census would have to be a handle census to decide; `fds=`
+#                             is not one, it counts the bus process's sockets (6, flat,
+#                             never a db fd). See the pair present + zero frames = the
+#                             pair is stranded, not held.
 #   resident    wal>0, fold complete -- bytes on disk at the generation's high-water
-#                             mark, every frame already in the main db. Durable; the
-#                             sidecar will not unlink until that holder's last close.
+#                             mark, every frame already in the main db. Durable, and
+#                             NOT proof of a pin: with no holder this pair also stands,
+#                             because an unqualified close does not unlink it either.
+#                             It unlinks only when a qualifying close is the last one.
 #   unfolded    wal>0, folded<log -- frames exist ONLY in the -wal. The single row-at-
 #                             risk state; this is what `pin=1` means.
 # Derived from this tick's own tuple, not from `pin`: pin is about read marks on the
@@ -118,7 +127,7 @@ if [ "$pin" != absent ]; then printf '%s\n' "$streak" >"$STREAK_FILE" 2>/dev/nul
 wal_class=unknown
 case "$wal_after" in
   absent) wal_class=closed ;;
-  0) wal_class=held_empty ;;
+  0) wal_class=stranded ;;
   *) case "$out" in
        [0-9]*\|[0-9]*\|[0-9]*)
          nlog=${out#*|}; nlog=${nlog%%|*}; nfold=${out##*|}
