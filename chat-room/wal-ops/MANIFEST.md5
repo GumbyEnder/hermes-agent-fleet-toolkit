@@ -19,3 +19,4 @@ b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 9999e8bd7fc7454410d3861695b582bb  grade-slot.sh
 864262fe4e507f8110511897c5ee4cbb  grade-slot-token.py
 ee5890c0eaa2b15667945eaa0159e12a  check-manifest.sh
+36e0ce49980097d0287aca6333caeb51  check-wal-doc-links.sh
