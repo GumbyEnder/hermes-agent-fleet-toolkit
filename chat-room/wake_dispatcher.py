@@ -33,7 +33,13 @@ Env:
                          always marked in the prompt
   WAKE_SPILL             JSONL file holding accepted-but-unfinished wakes
                          (default ~/agents/agent-chat/wake-spill.jsonl)
+  WAKE_GATEWAY_HOME      hermes home whose gateway answers the turn gate
+                         (default ~/.hermes; a profile's own home is also asked).
+                         The gate is the gateway's `active-work` answer, because
+                         the flock belongs to the client that asks for a turn,
+                         not to the turn itself.
 """
+import contextlib
 import fcntl
 import hashlib
 import hmac as hm
@@ -125,6 +131,8 @@ _rejected_full = 0
 _retried = 0
 _abandoned = 0
 _skipped_answered = 0
+_gate_busy = 0
+_inqueue = set()        # seqs currently in _work (one copy each)
 
 # --- spill: the queue lives in this process, so a restart used to eat it -------
 # A SIGTERM dropped every accepted-but-unfinished wake: the HTTP 200 had already
@@ -261,11 +269,21 @@ def _enqueue(profile, payload, seq):
     never retries, so a 429 was a permanently unanswered mention (14 of them in
     the six hours to 18:50 on 2026-11-13). A record is now accepted once it is on
     disk; the in-memory queue is just the working window.
+
+    A seq already queued is never queued twice: a dump-and-re-enqueue deferral
+    (gate busy, gate held, gate lock) runs per worker, and two workers deferring
+    the same record used to leave two copies in the queue — two turns under one
+    mention, which is the duplicate this file exists to prevent.
     """
     if seq is None:          # duplicate key already held; nothing to enqueue
         return False
+    with _lock:
+        if seq in _inqueue:
+            return True
     try:
         _work.put_nowait((profile, payload, seq))
+        with _lock:
+            _inqueue.add(seq)
         return True
     except queue.Full:
         with _spill_lock:
@@ -292,6 +310,8 @@ def _pump_loop():
                     _work.put_nowait((rec["profile"], rec["payload"], seq))
                 except queue.Full:
                     break
+                with _lock:
+                    _inqueue.add(seq)
                 _overflow.pop(0)
                 moved += 1
         if moved:
@@ -502,6 +522,75 @@ def _stamp_holder(fd, profile, pid):
         pass
 
 
+def _control_socket_homes(profile):
+    """Candidate unix sockets: the fleet gateway, then a profile's own gateway."""
+    homes = [os.path.expanduser(os.environ.get("WAKE_GATEWAY_HOME", "~/.hermes"))]
+    homes.append(os.path.expanduser(f"~/.hermes/profiles/{profile}"))
+    return homes
+
+
+def _control(home, verb, params=None, timeout=2.0):
+    """Ask a gateway control verb over its unix socket; None when nothing answers.
+
+    Deliberately stdlib-only and dependency-free: this service runs on the system
+    python, not the hermes venv, so it cannot import gateway.control_socket.
+    """
+    for name in ("gateway.sock", "gateway.sock.path"):
+        path = os.path.join(home, name)
+        try:
+            if name.endswith(".path"):
+                with open(path, encoding="utf-8-sig") as fh:
+                    path = fh.read().strip()
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        except OSError:
+            continue
+        try:
+            sock.settimeout(timeout)
+            sock.connect(path)
+            req = {"verb": verb, "id": 1, "protocol": 1}
+            if params:
+                req["params"] = params
+            sock.sendall(json.dumps(req).encode() + b"\n")
+            buf = b""
+            while b"\n" not in buf and len(buf) < 262144:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+            answer = json.loads(buf.split(b"\n", 1)[0].decode("utf-8", "replace"))
+            return answer.get("result") if answer.get("ok") is True else None
+        except (OSError, ValueError):
+            continue
+        finally:
+            with contextlib.suppress(OSError):
+                sock.close()
+    return None
+
+
+def _gateway_turn_active(profile):
+    """Is a *turn* running for `profile` in the process that runs turns?
+
+    Returns (state, units, pid): state is "busy", "idle" or "unknown".
+
+    The flock is held by the process that ASKS for a turn (`hermes -p P -z` is a
+    gateway client), so it proves nothing once that client is gone while the
+    gateway's turn runs on: buzzy/4205 -> 4254 (client rc -15, turn posted 419.5 s
+    later) and the duplicate 4257 beside it. The gateway answers from its own
+    running state (`active-work` control verb), and the pid it names is the one
+    that actually owns the turn — evidence, not a pid we do not own.
+    """
+    answered = False
+    for home in _control_socket_homes(profile):
+        result = _control(home, "active-work", {"profile": profile})
+        if not isinstance(result, dict):
+            continue
+        answered = True
+        units = [u for u in (result.get("active_work") or []) if isinstance(u, dict)]
+        if units:
+            return "busy", units, result.get("pid")
+    return ("idle" if answered else "unknown"), [], None
+
+
 def _run_one(profile, payload, lock_fd=-1):
     global _done, _failed
     started = time.time()
@@ -580,9 +669,11 @@ def _gate_for(profile):
 
 
 def _worker():
-    global _active, _rejected_full, _skipped_answered
+    global _active, _rejected_full, _skipped_answered, _gate_busy
     while True:
         profile, payload, seq = _work.get()
+        with _lock:
+            _inqueue.discard(seq)
         gate = _gate_for(profile)
         if not gate.acquire(blocking=False):
             # another turn for this profile is running: put this one back at the
@@ -603,6 +694,36 @@ def _worker():
             _work.task_done()
             time.sleep(5.0)
             continue
+        # An acquired flock means the wrapper that asked for the turn is gone — not
+        # that the turn is. Ask the process that runs turns; only it can answer.
+        # No fixed hold: the record is deferred until this answers idle, so a
+        # restart does not stall the queue for a budget (the cheap guard buzzy
+        # tried and reverted: spilled 2 -> queued 1 held_for_repump 1 for 900 s).
+        gstate, gunits, gpid = _gateway_turn_active(profile)
+        if gstate == "busy":
+            with _lock:
+                _gate_busy += 1
+            log(evt="gate_held_busy", profile=profile,
+                message_id=payload.get("message_id"),
+                gateway_pid=gpid, units=[(u.get("kind"), u.get("session"),
+                                          u.get("elapsed_s"), u.get("current_tool"))
+                                         for u in gunits],
+                holder=(holder or None))
+            gate.release()
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+            _enqueue(profile, payload, seq)
+            _work.task_done()
+            time.sleep(3.0)
+            continue
+        if gstate == "unknown":
+            # No gateway answered: the gate is the flock alone, as before. Fail
+            # open — a gateway that is down cannot run the turn anyway, and the
+            # retry/spill path holds the record.
+            log(evt="gate_unverified", profile=profile,
+                message_id=payload.get("message_id"))
         with _lock:
             _active += 1
         retry = False
@@ -699,6 +820,7 @@ class H(BaseHTTPRequestHandler):
                         "held_for_repump": len(_overflow),
                         "retried": _retried, "abandoned": _abandoned,
                         "skipped_answered": _skipped_answered,
+                        "gate_busy": _gate_busy,
                         "retry_max": RETRY_MAX,
                         "spill_path": SPILL,
                         "lock_dir": LOCK_DIR,
