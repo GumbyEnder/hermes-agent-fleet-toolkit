@@ -1274,3 +1274,99 @@ witness's `# wal <size> <mtime>` line). Measured 2026-11-13: `wal=copy:0` at 20:
 - **A tick log can go silent across a restart and come back moving.** bus-checkpoint.log wrote
   `src=shutdown` at 23:48:32, then nothing for 60 minutes to 00:48:32, whose first tick was
   `moved=31 src=backup`. Silence in the tick log is not quiescence.
+## Why a close unlinks: three gates, and the four `wal` states named
+
+A close unlinks iff it is the **last** close **and** its checkpoint **folded
+everything**. That sentence is only usable split into its gates, because "the
+bus's close unlinks and an identical ad-hoc close does not" was a contention on
+2026-11-14 and every gate is independently observable.
+
+Measured 2026-11-14, sqlite 3.53.1, on the live `room.db` unless stated:
+
+| arm | before close | after close |
+|---|---|---|
+| rw connect + SELECT, no other handle (04:39:14, fd census db/wal/shm = 0/0/0) | wal 0 / shm 32,768 | **both absent** |
+| rw connect + SELECT, idle rw bystander in another process (04:38:33) | wal 0 / shm 32,768 | wal 0 / shm 32,768 — then the bystander's own close → absent |
+| scratch, 17 rows / 3 frames, `wal_autocheckpoint=0`, sole writer close | wal 12,392 | **absent** |
+| scratch, same, idle rw bystander open | wal 12,392 | survives 12,392; bystander close → absent |
+| scratch, same, read mark held in another process | wal 12,392 | survives 12,392 |
+| scratch, same, closer's **own** partly-drained cursor | wal 12,392 | survives 12,392 (single process, no bystander) |
+
+So the gates are:
+1. **No open handle anywhere** — db, -wal or -shm, in any process, ro or rw,
+   idle or not. A handle pins the unlink; closing it releases the pin at the
+   next close. Cross-process, no shared address space needed.
+2. **No live read mark**, *including the closing connection's own cursor.* A
+   `cur.fetchone()` that is never drained is enough — that is the shape an
+   ad-hoc probe (and an `execute_code` kernel) leaves behind, and it is the only
+   way an ad-hoc close fails the unlink with no bystander at all.
+3. **The close's checkpoint folded fully** (`nBackfill == mxFrame`). Frames it
+   could not fold mean there is nothing to delete safely.
+
+Corollary: an empty generation (`wal=0`) unlinks on *any* close, rw or ro, so a
+0 B close proves nothing about the gates. A negative observation only means
+something when `wal>0` at the instant of the close.
+
+### Four states in the `wal` column, not three
+
+`wal-checkpoint.sh` now emits `wal_class=` (appended last, so no positional
+reader shifts) derived from that tick's own tuple:
+
+    wal_class=closed      wal=absent        last close completed and unlinked
+    wal_class=held_empty  wal=0             a connection is open now; nothing pending
+    wal_class=resident    wal>0, folded==log  bytes at high-water, every frame in the db
+    wal_class=unfolded    wal>0, folded<log   frames live ONLY in the -wal (pin=1)
+
+`pin=` cannot carry this: it is about read marks on the PRE side and collapses
+`absent` and `0` into one token. The class is about the file. Harness:
+`test-wal-class.sh` (4 arms, throwaway db, real holder processes — a holder that
+dies early turns every arm into `closed` and the harness would grade its own
+accident).
+## Why a close unlinks: three gates, and the four `wal` states named
+
+A close unlinks iff it is the **last** close **and** its checkpoint **folded
+everything**. That sentence is only usable split into its gates, because "the
+bus's close unlinks and an identical ad-hoc close does not" was a contention on
+2026-11-14 and every gate is independently observable.
+
+Measured 2026-11-14, sqlite 3.53.1, on the live `room.db` unless stated:
+
+| arm | before close | after close |
+|---|---|---|
+| rw connect + SELECT, no other handle (04:39:14, fd census db/wal/shm = 0/0/0) | wal 0 / shm 32,768 | **both absent** |
+| rw connect + SELECT, idle rw bystander in another process (04:38:33) | wal 0 / shm 32,768 | wal 0 / shm 32,768 — then the bystander's own close → absent |
+| scratch, 17 rows / 3 frames, `wal_autocheckpoint=0`, sole writer close | wal 12,392 | **absent** |
+| scratch, same, idle rw bystander open | wal 12,392 | survives 12,392; bystander close → absent |
+| scratch, same, read mark held in another process | wal 12,392 | survives 12,392 |
+| scratch, same, closer's **own** partly-drained cursor | wal 12,392 | survives 12,392 (single process, no bystander) |
+
+So the gates are:
+1. **No open handle anywhere** — db, -wal or -shm, in any process, ro or rw,
+   idle or not. A handle pins the unlink; closing it releases the pin at the
+   next close. Cross-process, no shared address space needed.
+2. **No live read mark**, *including the closing connection's own cursor.* A
+   `cur.fetchone()` that is never drained is enough — that is the shape an
+   ad-hoc probe (and an `execute_code` kernel) leaves behind, and it is the only
+   way an ad-hoc close fails the unlink with no bystander at all.
+3. **The close's checkpoint folded fully** (`nBackfill == mxFrame`). Frames it
+   could not fold mean there is nothing to delete safely.
+
+Corollary: an empty generation (`wal=0`) unlinks on *any* close, rw or ro, so a
+0 B close proves nothing about the gates. A negative observation only means
+something when `wal>0` at the instant of the close.
+
+### Four states in the `wal` column, not three
+
+`wal-checkpoint.sh` now emits `wal_class=` (appended last, so no positional
+reader shifts) derived from that tick's own tuple:
+
+    wal_class=closed      wal=absent        last close completed and unlinked
+    wal_class=held_empty  wal=0             a connection is open now; nothing pending
+    wal_class=resident    wal>0, folded==log  bytes at high-water, every frame in the db
+    wal_class=unfolded    wal>0, folded<log   frames live ONLY in the -wal (pin=1)
+
+`pin=` cannot carry this: it is about read marks on the PRE side and collapses
+`absent` and `0` into one token. The class is about the file. Harness:
+`test-wal-class.sh` (4 arms, throwaway db, real holder processes — a holder that
+dies early turns every arm into `closed` and the harness would grade its own
+accident).

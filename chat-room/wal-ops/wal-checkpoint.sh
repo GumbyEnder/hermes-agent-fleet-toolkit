@@ -101,7 +101,34 @@ printf '%s\n' "$err" >"$ERR_FILE" 2>/dev/null
 if [ "$pin" = absent ]; then :
 elif [ "$pin" = 1 ]; then streak=$((streak + 1)); else streak=0; fi
 if [ "$pin" != absent ]; then printf '%s\n' "$streak" >"$STREAK_FILE" 2>/dev/null; fi
-echo "$(date -Is) rc=$rc out=$out wal=$wal_after wal_before=$wal_before fds=$fds pin=$pin streak=$streak err=$err" >>"$LOG"
+# WAL CLASS — a NAME for the value the wal= column already carries. Four states,
+# not three, and they are not interchangeable readings (measured 2026-11-14):
+#   closed      wal=absent  -- no sidecar at the tick; the last close completed and
+#                             sqlite unlinked it. Says nothing about frames.
+#   held_empty  wal=0       -- a generation exists with zero pending bytes, i.e. some
+#                             connection is open RIGHT NOW (a read-only close strands
+#                             this pair; the closer was not the last one).
+#   resident    wal>0, fold complete -- bytes on disk at the generation's high-water
+#                             mark, every frame already in the main db. Durable; the
+#                             sidecar will not unlink until that holder's last close.
+#   unfolded    wal>0, folded<log -- frames exist ONLY in the -wal. The single row-at-
+#                             risk state; this is what `pin=1` means.
+# Derived from this tick's own tuple, not from `pin`: pin is about read marks on the
+# PRE side and collapses absent/0 into one token, so it cannot carry the class.
+wal_class=unknown
+case "$wal_after" in
+  absent) wal_class=closed ;;
+  0) wal_class=held_empty ;;
+  *) case "$out" in
+       [0-9]*\|[0-9]*\|[0-9]*)
+         nlog=${out#*|}; nlog=${nlog%%|*}; nfold=${out##*|}
+         if [ "$nfold" -lt "$nlog" ] 2>/dev/null; then wal_class=unfolded
+         else wal_class=resident; fi ;;
+     esac ;;
+esac
+# APPENDED LAST, deliberately: rc/out/wal/wal_before/fds/pin/streak/err keep their
+# positions, so a peer's positional read of this line does not shift under it.
+echo "$(date -Is) rc=$rc out=$out wal=$wal_after wal_before=$wal_before fds=$fds pin=$pin streak=$streak err=$err wal_class=$wal_class" >>"$LOG"
 
 # Keep the log from growing forever. One line per run — except the first record (2026-11-11T03:56:08),
 # whose out= held a newline and so spans two — and the real cadence is the timer's
