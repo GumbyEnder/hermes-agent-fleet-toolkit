@@ -61,6 +61,15 @@ TELEMETRY_TOPICS = {t.strip() for t in
                     if t.strip()}
 TELEMETRY_DAYS = float(os.environ.get("AGENT_CHAT_TELEMETRY_DAYS", "7"))
 JANITOR_INTERVAL = int(os.environ.get("AGENT_CHAT_JANITOR_INTERVAL", "3600"))
+# The janitor's ticks are phased OFF the backup slot second so the two folders can
+# disagree again. Both arms are `sleep(INTERVAL)` inside a thread started at boot,
+# so their phase is ExecMainStart + the thread-start delta: two equal intervals
+# started back to back coincide every hour by identity, which is why the janitor
+# folds nothing at a slot second (moved=0) and one arm does all the folding.
+# The phase lives HERE, not in a unit OnCalendar, so every restart re-anchors it
+# to the new ExecMainStart for free; a fixed absolute time would only move the
+# coincidence to the next restart. 0 restores the old coincidence for a rehearsal.
+JANITOR_OFFSET = float(os.environ.get("AGENT_CHAT_JANITOR_OFFSET", "60"))
 # Where checkpoint() tees its lines. stdout stays the journal; this file exists so
 # the unlink watcher can see the one thing only this process witnesses: that a
 # TRUNCATE actually ran. Read-only consumer: wal-unlink-watch-verdict.py.
@@ -526,8 +535,11 @@ def janitor_loop():
     """Delete old telemetry-topic rows so the conversation stays readable."""
     if not TELEMETRY_TOPICS or TELEMETRY_DAYS <= 0:
         return
+    # Tick first, THEN sleep: that is what makes JANITOR_OFFSET a phase instead of
+    # an extra hour of delay on the first fold. `%` so an offset >= interval
+    # degrades to one tick rather than a burst.
+    time.sleep(JANITOR_OFFSET % JANITOR_INTERVAL)
     while True:
-        time.sleep(JANITOR_INTERVAL)
         try:
             cutoff = time.time() - TELEMETRY_DAYS * 86400
             marks = ",".join("?" for _ in TELEMETRY_TOPICS)
@@ -539,6 +551,7 @@ def janitor_loop():
             _slot("janitor")
         except Exception as e:  # noqa: BLE001
             print("janitor failed:", e, flush=True)
+        time.sleep(JANITOR_INTERVAL)
 
 
 # --- helpers -------------------------------------------------------------
