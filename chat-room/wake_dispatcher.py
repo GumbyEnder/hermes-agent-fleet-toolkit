@@ -8,7 +8,9 @@ headless `hermes -p <profile> -z ...` turn, and posts the agent's answer back in
 the room as that profile — threaded under the message that woke it.
 
 Endpoints:
-  GET  /health          -> {status, allowed, active, queued, done, failed, deduped}
+  GET  /health          -> {status, allowed, active, queued, done, failed, deduped,
+                            ..., partition: {spilled, on_queue, in_workers,
+                            active_turns, held, orphan_*, dupes, ok}}
   POST /wake/<profile>  {from, topic, text, message_id?, parent_id?}
 
 Env:
@@ -803,31 +805,59 @@ class H(BaseHTTPRequestHandler):
         if urllib.parse.urlparse(self.path).path != "/health":
             self._json({"error": "not found"}, 404)
             return
+        # The counts are a partition, not four independent gauges: a record lives
+        # in _pending for its whole life and sits in exactly one of _inqueue (a
+        # worker will take it), a worker's hands (taken, not yet dropped) or
+        # _overflow (held because the queue was full). `in_workers` is DERIVED
+        # from those sets instead of counted, because the gate/gateway deferral
+        # paths hold a record outside the queue for seconds and a hand-kept
+        # counter would need decrementing on every one of those `continue`s.
         with _spill_lock:
-            spilled = len(_pending)
+            pend = set(_pending)
+            held_raw = len(_overflow)
+            held = [seq for seq in _overflow if seq in _pending]
         with _lock:
-            self._json({"status": "ok", "allowed": sorted(ALLOW),
-                        "active": _active, "queued": _work.qsize(),
-                        "max_concurrency": MAX_CONC, "max_queue": MAX_QUEUE,
-                        "done": _done, "failed": _failed, "deduped": _deduped,
-                        "rejected_full": _rejected_full,
-                        "draining": _draining,
-                        "spilled": spilled,
-                        # HELD, not rejected: records on disk waiting for a queue
-                        # slot. The old name ("overflow") read as "dropped at the
-                        # cap" and oscillated 1..9 on every pump tick, which is
-                        # what a hold looks like. Rejections are rejected_full.
-                        "held_for_repump": len(_overflow),
-                        "retried": _retried, "abandoned": _abandoned,
-                        "skipped_answered": _skipped_answered,
-                        "gate_busy": _gate_busy,
-                        "retry_max": RETRY_MAX,
-                        "spill_path": SPILL,
-                        "lock_dir": LOCK_DIR,
-                        "timeout_s": TIMEOUT,
-                        "timeout_overrides": TIMEOUT_OVERRIDES,
-                        "dedupe_ttl_s": DEDUPE_TTL,
-                        "uptime_s": round(time.time() - START, 1)})
+            inq = set(_inqueue)
+            active = _active
+        held_set = set(held)
+        partition = {
+            "spilled": len(pend),
+            "on_queue": _work.qsize(),
+            "on_queue_set": len(inq),
+            "in_workers": len(pend - inq - held_set),
+            "active_turns": active,
+            "held": len(held_set),
+            # The three ways the partition can be wrong, each counted so an
+            # `ok:false` says which one fired instead of sending the reader back
+            # to the source mid-queue.
+            "orphan_queued": len(inq - pend),      # queued, no spill record
+            "orphan_held": len(held_set - pend),   # held, no spill record
+            "dupes": len(inq & held_set),          # in two places at once
+            "ok": not (inq - pend) and not (held_set - pend) and not (inq & held_set),
+        }
+        self._json({"status": "ok", "allowed": sorted(ALLOW),
+                    "active": active, "queued": _work.qsize(),
+                    "max_concurrency": MAX_CONC, "max_queue": MAX_QUEUE,
+                    "done": _done, "failed": _failed, "deduped": _deduped,
+                    "rejected_full": _rejected_full,
+                    "draining": _draining,
+                    "spilled": len(pend),
+                    # HELD, not rejected: records on disk waiting for a queue
+                    # slot. The old name ("overflow") read as "dropped at the
+                    # cap" and oscillated 1..9 on every pump tick, which is
+                    # what a hold looks like. Rejections are rejected_full.
+                    "held_for_repump": held_raw,
+                    "partition": partition,
+                    "retried": _retried, "abandoned": _abandoned,
+                    "skipped_answered": _skipped_answered,
+                    "gate_busy": _gate_busy,
+                    "retry_max": RETRY_MAX,
+                    "spill_path": SPILL,
+                    "lock_dir": LOCK_DIR,
+                    "timeout_s": TIMEOUT,
+                    "timeout_overrides": TIMEOUT_OVERRIDES,
+                    "dedupe_ttl_s": DEDUPE_TTL,
+                    "uptime_s": round(time.time() - START, 1)})
 
     def do_POST(self):
         global _deduped, _rejected_full

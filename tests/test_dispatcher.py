@@ -64,6 +64,10 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(h["allowed"], ["alpha", "beta"])
         for k in ("active", "queued", "max_concurrency", "max_queue", "done", "deduped"):
             self.assertIn(k, h)
+        p = h["partition"]
+        self.assertTrue(p["ok"], p)
+        self.assertEqual(p["spilled"], 0, p)          # idle: nothing outstanding
+        self.assertEqual(p["in_workers"], p["active_turns"], p)
 
     def test_unknown_profile_forbidden(self):
         st, _ = post(self.disp + "/wake/gamma", {"from": "x", "text": "hi"})

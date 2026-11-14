@@ -110,6 +110,47 @@ class SpillTests(unittest.TestCase):
                 got = wait_for(lambda: spill_lines(self.spill) == [], timeout=20)
                 self.assertTrue(got, f"record never dropped: {spill_lines(self.spill)!r}")
 
+    def test_health_counts_are_a_self_checking_partition(self):
+        """§/health: spilled == queued + in_workers + held, and /health says so.
+
+        Two agents read these four gauges minutes apart and each re-derived the
+        identity by hand while the queue moved. The service now publishes the
+        derivation plus the three ways it can be wrong, so a mismatch names its
+        cause instead of sending the reader back to the source mid-queue.
+        """
+        with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b, _t, _s):
+            port = free_port()
+            with self._launch(b, port, STUB_SLEEP="3", WAKE_MAX_QUEUE="1"):
+                url = f"http://127.0.0.1:{port}"
+                for i in range(4):
+                    st, body = post(url + "/wake/alpha",
+                                    {"from": "t", "topic": "wake",
+                                     "text": f"@alpha job {i}",
+                                     "message_id": 7000 + i})
+                    self.assertEqual(st, 200, body)
+
+                def consistent():
+                    h = get_json(url + "/health")
+                    p = h.get("partition") or {}
+                    if not p.get("ok") or p.get("held", 0) < 1:
+                        return None
+                    if p["spilled"] != p["on_queue"] + p["in_workers"] + p["held"]:
+                        return None
+                    return p
+
+                p = wait_for(consistent, timeout=20)
+                self.assertTrue(p, f"no consistent partition: {get_json(url + '/health')}")
+                self.assertEqual(p["in_workers"], 1, p)   # the running turn
+                self.assertEqual(p["on_queue"], 1, p)     # MAX_QUEUE=1
+                self.assertGreaterEqual(p["held"], 1, p)  # the rest, on disk
+                # in_workers >= active_turns BY DESIGN, and the gap is why the
+                # old arithmetic sometimes read one short: a worker holds its
+                # record through the answered-check and the gate acquisition
+                # before _active is incremented.
+                self.assertGreaterEqual(p["in_workers"], p["active_turns"], p)
+                for k in ("orphan_queued", "orphan_held", "dupes"):
+                    self.assertEqual(p[k], 0, p)
+
     def test_sigterm_persists_queue_and_next_boot_resumes_it(self):
         """B: SIGTERM while busy -> records on disk -> new process re-runs them."""
         with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b, _t, _s):
