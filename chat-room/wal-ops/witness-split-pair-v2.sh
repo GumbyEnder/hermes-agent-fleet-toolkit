@@ -34,14 +34,22 @@
 # inside the window destroys it and moves the phase.
 #
 # USAGE: witness-split-pair-v2.sh [--print]   (no arg = arm: sleep to slot, capture)
-#        --print : compute slot/window and exit without sleeping or capturing
+#        --print        : compute slot/window and exit without sleeping or capturing
+#        --grade <file> : run THIS gate against a STORED capture, no sleep, no capture.
+#                         Added 2026-11-14 so a branch can be proven on a real artifact
+#                         instead of on an hour's wait; a rehearsal against a copy of the
+#                         gate proves the copy, which is the trap this mode removes.
 # CIFS note: systemd cannot exec this in place (EACCES on a nounix mount) -- schedule
 # `bash /mnt/nas/host-ops/agent-chat/witness-split-pair-v2.sh`.
 # Writes ~/agents/agent-chat/pairsplit2-<stamp>.log and prints one verdict line.
 
 set -u
 PRINT_ONLY=0
-[ "${1:-}" = "--print" ] && PRINT_ONLY=1
+GRADE_FILE=""
+case "${1:-}" in
+  --print) PRINT_ONLY=1 ;;
+  --grade) GRADE_FILE="${2:-}"; [ -s "$GRADE_FILE" ] || { echo "VERDICT: CANNOT GRADE -- --grade needs an existing, non-empty capture file (got '${2:-}')"; exit 2; } ;;
+esac
 
 # Rehearsal overrides. Defaults ARE production; nothing changes unless the caller
 # sets them. A rehearsal must run THIS script's gate, not a copy of it, or the
@@ -90,6 +98,14 @@ fi
 # init before the thread starts and was measured ticking at start+33 with a 30 s
 # interval -- capture at +2 read the window one second before the tick.
 MARGIN="${WMARGIN:-2}"
+SINCE="@$FROM"
+OUT=""
+if [ -n "$GRADE_FILE" ]; then
+  # stored capture: no sleep, no clock arithmetic, no re-read. The window and the
+  # instant are whatever the artifact's own header says; this mode grades only.
+  OUT="$GRADE_FILE"
+  echo "# grade-only: $OUT ($(wc -c <"$OUT") B, header: $(head -1 "$OUT"))"
+else
 # A recurring timer re-arms this (hermes-pairsplit-witness.timer, every 5 min). Only a
 # tick whose wait fits inside WMAXWAIT sleeps, so a stale phase after a bus restart costs
 # one period instead of an hour, and the slot+MARGIN moment falls inside exactly one
@@ -169,6 +185,26 @@ REPO="$HOME/Agents/Projects/hermes-agent-fleet-toolkit"
   fi
   echo "# keeper $(KEEP=$(systemctl --user show -p MainPID --value hermes-agent-chat-wal-keeper.service 2>/dev/null || echo 0); echo "pid=${KEEP:-0}") -- keeper MainPID only (0 = retired); frame supply is a property of ANY live holder at the slot second, named on the # holders line above, not of the keeper"
 } | tee "$OUT"
+fi
+
+# --- flush race guard (added 2026-11-14 after the 15:28:35 FALSE NEGATIVE).
+# The capture instant is slot+2; the bus writes its own `checkpoint-pre:` line at
+# slot+2.5 on this host, so a single journalctl read at slot+2 can miss the very line
+# it was armed to watch and fall through to exit 4 "NO CHECKPOINT LINE AT ALL -- restart
+# or stopped unit", which is a wrong cause AND a wrong next action. Measured: 15:28:35
+# capture read the window before the 15:28:35.534 backup lines landed, while
+# 10:28/11:28/12:28/13:28/14:28 all read them fine -- i.e. a sub-second race, not a
+# unit state. This guard only re-reads the same window; it changes no verdict and adds
+# no line to any path that already found one.
+if [ -z "$GRADE_FILE" ] && ! grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; then
+  _tries=0
+  while [ "$_tries" -lt 5 ] && ! grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; do
+    sleep 1; _tries=$(( _tries + 1 ))
+    journalctl --user -u "$SVC" --since "$SINCE" --no-pager \
+      | grep -E 'checkpoint-pre:|checkpoint:|checkpoint failed|janitor failed|backup failed' >> "$OUT"
+  done
+  [ "$_tries" -gt 0 ] && echo "# flush-retry: ${_tries} extra read(s) of the same window (slot+2 capture can precede the arm's own line)" >> "$OUT"
+fi
 
 # --- presence first: an empty window is a witness failure, not a healthy database.
 # (the vacuous gate below must not swallow it -- measured 11:22, empty window printed
@@ -201,6 +237,24 @@ JLOG="$(printf '%s' "$JAN" | grep -oE 'log=[0-9]+' | head -1 | cut -d= -f2)"
 JFOLD="$(printf '%s' "$JAN" | grep -oE 'folded=[0-9]+' | head -1 | cut -d= -f2)"
 BLOG="$(printf '%s' "$BAK" | grep -oE 'log=[0-9]+' | head -1 | cut -d= -f2)"
 BFOLD="$(printf '%s' "$BAK" | grep -oE 'folded=[0-9]+' | head -1 | cut -d= -f2)"
+# which src arms are actually IN this capture's window (order-independent, so a reversed
+# window cannot be read as the old janitor-then-backup serialization)
+SRCS="$(grep -oE 'src=[a-z]+' "$OUT" | cut -d= -f2 | sort -u | tr '\n' ' ' | sed 's/ $//')"
+NARMS=$(printf '%s' "$SRCS" | wc -w)
+# measured arm offset, read from the tick log rather than assumed: the janitor offset
+# change (census, wal-census.md) moved the second arm ~60 s past the first, which is why
+# both arms can no longer appear in one 7 s window.
+arm_ep() { # slot token 20261114T152835.534123-0500 -> epoch seconds, 0 if unparsable
+  date -d "$(printf '%s' "$1" | sed -E 's/^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})\..*([+-][0-9]{4})$/\1-\2-\3 \4:\5:\6 \7/')" +%s 2>/dev/null || echo 0
+}
+BT="$(grep -oE 'src=backup slot=[0-9T.-]+' "$CPLOG" 2>/dev/null | tail -1 | sed 's/.*slot=//')"
+JT="$(grep -oE 'src=janitor slot=[0-9T.-]+' "$CPLOG" 2>/dev/null | tail -1 | sed 's/.*slot=//')"
+if [ -n "$BT" ] && [ -n "$JT" ]; then
+  OFF=$(( $(arm_ep "$JT") - $(arm_ep "$BT") ))
+  OFFSET_TXT="latest slot pair in the tick log, backup $BT -> janitor $JT = ${OFF}s apart (not this capture's hour unless the tokens say so)"
+else
+  OFFSET_TXT="unmeasurable (tick log has no src=backup and src=janitor token pair; CPLOG=$CPLOG)"
+fi
 
 # --- frames gate: a collision on a zero-frame WAL cannot contend and grades nothing.
 LOGMAX=$(grep -oE 'log=[0-9]+' "$OUT" | cut -d= -f2 | sort -n | tail -1)
@@ -235,8 +289,19 @@ elif grep -Eq 'checkpoint-pre: .* PINNED' "$OUT"; then
   echo "VERDICT: real pin -- pre line reports folded<log; read folded vs log (this is a row-risk shape), but the TRUNCATE returned busy=0, so the fold completed on this pass."
 elif grep -Eq '^[^#]*checkpoint: .* PINNED' "$OUT" && ! grep -Eq '^[^#]*checkpoint-pre: .* PINNED' "$OUT"; then
   echo "VERDICT: post-only pin (>= aef2baf shape: pre clean, post fails the TRUNCATE) -- row-risk, the PRE line proves the PASSIVE was healthy and the TRUNCATE is what failed"
-elif [ -n "$JAN" ] && [ -n "$BAK" ] && [ "${JLOG:-0}" -gt 0 ] && [ "${JLOG:-0}" = "${JFOLD:--1}" ] && [ "${BLOG:-1}" = "0" ] && [ "${BFOLD:-1}" = "0" ]; then
-  echo "VERDICT: ORDERED, NOT CONTENTED -- grades ordering only. First arm's PASSIVE saw frames and folded all of them (janitor pre folded==log=$JLOG>0), and the second arm's TRUNCATE found an empty WAL (backup post log=0 folded=0). Two arms that cannot overlap cannot contend by construction, so this window proves the fold sequence ran in order and proves NOTHING about contention; busy=0 here is a property of the serialization, not of the build. Measured 2/2 live slots with frames (12:15:19, 13:15:19)."
+elif [ "$NARMS" = "1" ]; then
+  # ADDED 2026-11-14. The ORDERED, NOT CONTENTED branch below required BOTH arms in one
+  # 7 s window. Since the janitor offset change the arms are ~60 s apart (measured, #4813
+  # 15:29:33 vs 15:28:35), so that branch is unreachable from a live capture -- every slot
+  # fell through to "NO COLLISION ... weaker than the branch it can no longer reach", which
+  # is honest but never says WHY. This branch says why, and grades the one arm that is in
+  # the window instead of pretending two arms were compared.
+  echo "VERDICT: SINGLE-ARM at the offset -- window holds one src arm only (src=${SRCS:-?}); read that arm's own pre/post pair above. Measured arm offset from the tick log: ${OFFSET_TXT}. Two arms that far apart cannot overlap on the hourly grid, so this slot grades frame supply and this arm's fold, NOT contention between the arms -- the serialization is the janitor offset, not the bus. Do not cite this slot as evidence the split is fixed or that it is broken."
+elif [ "$NARMS" -ge 2 ]; then
+  # The retired branch's shape, now treated as NEWS: both arms in one 7 s window means the
+  # offset is gone (or the capture is stale/duplicated). It is not a health grade, and the
+  # old wording would have named the wrong first arm on a reversed window (#4813 item 5b).
+  echo "VERDICT: SPLIT-WINDOW -- both arms (src=${SRCS}) appear inside one 7 s window, so the janitor offset is absent or this capture is stale/duplicated. This is not the hourly serialization the ledger has been grading: re-derive the grid from bus-checkpoint.log (slot tokens) before grading, and do not read the first line as 'the first arm' -- name the arm, not the position."
 elif [ "${POSTBUSY:-0}" -gt 0 ]; then
   echo "VERDICT: TRUNCATE BUSY with no pin -- busy=1 on the checkpoint line while neither line reports folded<log; sqlite could not run the checkpoint (a concurrent writer, not a read mark) and it cost no frames."
 elif grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; then
