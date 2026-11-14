@@ -25,3 +25,4 @@ c395c173ae7c6bec67030b3a14cbb2c8  check-grade-timer.sh
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 45dfad832e8c773f49e3eea1622a8bfc  systemd/check-grade-timer.timer
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
+b353d16170fed15f36cb81f8bd6636ad  rehearse-verify-rolled-and-pruned.sh
