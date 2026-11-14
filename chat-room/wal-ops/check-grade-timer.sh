@@ -37,6 +37,27 @@ for r in rows:
 ' "$TIMER" 2>/dev/null
 }
 
+busy() {   # 0 when the unit this timer activates is still running
+    local act
+    act=$(systemctl --user list-timers --output=json --all "$TIMER" 2>/dev/null \
+      | python3 -c '
+import json, sys
+u = sys.argv[1]
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for r in rows:
+    if r.get("unit") == u:
+        print(r.get("activates") or ""); break
+' "$TIMER" 2>/dev/null)
+    [ -n "$act" ] || return 1
+    case "$(systemctl --user is-active "$act" 2>/dev/null)" in
+        active|activating|reloading) return 0 ;;
+    esac
+    return 1
+}
+
 healthy() {
     local st raw cand
     st=$(systemctl --user show "$TIMER" -p ActiveState --value 2>/dev/null || true)
@@ -48,6 +69,16 @@ healthy() {
         [ "$cand" -gt "$(date +%s)" ]
         return
     fi
+    # A RUNNING TRIGGER IS NOT AN UNARMED TIMER. Measured here (systemd 255,
+    # 2026-11-14 07:37, scratch oneshot sleeping 30 s under a 10 s calendar
+    # timer): while the activated unit is active, list-timers reports
+    # `next: null` and NextElapseUSecRealtime is empty -- systemd computes the
+    # next elapse when the triggered unit goes inactive. Flagging that as
+    # unarmed restarts the timer under a live run and then reports REPAIR
+    # FAILED (rc 2, failed unit) because the state repeats until the run ends.
+    # Seen on the real guard at 07:07:07, two minutes into the 07:05 grade.
+    # grade-slot.service runs ~23 min, so this window is most of every hour.
+    busy && return 0
     # fallback: the two properties (calendar timers on older systemd)
     for cand in \
         "$(systemctl --user show "$TIMER" -p NextElapseUSecRealtime --value 2>/dev/null || true)" \
