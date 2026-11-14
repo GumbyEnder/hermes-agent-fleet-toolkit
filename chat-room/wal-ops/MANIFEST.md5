@@ -25,7 +25,7 @@ a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 45dfad832e8c773f49e3eea1622a8bfc  systemd/check-grade-timer.timer
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
-c304a1eaf696ea5357a3936884ea376a  rehearse-verify-rolled-and-pruned.sh
+42244df17ba82bb422519279a6bb2fb8  rehearse-verify-rolled-and-pruned.sh
 4250d5ecc2e5823735af660658297adb  rehearse-busy-bound.sh
 e36f7b06498986ae73a3e81275e3f332  rehearse-run-failure.sh
 d4c8325394b5148b94db86900c6513b9  fanotify-close-actor.py

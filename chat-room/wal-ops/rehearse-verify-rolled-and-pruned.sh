@@ -30,9 +30,15 @@ rc_total=0
 grep '"path"' "$SRC/room.db.bak.manifest.jsonl" | tail -1 > "$W/row.json"
 row_slot=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["slot"])' "$W/row.json")
 row_path=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["files"]["room.db.bak"]["path"])' "$W/row.json")
-row_wpath=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["files"]["room.db-wal.bak"]["path"])' "$W/row.json")
+# A newer row can record the wal sidecar as ABSENT ({"bytes":null,"state":"absent"},
+# no "path" key at all -- measured 2026-11-14 on slot 20261114T142835, wal=skip:absent).
+# Indexing ["path"] unconditionally threw KeyError, left row_wpath empty, and the cp
+# then copied the BACKUP DIR itself ("omitting directory"): the four expectations still
+# printed PASS, so the harness degraded silently. Read the key defensively.
+row_wpath=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["files"].get("room.db-wal.bak",{}).get("path") or "")' "$W/row.json")
 mkdir -p "$W/bdir"
-cp "$SRC/$row_path" "$SRC/$row_wpath" "$W/bdir/"
+cp "$SRC/$row_path" "$W/bdir/"
+[ -n "$row_wpath" ] && cp "$SRC/$row_wpath" "$W/bdir/"
 echo "rehearsing row $row_slot path=$row_path keep=$KEEP"
 
 mkfuture () { # $1 = n synthetic newer rows appended after the real row
@@ -47,7 +53,9 @@ for i in range(1, n + 1):
     r = json.loads(json.dumps(row))
     r['slot'] = base + '.%06d-0000' % i          # later than the real row
     r['files']['room.db.bak']['path'] = p + '.newer%d' % i
-    r['files']['room.db-wal.bak']['path'] = wp + '.newer%d' % i
+    # never invent a wal path when the source row records the sidecar as absent
+    if wp:
+        r['files']['room.db-wal.bak']['path'] = wp + '.newer%d' % i
     open(f, 'a').write(json.dumps(r) + '\n')
 PY
 }
