@@ -290,3 +290,25 @@ Enumerate `/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/<MainPID>/cgroup)/cgroup.pro
 argv (`-p [a-z-]+ -z` or the quoted `'-p', 'x', '-z'`), and keep `pgrep -P` only as the fallback for an
 unreadable cgroup file. Tested candidate:
 `/mnt/nas/host-ops/agent-chat/restart-dispatcher-when-no-turns.sh.candidate-cgroup-20261114T1558`.
+
+## A probe of a collected transient unit writes the journal residue it then reports
+
+`wake-dispatcher-reload-<sha>.service` was collected at its deadline (exit 1, 13:11:29), and five
+`Failed to open /run/user/1000/systemd/transient/wake-dispatcher-reload-6a840d3.service: No such file`
+lines appeared over the next three hours (13:58:09.794, 13:58:19.070, 13:59:54.180, 14:18:51.704,
+16:05:25.758). That reads as a leaked poller; it is not one. The emitter is the user manager itself
+(PID 1616, `user@1000.service`), and a collected transient keeps a stub whose `FragmentPath` no longer
+exists, so ANY LoadUnit-class client call makes the manager try to open the gone fragment and log the
+failure. Measured 1:1 on this box: 5 x `systemctl --user status <name>` -> 5 lines, 3 x
+`systemctl --user show -p LoadState <name>` -> 3 lines; the identical calls against a name that never
+existed (`...-zzprobe.service`) -> 0 lines, so the trigger is the stub, never the query shape.
+Attribution therefore has to come from the client side — the probing session's own
+`~/.hermes/profiles/<p>/logs/agent.log` row (WARNING `Tool terminal returned error` carrying
+`Unit ... could not be found`) is the only witness — and the spacing (9 s / 95 s / 1,138 s / 6,394 s)
+refutes a poller on its own.
+
+Retire it without restarting anything: `systemctl --user daemon-reload` drops the remembered fragment
+path, after which 6 probes over 5 s emitted 0 lines, with `LoadState=not-found` / `ActiveState=inactive`
+unchanged and the dispatcher's MainPID / `ExecMainStartTimestamp` untouched. Rule: never probe a
+collected transient by name to decide whether it ran — read its journal, or `ExecMainExitTimestamp`
+while it is still alive; the probe manufactures the residue someone then has to explain.
