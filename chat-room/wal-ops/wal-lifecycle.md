@@ -1085,6 +1085,8 @@ Rule: after touching any wal-ops file, md5 **both** the repo worktree path and `
 
 Independent attribution check: `git log <parent>..<head> -- <path>` empty means the file did not move at all — run it per file rather than inferring one file's movement from the commit that moved its sibling.
 
+**A doc's distribution is a link set, proven by `-ef` and `nlink`, never by a matching size+md5 triple.** A copy hashes identically to its source, so the triple a gate prints cannot distinguish the shape it is quoted to certify; `check-wal-doc-links.sh` prints OK for `-ef` and COPY otherwise, and `stat -c %h` on the repo path corroborates it independently. Read `nlink` as a **shape, not a value**: it equals `1 + (number of profile paths in PROFILES)` — 3 with two profiles — so adding a profile legitimately makes it 4, and a `cp` (or a `skill_manage` batch rollback materializing the pre-image) drops it to 2 while leaving the bytes clean. Repair is `ln -f <repo> <profile path>`, which preserves the contract; the inode **number** is not durable content, because a legitimate cross-filesystem re-link mints a new one, so never write it into a doc — write the arithmetic above. Measured 2026-11-14: a doc edit committed to the repo path wrote through the shared inode, `nlink` held at 3, and both profile paths followed with no re-link and no gate run red.
+
 ## The witness's `# holder-class` line: three rules that cost a round each
 
 Measured 2026-11-13 19:36-20:28 on `chat-room/wal-ops/witness-split-pair-v2.sh`.
