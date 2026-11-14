@@ -48,6 +48,8 @@ DB_PATH = os.environ.get("AGENT_CHAT_DB") or str(
     __import__("pathlib").Path.home() / ".local/share/agent-chat/room.db")
 BACKUP_DIR = os.environ.get("AGENT_CHAT_BACKUP", "")   # empty disables the copy
 BACKUP_INTERVAL = int(os.environ.get("AGENT_CHAT_BACKUP_INTERVAL", "3600"))
+# Per-slot artifacts are the ATTESTED copies; how many keep (0 = keep every one).
+BACKUP_KEEP = int(os.environ.get("AGENT_CHAT_BACKUP_KEEP", "24"))
 SECRET = os.environ.get("AGENT_CHAT_SECRET", "")
 BIND_HOST = os.environ.get("AGENT_CHAT_BIND", "")      # extra bind address, e.g. a VPN IP
 PORT = int(os.environ.get("AGENT_CHAT_PORT", "8090"))
@@ -357,6 +359,33 @@ def checkpoint(src="manual", slot=None):
             pass
 
 
+def _prune_slot_artifacts(new_slot):
+    """Keep the newest BACKUP_KEEP per-slot artifacts per base name.
+
+    Slot tokens sort chronologically as strings (YYYYmmddTHHMMSS.ffffff+ZZZZ),
+    so the prune needs no stat of a CIFS destination. The slot just written is
+    never a victim. BACKUP_KEEP <= 0 disables pruning.
+    """
+    if BACKUP_KEEP <= 0 or not BACKUP_DIR:
+        return
+    slot_re = re.compile(r"^\d{8}T\d{6}\.\d{6}[+-]\d{4}$")
+    for base in ("room.db.bak", "room.db-wal.bak"):
+        pref = base + "."
+        try:
+            names = [n for n in os.listdir(BACKUP_DIR)
+                     if n.startswith(pref) and slot_re.match(n[len(pref):])]
+        except OSError:
+            continue
+        names.sort()
+        for n in names[:-BACKUP_KEEP] if len(names) > BACKUP_KEEP else []:
+            if n == base + "." + new_slot:
+                continue
+            try:
+                os.unlink(os.path.join(BACKUP_DIR, n))
+            except OSError:
+                pass
+
+
 def backup(src="backup", slot=None):
     """Copy the pair and PUBLISH what was copied, per file, with a hash.
 
@@ -383,6 +412,15 @@ def backup(src="backup", slot=None):
     and copy_time_ns from our own clock, and never a post-copy stat of dst.
     A 0-byte sidecar is a LEGITIMATE state after a TRUNCATE fold; the manifest
     is what keeps it from being read as a silent one.
+
+    PER-SLOT ARTIFACTS ARE LOAD-BEARING (#4268 point 2). `room.db.bak` is one
+    rolling name that the next slot overwrites, so a row's bytes/sha256 describe
+    a file only until the next write -- measured 2026-11-14: slot 02:14:03 was
+    PASS at 02:14 and FAIL at 02:19 because the 02:18:00.814751 shutdown row had
+    already overwritten the path, and 03:18:01 rolled it again. Every row now
+    also writes `room.db.bak.<slot>` / `room.db-wal.bak.<slot>`, which nothing
+    else writes, and records its name as `path`. The rolling name is kept as a
+    restore-compat alias, but no verdict may cite it: cite `path`.
     """
     if not BACKUP_DIR:
         return None
@@ -395,7 +433,8 @@ def backup(src="backup", slot=None):
                "files": {}}
         for f in (DB_PATH, DB_PATH + "-wal"):
             base = os.path.basename(f) + ".bak"
-            dst = os.path.join(BACKUP_DIR, base)
+            dst = os.path.join(BACKUP_DIR, base)          # rolling alias
+            dst_slot = os.path.join(BACKUP_DIR, base + "." + slot)  # attested
             try:
                 fd = os.open(f, os.O_RDONLY)
             except FileNotFoundError:
@@ -411,14 +450,17 @@ def backup(src="backup", slot=None):
                     sst = os.fstat(fd)          # same inode as the bytes below
                     h = hashlib.sha256()
                     copy_time_ns = time.time_ns()
-                    with os.fdopen(os.dup(fd), "rb") as rf, open(dst, "wb") as wf:
+                    with os.fdopen(os.dup(fd), "rb") as rf, \
+                            open(dst, "wb") as wf, open(dst_slot, "wb") as ws:
                         for chunk in iter(lambda: rf.read(1 << 20), b""):
                             h.update(chunk)
                             wf.write(chunk)
-                    try:                        # best effort; CIFS may restamp
-                        os.utime(dst, ns=(sst.st_atime_ns, sst.st_mtime_ns))
-                    except OSError:
-                        pass
+                            ws.write(chunk)
+                    for p in (dst, dst_slot):
+                        try:                    # best effort; CIFS may restamp
+                            os.utime(p, ns=(sst.st_atime_ns, sst.st_mtime_ns))
+                        except OSError:
+                            pass
                 finally:
                     os.close(fd)
                 states.append("copy:%d" % sst.st_size)
@@ -426,7 +468,8 @@ def backup(src="backup", slot=None):
                                       "sha256": h.hexdigest(),
                                       "src_ino": sst.st_ino,
                                       "src_mtime_ns": sst.st_mtime_ns,
-                                      "copy_time_ns": copy_time_ns}
+                                      "copy_time_ns": copy_time_ns,
+                                      "path": os.path.basename(dst_slot)}
             else:
                 states.append("skip:absent")
                 rec["files"][base] = {"bytes": None, "state": "absent"}
@@ -435,6 +478,7 @@ def backup(src="backup", slot=None):
         rec["main"], rec["wal"] = states[0], states[1]
         with open(os.path.join(BACKUP_DIR, "room.db.bak.manifest.jsonl"), "a") as mf:
             mf.write(json.dumps(rec, sort_keys=True) + "\n")
+        _prune_slot_artifacts(slot)
         return rec
     except Exception as e:  # noqa: BLE001
         print("backup failed:", e, flush=True)

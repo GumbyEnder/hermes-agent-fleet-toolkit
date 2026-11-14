@@ -1,23 +1,41 @@
 #!/usr/bin/env bash
-# Grade the scheduled backup slot that the witness will capture, then post the
-# result into the chat room as a child of a named message.
+# Grade the NEXT scheduled backup slot, then post the witness header + verifier
+# output into the chat room as a child of a named message.
 #
-# Why this exists: the witness slot is ExecMainStartTimestamp + BACKUP_INTERVAL
-# (1 h), not a wall-clock time, so a restart moves it. A grader that sleeps to a
-# fixed hour grades the wrong second or nothing. This derives the next slot from
-# the live unit, waits for the manifest row to appear, then runs the read-only
-# verifier.
+# Why the slot is derived, not passed: the witness slot is
+# ExecMainStartTimestamp + n*BACKUP_INTERVAL (1 h), so a restart MOVES it. A
+# grader armed for a fixed hour grades the wrong second or nothing at all --
+# measured 2026-11-14: the bus restarted 02:18:00.814751 and the one-shot unit
+# armed for 03:18 had already passed its derived slot by the time it fired.
 #
-# usage: grade-slot.sh [--dry] [PARENT_ID]
-#   --dry      print the post body, do not send
+# So: derive start + n*3600 for the smallest n that is still ahead of now, wait
+# for that second, resolve the ARM's own tag from the manifest (its tag carries
+# microseconds and can sit 1-2 s after the derived second), then run the
+# read-only verifier on the resolved tag.
+#
+# If no row appears near the derived second, the script posts the MISS and exits
+# non-zero WITHOUT running the verifier. It never grades a slot it cannot see:
+# the old fall-through graded the derived tag and printed "FAIL no manifest rows
+# matched" about a slot that existed (room msg 4335), i.e. the grader invented
+# the failure.
+#
+# One grade per slot: a guard file under ~/agents/agent-chat/graded/<tag> stops
+# a second post for the same slot (the timer may fire again while a long run is
+# still sleeping). --force overrides.
+#
+# usage: grade-slot.sh [--dry] [--force] [PARENT_ID]
+#   --dry      print the post body, do not send, do not write the guard
+#   --force    ignore an existing guard for this slot
 #   PARENT_ID  room message to thread under (default 4303)
 set -uo pipefail
 
 DRY=0
+FORCE=0
 PARENT=4303
 for a in "$@"; do
   case "$a" in
     --dry) DRY=1 ;;
+    --force) FORCE=1 ;;
     *) PARENT="$a" ;;
   esac
 done
@@ -26,32 +44,55 @@ SVC=hermes-agent-chat-bus.service
 VERIFY=/mnt/nas/host-ops/agent-chat/verify-slot-manifest.sh
 MANIFEST=/mnt/nas/agent-chat/room.db.bak.manifest.jsonl
 WITNESS_DIR=/home/gumbyender/agents/agent-chat
+GUARD_DIR="$WITNESS_DIR/graded"
+mkdir -p "$GUARD_DIR"
 export PATH=/home/gumbyender/.local/bin:$PATH
+
+interval=${AGENT_CHAT_BACKUP_INTERVAL:-3600}
+FROM=${GRADE_FROM:-buzzy}          # who the witness post is sent as
 
 start_txt=$(systemctl --user show "$SVC" -p ExecMainStartTimestamp --value)
 start_ep=$(date -d "$start_txt" +%s) || { echo "cannot parse start '$start_txt'" >&2; exit 2; }
-interval=3600                       # bus prints the real value at startup; see journal
-slot_ep=${SLOT_EP:-$((start_ep + interval))}
 now=$(date +%s)
-if [ -z "${SLOT_EP:-}" ] && [ "$now" -gt $((slot_ep + 120)) ]; then
-  echo "slot $slot_ep already passed by $((now - slot_ep))s -- nothing to wait for" >&2
-  exit 3
-fi
-if [ -z "${SLOT_EP:-}" ]; then
-  wait_s=$((slot_ep + 8 - now))
-  [ "$wait_s" -gt 0 ] && sleep "$wait_s"
+
+# A timer can fire a few seconds AFTER the slot second it meant to grade, and
+# the row lands ~1 s after the slot -- so "next slot strictly after now" skips a
+# whole hour when the trigger is 7 s late (measured 2026-11-14 04:18:07: derived
+# 05:18 and slept 3601 s past a slot that had just been written). Grace keeps a
+# just-passed slot eligible.
+GRACE=${GRADE_GRACE_S:-45}
+if [ -n "${SLOT_EP:-}" ]; then
+  slot_ep=$SLOT_EP
+else
+  n=$(( (now - GRACE - start_ep) / interval + 1 ))
+  [ "$n" -lt 1 ] && n=1
+  slot_ep=$(( start_ep + n * interval ))
 fi
 
 slot_tag=$(date -d "@$slot_ep" +%Y%m%dT%H%M%S)
+offs=$(( slot_ep - start_ep ))
 
-# The ARM's own slot tag carries microseconds and can sit 1-2 s AFTER the
-# derived second (03:18:01.047425 for the 03:18:00 clock), so a prefix match on
-# the derived second matches NOTHING and the verifier answers "FAIL no manifest
-# rows matched" about a slot that exists -- that is the grader lying, not a
-# failed slot. Resolve the tag from the manifest instead: the row whose
-# copy_time_ns is nearest the derived second within 180 s.
+if [ "$FORCE" = 0 ] && [ "$DRY" = 0 ] && [ -e "$GUARD_DIR/$slot_tag" ]; then
+  echo "slot $slot_tag already graded ($(cat "$GUARD_DIR/$slot_tag" 2>/dev/null)) -- nothing to do"
+  exit 0
+fi
+
+wait_s=$(( slot_ep + 8 - now ))
+if [ "$wait_s" -gt 0 ]; then
+  [ "$wait_s" -gt 3700 ] && { echo "slot $slot_ep is ${wait_s}s out (> 1 interval) -- refusing" >&2; exit 5; }
+  if [ "$DRY" = 1 ]; then
+    echo "would wait ${wait_s}s for slot $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) (--dry: not waiting)" >&2
+  else
+    sleep "$wait_s"
+  fi
+fi
+
+# Resolve the tag from the manifest: the row whose copy_time_ns is nearest the
+# derived second within 180 s. A prefix match on the derived second matches
+# nothing, because the arm's token carries microseconds.
 row_tag=""
-for i in $(seq 1 45); do
+ROW_TRIES=${GRADE_ROW_TRIES:-45}
+for i in $(seq 1 "$ROW_TRIES"); do
   row_tag=$(python3 - "$MANIFEST" "$slot_ep" <<'PY'
 import json, sys
 man, slot_ep = sys.argv[1], float(sys.argv[2])
@@ -73,20 +114,19 @@ PY
   [ -n "$row_tag" ] && break
   sleep 4
 done
-if [ -n "$row_tag" ]; then slot_tag="$row_tag"; else
-  echo "no manifest row within 180s of $slot_ep -- grading the derived tag and saying so" >&2
-fi
 
-# the row is the thing being graded; wait for it rather than for a clock
-for i in $(seq 1 30); do
-  grep -q "\"slot\": \"$slot_tag" "$MANIFEST" 2>/dev/null && break
-  sleep 2
-done
-# The witness runs every 5 min and captures a WINDOW, so the log that covers
-# this slot is written up to ~5 min AFTER the slot second -- never take the
-# newest log at slot+8s, that is the previous window and its header would be
-# posted as if it described this slot. Pick the newest log whose "# captured"
-# is >= the slot, and wait for it.
+if [ -z "$row_tag" ]; then
+  miss="slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start '$start_txt' + ${offs}s) -- NO manifest row within the row-wait window. Graded NOTHING: no row, no verdict. posted by grade-slot.sh"
+  echo "$miss" >&2
+  if [ "$DRY" = 1 ]; then printf '%s\n' "$miss"; exit 4; fi
+  agentbus send "$miss" --topic work --from "$FROM" --reply-to "$PARENT" >/dev/null
+  exit 4
+fi
+slot_tag=$row_tag
+
+# The witness runs every 5 min and captures a WINDOW, so the log covering this
+# slot is written up to ~5 min AFTER the slot second. Pick the newest log whose
+# "# captured" is >= the slot, and wait for it.
 log=""
 for i in $(seq 1 90); do
   for cand in $(ls -1t "$WITNESS_DIR"/pairsplit2-*.log 2>/dev/null | head -6); do
@@ -100,7 +140,7 @@ done
 echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot}"
 
 {
-  echo "slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start $start_txt + ${interval}s), graded automatically"
+  echo "slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start $start_txt + ${offs}s), graded automatically"
   echo
   if [ -n "${log:-}" ]; then
     grep -E '^# (captured|MainPID|HEAD|RUNNING|wal )|^# holder-class|checkpoint-pre|checkpoint:' "$log" | tail -12
@@ -118,4 +158,6 @@ if [ "$DRY" = 1 ]; then
   printf '%s\n' "$body"
   exit 0
 fi
-agentbus send "$body" --topic work --from buzzy --reply-to "$PARENT"
+resp=$(agentbus send "$body" --topic work --from "$FROM" --reply-to "$PARENT" 2>&1)
+echo "$resp"
+printf '%s\n' "$resp" > "$GUARD_DIR/$slot_tag"
