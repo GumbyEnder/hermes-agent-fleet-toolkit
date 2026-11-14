@@ -996,13 +996,18 @@ Measured 2026-11-13 on `dwell-two-column-watch.csv` (33,041 generations, 430 fra
   is `ExecMainStart` + the thread delta and every restart re-phases it for free. A 60 s offset applied to
   a persisted anchor would only move the coincidence to the next restart.
 - Live witness (restart 09:28:33, MainPID 1880879): `checkpoint-pre: busy=0 log=1 folded=1 src=janitor
-  slot=20261114T092933.762138-0500` then `moved=1` at `start+60.76 s` — the first non-zero janitor fold
+  slot=20261114T092933.762138-0500` then `moved=1` at 09:29:33.762138 = `ExecMainStart + 60.762138 s` — the first non-zero janitor fold
   since 21:27:50.
 - **Describe the grid as `ExecMainStart + 3600k + accumulated overshoot`, never as a fixed second of the
   hour.** Measured slot seconds walk `10:28:33.760681` -> `11:28:34.073259` -> `12:28:34.388698`, i.e.
   **+0.31 s/hr** of sleep-first drift, so ":28:33 of the hour" is already wrong in the third decimal place
   and someone will later call a 0.6 s difference a failure. A 60 s offset leaves ~190 h of headroom, so the
   drift is not urgent — it only means the slot must be derived from `ExecMainStartTimestamp` at read time.
+- **A phase without its referent is a different measurement, and the two clocks diverge.** Janitor vs the
+  slot TOKEN walks 60.003767 -> 59.708350 -> 59.410052 -> 59.073002 s at 10:28:33 -> 13:28:34, while the
+  janitor's own wall grid moves 09:29:33.762138 -> 13:29:33.814917 (+52.779 ms in 4 h). The same hour reads
+  60.78 against the derived second and 60.0038 against the stamp — both true, 1.07 s apart and widening.
+  Quote "slot token + 59.07 s" / "ExecMainStart + 60.76 s"; never "60 s" as a constant.
 - **The janitor is now the arm that meets a long-running transaction, and that is the shape that looks like
   the patch failing.** With the janitor a minute after the backup, a held read mark or a long write lands on
   the janitor's TRUNCATE: it prints `checkpoint-pre: busy=1 log=-1 folded=-1 src=janitor BUSY` and
