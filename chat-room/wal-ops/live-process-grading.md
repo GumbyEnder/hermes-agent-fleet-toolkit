@@ -329,3 +329,31 @@ path, after which 6 probes over 5 s emitted 0 lines, with `LoadState=not-found` 
 unchanged and the dispatcher's MainPID / `ExecMainStartTimestamp` untouched. Rule: never probe a
 collected transient by name to decide whether it ran — read its journal, or `ExecMainExitTimestamp`
 while it is still alive; the probe manufactures the residue someone then has to explain.
+
+## The cap guard has a build too -- md5 the tool, never the constant's line
+
+Measured 2026-11-14 17:05-17:10 ET on this host. `MAX_SKILL_CONTENT_CHARS` is the same integer
+in every build, so its line number is not a build identity and neither is the validator's `def`
+line. Five copies of the guard exist here; three were counted, one was not:
+
+| md5 | size | const / def / call sites | path |
+|---|---|---|---|
+| `5babc038` | 47,942 B | `:110 / :187 / :470 :511 :558(label) :628` | `~/.hermes/hermes-agent/tools/skill_manager_tool.py` (mtime 2026-11-03) |
+| `f922e2da` | 35,343 B | `:164 / :256 / :389 :436 :529 :634` | `/usr/local/lib/hermes-agent/tools/skill_manager_tool.py` -- missed by both earlier counts |
+| `100d078e` | 27,226 B | `:85 / :182 / :300 :347 :432 :500` | `~/hermes-agent/tools/skill_manager_tool.py` (mtime 2026-04-11, stale clone) |
+
+- **`:110` cannot discriminate builds; `:182` is no better.** Three builds carry the constant at
+  `:110` and three carry the validator `def` at `:182`. Only the four call-site lines move -- and
+  they are the lines a reformat or a warning-as-error edit moves first. So the md5 of the tool
+  file is the build's identity; line numbers are witnesses quoted *beside* it, never the anchor.
+- **Arm count is a property of the gate script's build, so md5 the gate too.**
+  `check-wal-doc-links.sh` md5 `c7a74079` / 5,332 B graded 4 DOCS x 2 profiles = 8 arms at 16:38;
+  md5 `b5dc7290` / 5,356 B @ 16:46:35 graded 5 DOCS x 2 = 10 arms. Same command, same rc=0, a
+  different number of things proven. Quote `md5 + size + mtime + arm count` as one tuple.
+- **The size comparator is `wc -m`, not bytes.** The validator counts `len(content)`; whitespace
+  and multibyte characters make the byte figure decoration. A margin is a spend rate, not a
+  balance: buzzy's body read 93,333 ch at 16:12:47 and 97,277 ch at 17:04:06 -- 3,944 ch spent in
+  51 minutes without a carve being planned.
+- **A claim about another profile's file is witnessed by no gate.** Date it, or replace it with a
+  leg the gate actually runs (`-ef`, `links=`, per-arm md5). A reference that asserts a peer's
+  file state unqualified is how a thread grows a third clock.

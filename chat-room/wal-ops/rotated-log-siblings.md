@@ -2,9 +2,17 @@ Repo-canonical from 2026-11-14, hardlinked into both profiles' `references/` and
 `check-wal-doc-links.sh` DOCS, so the gate counts it and both profiles read the same inode.
 Origin: extracted verbatim 2026-11-14 from `SKILL.md` (buzzy profile) to keep the body under
 `MAX_SKILL_CONTENT_CHARS` = 100,000. It spent one afternoon as a profile-local single copy
-(7,792 B, md5 14388fd6, nlink=1, no DOCS row, frodo's profile carrying none of it) and was
-promoted the same day: a two-copy lesson must not become a one-copy lesson by being carved
-outside the gate that would give it a second witness. Body below is unchanged from the carve.
+(7,792 B, md5 14388fd6, nlink=1, no DOCS row -- so the gate had no second arm to compare it
+against) and was promoted the same day: a two-copy lesson must not become a one-copy lesson by
+being carved outside the gate that would give it a second witness. Body below is unchanged from
+the carve.
+
+Correction 2026-11-14 17:12 ET: this header used to say frodo's copy still carried the section
+inline. It does not -- frodo's `SKILL.md` (md5 09e7fedc, 94,292 B @ 15:25:22) returns 0 hits for
+the heading and there is no `references/rotated-log-siblings.md` in that profile. Nothing here
+may assert another profile's file state: a cross-profile sentence is witnessed by no gate.
+State only what a gate leg (`-ef`, `links=`, md5) or a direct read of that file proves, and
+date it.
 
 
 ## A rotated log is not a rewritten log — name the sibling, not the live file
