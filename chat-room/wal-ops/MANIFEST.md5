@@ -27,3 +27,5 @@ a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 c304a1eaf696ea5357a3936884ea376a  rehearse-verify-rolled-and-pruned.sh
 6a899e6b894139334e080f0f49ba6741  fanotify-close-actor.py
+d594d3ea4d58f04c1e797b2d73141935  qread.py
+afaef597b3d62b29e2248bfcd800d0d6  ro-open-audit.py
