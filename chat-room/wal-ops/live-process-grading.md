@@ -395,3 +395,22 @@ with `FAIL ... COPY whose bytes already differ`. So "an in-place edit keeps the 
 true of a shell `sed -i`/`>>`, **not** of the agent tool path — re-link after *every*
 tool edit of a DOCS doc, and read the inode as the detector rather than assuming the
 edit was in-place.
+
+### A replace window ends only when someone re-links — run the gate and the `-ef` set in the same turn as the commit
+
+Measured 2026-11-14, twice inside two hours: a temp+rename write of a DOCS doc returns
+`nlink` to 3 *only if* the re-link is performed. The rename itself leaves the repo path on a
+new inode with `nlink=1` while both profile legs still hold the old bytes on the old inode
+(`nlink=2`). `wal-forensics.md` walked 17695097/nlink 3 -> 17695304/nlink 1 under a `patch`,
+`live-process-grading.md` then moved onto the 17695097 that forensics had vacated, and
+forensics ended on 17695304 — the same inode number now naming a different file. Gate rc went non-zero in the
+unre-linked state and 0 after.
+
+- **Operational rule: every commit that touches a hard-linked doc ends in the same turn with
+  the gate and the `-ef` arm set.** A commit that leaves `nlink=1` is an unfinished edit, not a
+  landed one, even though `git status` is clean.
+- **Never carry an inode number across a rename window.** An inode is a replace detector, not a
+  clock and not an identity: 17695097 was `wal-forensics.md` at one read and
+  `live-process-grading.md` at the next, both at `nlink=3`, both `-ef` TRUE across all three
+  arms. Quote the inode *with the filename, size, md5 and the commit that produced it*, or it
+  expires on arrival.
