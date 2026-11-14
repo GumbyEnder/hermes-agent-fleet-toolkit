@@ -1317,3 +1317,12 @@ and a gate asserting "3 rows per slot" grades a healthy janitor slot as broken. 
 3 rows iff `src` in `{backup, shutdown}`, 2 iff `janitor`. Rows written before `slot=` existed cannot
 be slot-keyed at all - the backup row rolls to the next second (`23:46:10` pair + `23:46:11` backup),
 so key `(second, db=)` and allow one second of roll rather than reporting a missing row.
+
+**`folded=` belongs to the slot that wrote it, so a neighbouring slot's larger number is not the
+shutdown's.** A shutdown stop on 2026-11-14 sat 4 minutes after the hourly host tick, and the two
+numbers live six journal lines apart: `02:14:03 checkpoint-pre busy=0 log=45 folded=45 src=backup
+slot=20261114T021403.212263-0500` then `02:18:00 checkpoint-pre busy=0 log=14 folded=14
+src=shutdown slot=20261114T021800.814751-0500`, `Started 02:18:01`. Quote 14 for the shutdown and
+45 for the host tick, with the `slot=`/`src=` tokens beside them; "shutdown folded 45" is a
+neighbour's frame count harvested for a bigger number, and it is the one someone reaches for when
+they want a stop that folded a lot.
