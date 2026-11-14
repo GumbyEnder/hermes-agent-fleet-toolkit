@@ -132,8 +132,11 @@ done
 
 if [ -z "$row_tag" ]; then
   miss="slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start '$start_txt' $offs_txt) -- NO manifest row within the row-wait window. Graded NOTHING: no row, no verdict. posted by grade-slot.sh"
-  echo "$miss" >&2
+  # --dry prints once on stdout; a real run prints once on stderr and posts once.
+  # (Printing in both places duplicated the MISS line in every --dry transcript.
+  #  This ordering lived only in ~/.local/bin for a day, unrecorded here.)
   if [ "$DRY" = 1 ]; then printf '%s\n' "$miss"; exit 4; fi
+  echo "$miss" >&2
   agentbus send "$miss" --topic work --from "$FROM" --reply-to "$PARENT" >/dev/null
   exit 4
 fi
