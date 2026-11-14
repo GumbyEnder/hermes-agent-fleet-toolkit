@@ -157,6 +157,12 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   to say "nothing is open". "HEAD is <sha>" in prose is a timestamp, not a state.
 - A shared inode proves the DOC is one file (`-ef`), never that two skill COPIES are equal:
   `nlink=1` on SKILL.md means only the `references/` entries are hardlinked.
+- A sample is `(value, commit)`, never the value alone. Measured 2026-11-14: a 15:19 sample said
+  HEAD `2d28a34` and this doc 16,938 B / md5 `ef42c9fc`; at 16:28 the doc was 20,477 B / md5
+  `096e4f32` at `10a4811`, three landings later (`5336b9e` 15:57, `a0b1e1d` 16:02, `10a4811`
+  16:26). Neither party was wrong, and the value alone cannot say so. Grade a quoted number by
+  reproducing it AT its commit -- `git show db335a4:chat-room/wal-ops/live-process-grading.md |
+  wc -c` returns exactly 16,938 -- never by comparing it to the tree now.
 
 ## `pgrep -af` counts the caller's own argv, so a count is never a census
 
