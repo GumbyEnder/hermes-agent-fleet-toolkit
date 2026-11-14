@@ -110,8 +110,13 @@ class Service:
 
 
 @contextlib.contextmanager
-def bus(**over):
-    """Run the bus with a temp DB on a free port. Yields (base_url, tmpdir, service)."""
+def bus(script=None, **over):
+    """Run the bus with a temp DB on a free port. Yields (base_url, tmpdir, service).
+
+    `script` runs a wrapper that imports the real chat-room/bus.py instead of the
+    script itself, for seams that cannot be staged from outside the process (see
+    tests/hooks/bus_rename_seam.py). The wrapper is given BUS_UNDER_TEST.
+    """
     tmp = tempfile.mkdtemp(prefix="fleet-test-")
     port = free_port()
     over.setdefault("AGENT_CHAT_DB", os.path.join(tmp, "room.db"))
@@ -122,7 +127,10 @@ def bus(**over):
     over.setdefault("AGENT_CHAT_BACKUP", "")   # tests opt in with their own dir
     env = base_env(AGENT_CHAT_PORT=str(port),
                    AGENT_CHAT_JANITOR_INTERVAL="3600", **over)
-    with Service(str(ROOT / "chat-room/bus.py"), env, f"http://127.0.0.1:{port}/health") as svc:
+    target = str(script) if script else str(ROOT / "chat-room/bus.py")
+    if script:
+        env["BUS_UNDER_TEST"] = str(ROOT / "chat-room/bus.py")
+    with Service(target, env, f"http://127.0.0.1:{port}/health") as svc:
         yield f"http://127.0.0.1:{port}", tmp, svc
 
 

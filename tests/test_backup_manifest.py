@@ -69,6 +69,57 @@ class BackupManifestTests(unittest.TestCase):
             self.assertEqual(wal["bytes"], 0)
             self.assertEqual(wal["sha256"], hashlib.sha256(b"").hexdigest())
 
+    def _run_seamed(self):
+        """One bus lifetime that renames the DB inside the copier's own gap.
+
+        tests/hooks/bus_rename_seam.py wraps `os.fstat` so the rename lands after
+        the source stat returns and before the first byte is read. A copier that
+        re-opens the path copies the decoy; a copier that reads the fd it stat'ed
+        copies the inode the manifest names.
+        """
+        bdir = tempfile.mkdtemp(prefix="fleet-bak-")
+        flag = os.path.join(bdir, "seam.flag")
+        hook = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "hooks", "bus_rename_seam.py")
+        with bus(script=hook, SEAM_FLAG=flag, AGENT_CHAT_BACKUP=bdir,
+                 AGENT_CHAT_BACKUP_INTERVAL="3600") as (_base, tmp, _svc):
+            db = os.path.join(tmp, "room.db")
+        return bdir, db, tmp, flag
+
+    def test_rename_between_fstat_and_copy_cannot_swap_the_source(self):
+        """§10c: the descriptor, not the path, decides what got copied.
+
+        Measured shape of the defect: `os.path.exists(f)` answers yes, the file is
+        renamed and replaced, and `copy2(f, dst)` then copies a file the stat never
+        described -- a full-size, wrong-content artifact recorded as healthy. The
+        rename here is staged BETWEEN the fstat and the read (not before the loop:
+        a rename staged early only proves exists() was called).
+        """
+        bdir, db, _tmp, flag = self._run_seamed()
+        self.assertTrue(os.path.exists(flag), "the seam was never hit")
+        with open(flag) as f:
+            seam = dict(tok.split("=", 1) for tok in f.read().split() if "=" in tok)
+        seam_ino = int(seam["ino"])
+        orig = db + ".orig"
+        decoy_ino = os.stat(db).st_ino
+        orig_ino = os.stat(orig).st_ino
+        self.assertNotEqual(orig_ino, decoy_ino, "rename did not replace the inode")
+
+        meta = self._rows(bdir)[-1]["files"]["room.db.bak"]
+        dst = os.path.join(bdir, "room.db.bak")
+
+        # 1. the manifest names the inode that was stat'ed inside the seam
+        self.assertEqual(seam_ino, orig_ino, "the seam stat'ed something else")
+        self.assertEqual(meta["src_ino"], orig_ino)
+        self.assertNotEqual(meta["src_ino"], decoy_ino, "manifest names the decoy")
+
+        # 2. ... and the bytes on disk are that file's bytes, not the decoy's
+        self.assertEqual(meta["bytes"], os.path.getsize(orig))
+        self.assertEqual(os.path.getsize(dst), meta["bytes"])
+        self.assertEqual(meta["sha256"], _sha(orig))
+        self.assertEqual(_sha(dst), meta["sha256"], "copied bytes are not the manifest's")
+        self.assertNotEqual(meta["sha256"], _sha(db), "the decoy was copied")
+
     def test_slot_tokens_are_unique_and_own_their_pair(self):
         """Every copy slot has its own token, on its checkpoint lines and on its
         backup line, and its manifest row names the same src and pair.
