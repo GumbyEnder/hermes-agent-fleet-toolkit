@@ -352,3 +352,35 @@ the part a later reader trips on. For generation 1 the pair is:
 name is the wrong directory, not the trap shape. The current-generation
 `room.db-wal.bak.<stamp>-shm` ENOENTs in *both* directories (rc=2) and has been stable.
 Pin the directory before grading a missing shm.
+
+Two shape traps sit on that path, both measured 2026-11-14:
+
+- **The pair is sibling-suffixed, never nested.** The names are
+  `<db>.bak-<stamp>-wal` and `<db>.bak-<stamp>-shm` — there is no `...-wal-shm`.
+  A `stat` composed from prose ("the `-shm` beside the bak `-wal`") returned
+  `No such file or directory` and read exactly like the trap shape being refuted,
+  while the real sibling sat beside the `-wal` at 32,768 B. Grade a pair by
+  listing the directory (`ls -la | grep '<stamp>'`), never by composing two names
+  from one.
+- **A current-generation `.bak` pair carries no `-shm` and that is not a defect.**
+  The backup writes `room.db.bak` + `room.db-wal.bak`; a `-shm` appears only on
+  pairs a reader touched. Expect its absence and do not re-litigate it.
+
+### A db-size delta with an UNCHANGED `-wal` size is a fold at a tick, and the db mtime says which tick
+
+Measured 2026-11-14: `room.db` read 12,533,760 B at ~18:22 and 12,554,240 B at
+18:23:09.820439370 while `-wal` held 181,312 B on both reads. That is not an
+unexplained growth: `checkpoint.log` stamps a tick at 18:23:09 with
+`out=0|41|41 wal_before=181312 wal=181312` — 41 frames checkpointed (PASSIVE),
+and the db mtime falls **inside that tick's second**.
+
+- PASSIVE folds frames into the db and **cannot truncate**, so the byte size
+  holding at its high-water is the *expected* consequence of a fold, not an
+  anomaly competing with it. 41 frames into a +20,480 B db (5 pages) is normal:
+  many frames, few distinct pages.
+- The discriminator is the **db mtime**, not the WAL size. Put the db mtime in
+  the same second as a tick's stamp and the growth is attributed; without that
+  match, "growth with no new WAL bytes" is a state you have not explained.
+- Do not carry the size across the next tick: `out` counted 44/44 at 18:21:09 and
+  41/41 at 18:23:09 with identical bytes, so two consecutive folds leave a
+  byte-identical sidecar. Only the db mtime separates them.

@@ -385,3 +385,13 @@ is why the gate md5s per arm and never trusts a remembered triple. The inode is 
 
 detector, not a clock: 17695276 has now carried 18,695 -> 21,025 -> 24,128 -> 25,131 -> 25,474 without moving,
 while 17695197 -> 17695276 at 17:16 marked a replace, not an edit.
+
+**An agent's own file tools are replace detectors too, and they fire every time.** The
+`patch`/`write_file` tools write a temp file and rename it over the target, so the repo
+doc gets a NEW inode (nlink drops to 1) and both profile legs keep the OLD bytes on the
+old inode (nlink 2, still linked to each other). Measured 2026-11-14: one `patch` on
+`wal-forensics.md` moved it 17695097/nlink 3 -> 17695304/nlink 1 and the gate went rc=1
+with `FAIL ... COPY whose bytes already differ`. So "an in-place edit keeps the inode" is
+true of a shell `sed -i`/`>>`, **not** of the agent tool path — re-link after *every*
+tool edit of a DOCS doc, and read the inode as the detector rather than assuming the
+edit was in-place.
