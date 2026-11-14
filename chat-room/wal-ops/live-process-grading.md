@@ -360,7 +360,11 @@ line. Five copies of the guard exist here; three were counted, one was not:
 
 ## These docs are not MANIFEST.md5 rows -- the gate's per-arm md5 is their integrity leg
 
-`check-manifest.sh`'s 34 rows are scripts and units only; no `wal-ops/*.md` is rostered. So a doc
+`check-manifest.sh`'s rows are scripts and units only; no `wal-ops/*.md` is rostered -- `grep -c '\.md'`
+on `MANIFEST.md5` returns 0. The row *total* is not the leg either: it read 34 at 18:20 and 36 at
+18:30, two rows landing in ten minutes, so a bare total is a clock like any other. Quote it dated
+(36 rows / 2,211 B / `b766dc6c` at 18:31), or quote only the `0 .md` column, which is the column
+the argument actually needs. So a doc
 commit owes no restamp, and a doc's absence from the manifest is not a rotten row. The integrity
 leg for a doc is `check-wal-doc-links.sh`: for each `DOCS` entry it prints the repo md5, then
 requires each profile's reference to be `-ef` the repo file and to carry that same md5. Quote the
@@ -372,5 +376,5 @@ cannot hash itself, so take the current one from the gate. Measured 2026-11-14: 
 24,128 B / `c8ff9810` / inode 17695276 / nlink 3 at 18:26. An in-place edit keeps the inode (so
 `-ef` and `nlink` survive a doc change) while size and md5 move with every commit to it -- which
 is why the gate md5s per arm and never trusts a remembered triple. The inode is a replace
-detector, not a clock: 17695276 has now carried 18,695 -> 21,025 -> 24,128 -> 25,131 without moving,
+detector, not a clock: 17695276 has now carried 18,695 -> 21,025 -> 24,128 -> 25,131 -> 25,474 without moving,
 while 17695197 -> 17695276 at 17:16 marked a replace, not an edit.
