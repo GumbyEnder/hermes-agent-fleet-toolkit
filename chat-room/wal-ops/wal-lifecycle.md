@@ -985,6 +985,30 @@ Measured 2026-11-13 on `dwell-two-column-watch.csv` (33,041 generations, 430 fra
   code without touching another owner's branch with
   `git bundle create <file> b730516..HEAD` (incremental, basis on the remote) + `git bundle verify`.
 
+## The collision is now PHASED OFF, not graded around
+
+- Shipped 2026-11-14 (commit `10dfca1`): `JANITOR_OFFSET` (default 60 s, env `AGENT_CHAT_JANITOR_OFFSET`,
+  0 = the old coincidence) sleeps before the janitor's loop, and `JANITOR_INTERVAL` moved to the END of
+  the loop body. **Tick-then-sleep is the load-bearing half**: with the sleep first, an offset delays the
+  FIRST fold by a whole interval (rehearsed at 4 s intervals, first tick at `start+offset+interval`, i.e.
+  3700 s in production).
+- **An offset, not a grid, because there is no stored anchor.** Both threads start at boot, so the phase
+  is `ExecMainStart` + the thread delta and every restart re-phases it for free. A 60 s offset applied to
+  a persisted anchor would only move the coincidence to the next restart.
+- Live witness (restart 09:28:33, MainPID 1880879): `checkpoint-pre: busy=0 log=1 folded=1 src=janitor
+  slot=20261114T092933.762138-0500` then `moved=1` at `start+60.76 s` — the first non-zero janitor fold
+  since 21:27:50. Slots are now `:28:33` of the hour and the janitor ticks at `:29:33`.
+- Probe shape: two runs on a scratch DB with intervals shrunk to 4 s — the unpatched file fires
+  `src=backup`/`src=janitor` 0.6-2.2 ms apart, the patched one interleaves them. Override `AGENT_CHAT_DB`,
+  `AGENT_CHAT_PORT` (8096 is already bound on this host), `AGENT_CHAT_BACKUP=''`, and ALWAYS
+  `AGENT_CHAT_BUS_CHECKPOINT_LOG`, or the rehearsal's folds land in the production witness.
+- No gate moves, and that was grepped, not assumed: `grep -n janitor grade-slot.sh verify-slot-manifest.sh`
+  is empty in both. The slot-second tuple is an INFO (`verify-slot-manifest.sh:191`) and `FOLD-THEN-COPY`
+  reads `pre['backup']` only.
+- **The "120 s janitor interval" is a myth whose witness belongs to another instrument** — it is the
+  walcheck timer's tick writing `checkpoint.log`. `/proc/<buspid>/environ` carries no `JANITOR_INTERVAL`
+  key, so both loops default 3600; a zero-run band built on 120 s is arithmetic on the wrong clock.
+
 ## Three things a landed-patch report gets wrong
 
 - **`N/N PASS` is a suite count, and it goes stale the moment a case is added.** Measured 2026-11-13: a peer
