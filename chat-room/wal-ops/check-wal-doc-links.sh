@@ -31,35 +31,48 @@
 #
 # Exit 0 = every profile path is a symlink resolving to bytes identical to the
 # repo file. Exit 1 = a path is a copy or points elsewhere. Exit 0 with a
-# MISSING line means that profile simply has no such skill yet (not a fault).
+# A doc listed in DOCS must be linked for every profile in PROFILES: a missing link is a FAIL,
+# because DOCS is the contract this gate publishes. The old "profile has no skill yet" pass no
+# longer applies -- both profiles carry agent-chat-bus.
 set -u
 
-REPO=$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)/chat-room/wal-ops/wal-lifecycle.md
-[ -f "$REPO" ] || { echo "FAIL repo doc missing: $REPO"; exit 2; }
-want=$(md5sum "$REPO" | awk '{print $1}')
-echo "repo: $REPO  md5=$want"
+# Docs covered. Every entry here is repo-canonical in chat-room/wal-ops/ and symlinked into
+# each profile's references/. Add a doc here in the same commit that adds its symlinks, or the
+# new doc drifts with no detector -- measured 2026-11-14: the carve of wal-forensics.md was
+# proposed with this gate covering only wal-lifecycle.md, so the new file would have had two
+# uncontrolled copies from birth.
+DOCS="wal-lifecycle.md wal-forensics.md"
+PROFILES="frodo buzzy"
+WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
 rc=0
-for p in frodo buzzy; do
-  f="$HOME/.hermes/profiles/$p/skills/agent-chat-bus/references/wal-lifecycle.md"
-  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
-    echo "MISSING $p ($f) -- profile has no agent-chat-bus reference; not a fault"
-    continue
-  fi
-  if [ ! -L "$f" ]; then
+for d in $DOCS; do
+  REPO="$WALOPS/$d"
+  if [ ! -f "$REPO" ]; then echo "FAIL repo doc missing: $REPO"; rc=2; continue; fi
+  want=$(md5sum "$REPO" | awk '{print $1}')
+  echo "repo: $REPO  md5=$want"
+  for p in $PROFILES; do
+    f="$HOME/.hermes/profiles/$p/skills/agent-chat-bus/references/$d"
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+      echo "FAIL $p/$d: MISSING $f -- the doc is declared in DOCS but has no reference link here"
+      rc=1
+      continue
+    fi
+    if [ ! -L "$f" ]; then
+      got=$(md5sum "$f" 2>/dev/null | awk '{print $1}')
+      echo "FAIL $p/$d: REGULAR FILE, not a symlink (md5=$got, repo=$want) -- it is a copy and will drift"
+      rc=1
+      continue
+    fi
+    tgt=$(readlink -f "$f") || { echo "FAIL $p/$d: dangling symlink -> $(readlink "$f")"; rc=1; continue; }
     got=$(md5sum "$f" 2>/dev/null | awk '{print $1}')
-    echo "FAIL $p: REGULAR FILE, not a symlink (md5=$got, repo=$want) -- it is a copy and will drift"
-    rc=1
-    continue
-  fi
-  tgt=$(readlink -f "$f") || { echo "FAIL $p: dangling symlink -> $(readlink "$f")"; rc=1; continue; }
-  got=$(md5sum "$f" 2>/dev/null | awk '{print $1}')
-  if [ "$tgt" != "$(readlink -f "$REPO")" ]; then
-    echo "FAIL $p: symlink -> $tgt (not the repo doc)"; rc=1
-  elif [ "$got" != "$want" ]; then
-    echo "FAIL $p: symlink target bytes differ (md5=$got repo=$want)"; rc=1
-  else
-    echo "OK   $p: symlink -> $tgt  md5=$got"
-  fi
+    if [ "$tgt" != "$(readlink -f "$REPO")" ]; then
+      echo "FAIL $p/$d: symlink -> $tgt (not the repo doc)"; rc=1
+    elif [ "$got" != "$want" ]; then
+      echo "FAIL $p/$d: symlink target bytes differ (md5=$got repo=$want)"; rc=1
+    else
+      echo "OK   $p/$d: symlink -> $tgt  md5=$got"
+    fi
+  done
 done
 exit $rc
