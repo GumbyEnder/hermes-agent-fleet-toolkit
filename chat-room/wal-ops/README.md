@@ -45,7 +45,19 @@ bus (`systemd-run --user`) and take ~2 min together.
 export BH_AGENT_WORKSPACE=$(mktemp -d)   # fixtures; anything writable
 python3 test-wal-holder-exclusion.py     # A-E, 15 checks
 python3 test-wal-verdict-stall.py        # A,B,C,D,E,F,G,H,K,M,L, 11 checks
+bash test-witness-wal-line.sh            # A,B,C,E,F(x6),D — 11 checks
 ```
+
+`test-witness-wal-line.sh` pins the witness's emitted text, not the witness's
+judgement: A/B/C the `# wal ... holders:` shapes, E exactly one
+`# holder-class <pid>:<comm>@<unit>` per holder, F the unit walk against fixture
+cgroups (deepest `.service`/`.scope` wins; a session-slice process resolves to
+`user@1000.service`, which means "no unit of its own"; a dead pid is `gone`),
+and D the regression that the 16:15 sentence-carrying capture still grades
+VACUOUS (STRUCTURAL). It is versioned here on purpose: it lived at
+`/mnt/nas/host-ops/agent-chat/` and in no commit while the script it pins was
+committed, so "the test landed in the same commit" could not be true. The file
+at the NAS path is an installed copy.
 
 `test-wal-holder-exclusion.py` covers the four classes the watcher can assign:
 

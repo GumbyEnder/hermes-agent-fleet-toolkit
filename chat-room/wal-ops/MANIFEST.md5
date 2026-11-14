@@ -2,8 +2,9 @@
 2bbd0c25562b8fd34221d664e6a7e902  wal-unlink-watch.py
 23f2d0d7257bd156665be09463db6ab4  test-wal-holder-exclusion.py
 5e223e475405e36d1a13275a1a901744  test-wal-verdict-stall.py
+985da575553c9589707d68da6993fedc  test-witness-wal-line.sh
 1e76948ef109380b692a21773ec9c045  wal-checkpoint.sh
-81ef687ea9f31903fb630882a9bc4c93  witness-split-pair-v2.sh
+59385e74449e7833f03f146f8b8b28e8  witness-split-pair-v2.sh
 5271966c1a06f1aa591d3f598fefd9d8  wal-keeper.py
 e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
 982a76227209b04166e31f7b9c16de7e  systemd/hermes-agent-chat-walcheck.service

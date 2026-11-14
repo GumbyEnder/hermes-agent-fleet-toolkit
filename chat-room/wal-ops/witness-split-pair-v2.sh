@@ -149,14 +149,20 @@ REPO="$HOME/Agents/Projects/hermes-agent-fleet-toolkit"
   # artifact cannot say keeper vs session-kernel vs bus without a live box. Annotate at
   # capture time, and keep the `# wal ... holders:` shape (already quoted in the ledger)
   # byte-identical: this is a SECOND line, never an extension of that field.
-  # Unit = DEEPEST .service component of /proc/<pid>/cgroup; every user unit sits under
-  # user@1000.service, so a first-component walk grades them all the same and excludes
-  # nothing.
+  # Unit = DEEPEST .service OR .scope component of /proc/<pid>/cgroup; every user unit
+  # sits under user@1000.service, so a first-component walk grades them all the same and
+  # excludes nothing. .scope counts: measured 2026-11-13 19:36, a `systemd-run --user
+  # --scope --unit=fooprobe` sits at .../user@1000.service/app.slice/fooprobe.scope, so a
+  # service-only match printed `sleep@user@1000.service` -- the exact failure this walk is
+  # supposed to fix. The unit file prescribes systemd-run for a measurement window, and a
+  # --scope keeper is that shape; match both suffixes, deepest first. A process with no
+  # unit of its own lives in the session slice and resolves to user@1000.service: read that
+  # as "no unit of its own", not as a unit -- the /proc cgroup cannot say more.
   if [ -n "$_pids" ]; then
     _cls=""
     for _p in $_pids; do
       _comm="$(cat "/proc/$_p/comm" 2>/dev/null || echo '?')"
-      _unit="$(awk -F/ '{for(i=NF;i>0;i--) if ($i ~ /\.service$/) {print $i; exit}}' "/proc/$_p/cgroup" 2>/dev/null)"
+      _unit="$(awk -F/ '{for(i=NF;i>0;i--) if ($i ~ /[.]service$/ || $i ~ /[.]scope$/) {print $i; exit}}' "/proc/$_p/cgroup" 2>/dev/null)"
       _cls="$_cls ${_p}:${_comm}@${_unit:-gone}"
     done
     echo "# holder-class$_cls"
