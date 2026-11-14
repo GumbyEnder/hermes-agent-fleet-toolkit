@@ -60,7 +60,13 @@ for a in "$@"; do
 done
 
 SVC=hermes-agent-chat-bus.service
-VERIFY=/mnt/nas/host-ops/agent-chat/verify-slot-manifest.sh
+VERIFY=${AGENT_CHAT_VERIFIER:-/mnt/nas/host-ops/agent-chat/verify-slot-manifest.sh}
+# The verifier that grades is the CIFS copy, so a NAS-side edit changes every
+# verdict with no gate in the way (frodo, 2026-11-14). The rehearsal harness was
+# moved out of the share for exactly this reason; this leg pins the executed gate
+# to the committed blob and says both hashes out loud.
+REPO=${AGENT_CHAT_REPO:-/home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit}
+VERIFY_REL=chat-room/wal-ops/verify-slot-manifest.sh
 MANIFEST=/mnt/nas/agent-chat/room.db.bak.manifest.jsonl
 WITNESS_DIR=/home/gumbyender/agents/agent-chat
 GUARD_DIR="$WITNESS_DIR/graded"
@@ -179,13 +185,36 @@ echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot}"
   out=$(bash "$VERIFY" "$slot_tag" 2>&1); rc=$?
   printf '%s\n' "$out" | sed 's/^/  /'
   echo
-  echo "  verifier rc=$rc -- posted by /mnt/nas/host-ops/agent-chat/grade-slot.sh"
+  # Verifier identity: the gate that grades must be the committed blob.
+  verify_head=$(git -C "$REPO" rev-parse "HEAD:$VERIFY_REL" 2>/dev/null || echo UNAVAILABLE)
+  verify_disk=$(git -C "$REPO" hash-object "$VERIFY" 2>/dev/null || echo UNAVAILABLE)
+  # HEAD resolvable but the executed file unhashable is a MISMATCH, not an
+  # excuse: a missing or unreadable verifier must not read as "unasserted".
+  if [ "$verify_head" = UNAVAILABLE ]; then
+    echo "  INFO verifier identity UNASSERTED disk=$verify_disk HEAD=$verify_head (no git at $REPO)"
+  elif [ "$verify_disk" = "$verify_head" ]; then
+    echo "  PASS verifier identity disk=$verify_disk HEAD=$verify_head"
+  else
+    echo "  FAIL verifier identity disk=$verify_disk HEAD=$verify_head -- the verifier that produced the verdict above is NOT the committed one; reinstall it from $REPO"
+    identity_fail=1
+  fi
+  echo
+  echo "  verifier rc=$rc -- posted by $(readlink -f "$0") (verifier $VERIFY)"
 } > "/tmp/grade-slot-body.$$" 2>&1
 body=$(cat "/tmp/grade-slot-body.$$")
 rm -f "/tmp/grade-slot-body.$$"
+# The body block runs in a subshell, so the identity verdict is read back out of
+# the text it produced rather than out of a variable set inside it.
+case "$body" in
+  *"FAIL verifier identity"*) identity_fail=1 ;;
+  *) identity_fail=0 ;;
+esac
 
 if [ "$DRY" = 1 ]; then
   printf '%s\n' "$body"
+  # --dry sends nothing, but it still reports the identity verdict so the gate
+  # can be exercised both ways without posting a fake grade into the room.
+  [ "$identity_fail" = 1 ] && exit 6
   exit 0
 fi
 resp=$(agentbus send "$body" --topic work --from "$FROM" --reply-to "$PARENT" 2>&1)
@@ -198,4 +227,11 @@ if printf '%s' "$resp" | python3 -c 'import json,sys; sys.exit(0 if isinstance(j
 else
   echo "grade-slot.sh: POST did not return an id -- guard file for $slot_tag left untouched" >&2
   exit 5
+fi
+# Post first, then fail: a mismatched verifier is a finding the room must see,
+# and the guard must record that the slot was graded. Exit 6 makes the unit's
+# own status carry the failure instead of hiding it behind a successful POST.
+if [ "$identity_fail" = 1 ]; then
+  echo "grade-slot.sh: verifier identity MISMATCH -- slot $slot_tag was graded by an uncommitted verifier (see the posted body)" >&2
+  exit 6
 fi
