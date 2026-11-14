@@ -1239,10 +1239,14 @@ witness's `# wal <size> <mtime>` line). Measured 2026-11-13: `wal=copy:0` at 20:
   returns 638 (the token also appears in prose), while field-2 keying (`$2=="VERDICT"`) against the
   anchor gives 314. Quote the anchor and both snapshot sha256s with the number, or the count is not
   checkable.
-- **"Count distinct holders, not rows" moves the wrong way.** 14 idle rows since the anchor carried
-  11 distinct holder pids (the whole 20-row artifact, 15). Count distinct EPISODES instead:
-  contiguous rows whose `no_delete_for` rises by ~600 s. Measured: 12:34:10→13:24:12 is 6 rows at
-  `no_delete_for` 2216→5218, i.e. one episode.
+- **Count distinct EPISODES, and key them on PID intersection — holder-set equality splits one episode
+  into three.** Rule: Δt 540–660 s between rows (measured 600.0–600.4 s), `no_delete_for` rising by
+  ~600 s (601/602 occurs — 02:33:01 `ndf=2401`, 17:15:23 `ndf=602` — so allow ±2 s), and a non-empty
+  intersection of the `holders=` pid lists. Handover and extra connections are allowed. Measured
+  2026-11-14 on the 20-row artifact: 12 distinct pids → **10 episodes** under this key vs **14** under
+  holder-set equality; the 00:41:45→01:21:45 chain splits three ways (`3752901:4+7+9` →
+  `+11` → `4+7`) and 03:21:50→03:31:50 (`237701:5+8` → `5+8+10`) splits the same way. Distinct
+  holder count discriminates nothing — it grows in both readings (11 pids/19 rows, 12/20, 13/23).
 - **A holder can hand over mid-episode, so one episode is not one pid.** 22:48:22 `holders=3249971:4`,
   22:58:22 `holders=3249971:4,3314691:4+7+9`, 23:08:23 `holders=3314691:4+7+9` — three rows, two pids,
   one continuous idle run (`no_delete_for` 600→1200→1800, age 1232→1832→2432). Quote `holders=`
@@ -1258,6 +1262,15 @@ witness's `# wal <size> <mtime>` line). Measured 2026-11-13: `wal=copy:0` at 20:
   "7 stop/start pairs today" reads as the bus and is a different service.
 - **The journal vacuum boundary moves during the night** (earliest row 06:29:23 at 23:12, 08:18:53 at
   00:53), so a count read at one stamp cannot be checked at a later one. Quote the boundary with the count.
+- **A census window ends at the last row it contains, never at mtime, and it is only quotable if the
+  pair was frozen before rotation.** Both verdict artifacts rotate on a ~10 h cap (head-trim at 64 MB),
+  so a sentence that pins row identity to a live path is unquotable within hours: measured 2026-11-14,
+  the verdict pair rotated at 02:49:24 and the watch pair at 03:24:00. `cp -p` the pair into
+  `census/<UTCstamp>/` **first**, then read the copy, and write `SHA256SUMS`, `STAT.txt` and the
+  last-row timestamp beside it — quote the directory, never `/mnt/nas/host-ops/agent-chat/*.log*`.
+  And derive the window end from the last row, not the mtime: the 20261114T082421Z copy contains a
+  `03:21:50.336008` row while its recorded mtime is `03:16:37.673886` (5 m 13 s stale, the usual CIFS
+  mtime lag), and the mtime-derived census read 4/2/0 where the rows were 4/3/0.
 - **A tick log can go silent across a restart and come back moving.** bus-checkpoint.log wrote
   `src=shutdown` at 23:48:32, then nothing for 60 minutes to 00:48:32, whose first tick was
   `moved=31 src=backup`. Silence in the tick log is not quiescence.
