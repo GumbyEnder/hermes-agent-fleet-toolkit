@@ -27,6 +27,7 @@ Env:
   WAKE_SPILL             JSONL file holding accepted-but-unfinished wakes
                          (default ~/agents/agent-chat/wake-spill.jsonl)
 """
+import fcntl
 import hashlib
 import hmac as hm
 import json
@@ -53,6 +54,8 @@ TEXT_MAX = int(os.environ.get("WAKE_TEXT_MAX", "100000"))
 BUS_URL = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090").rstrip("/")
 SPILL = os.path.abspath(os.path.expanduser(
     os.environ.get("WAKE_SPILL", "~/agents/agent-chat/wake-spill.jsonl")))
+LOCK_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get("WAKE_LOCK_DIR", "~/agents/agent-chat/locks")))
 
 
 def _parse_overrides(raw):
@@ -332,7 +335,49 @@ def _mention_text(payload):
     return text, "payload"
 
 
-def _run_one(profile, payload):
+def _acquire_profile_lock(profile):
+    """Machine-wide, restart-proof per-profile turn lock.
+
+    Returns (fd, "") when this process may run a turn for `profile`, else
+    (None, holder_line). The fd must be handed to the child and closed only
+    after the child exits: the lock then belongs to the *turn*, not to this
+    dispatcher process.
+
+    A threading.Lock dies with the process. On 2026-11-13 the dispatcher was
+    restarted at 18:58:40 with two turns in flight; the `hermes -p game -z`
+    child survived the SIGTERM (recorded rc=-15, i.e. "killed"), the new
+    process found an empty gate, re-ran the same mention, and two `game`
+    runtimes worked the room under one sender name from 18:58:43 to 19:52:39
+    (4091 from the re-run, 4100/4101 from the orphan). flock is held on an
+    open file description, so an inherited fd keeps the gate shut for as long
+    as the orphan lives — a fresh dispatcher cannot start a rival turn.
+    """
+    try:
+        os.makedirs(LOCK_DIR, exist_ok=True)
+        path = os.path.join(LOCK_DIR, f"{profile}.lock")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError as e:  # noqa: BLE001
+        log(evt="gate_lock_unavailable", profile=profile, error=str(e)[:200])
+        return -1, ""          # fail OPEN on a broken lock dir, as before
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        holder = ""
+        try:
+            holder = os.pread(fd, 200, 0).decode("utf-8", "replace").strip()
+        except OSError:
+            pass
+        os.close(fd)
+        return None, holder
+    try:
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, f"{os.getpid()} {profile} {int(time.time())}\n".encode(), 0)
+    except OSError:
+        pass
+    return fd, ""
+
+
+def _run_one(profile, payload, lock_fd=-1):
     global _done, _failed
     started = time.time()
     message_id = payload.get("message_id") or 0
@@ -341,10 +386,13 @@ def _run_one(profile, payload):
               f"in topic '{payload.get('topic')}']\n\n{text}")
     budget = timeout_for(profile)
     rc, reply, err = None, "", ""
+    kwargs = {}
+    if isinstance(lock_fd, int) and lock_fd >= 0:
+        kwargs["pass_fds"] = (lock_fd,)
     try:
         r = subprocess.run([BIN, "-p", profile, "-z", prompt],
                            capture_output=True, text=True, timeout=budget,
-                           stdin=subprocess.DEVNULL)
+                           stdin=subprocess.DEVNULL, **kwargs)
         rc, reply = r.returncode, (r.stdout or "").strip()[-4000:]
         err = (r.stderr or "")[:400]
     except Exception as e:  # noqa: BLE001
@@ -387,14 +435,31 @@ def _worker():
             _work.task_done()
             time.sleep(0.5)
             continue
+        lock_fd, holder = _acquire_profile_lock(profile)
+        if lock_fd is None:
+            # A turn for this profile is already in flight on this host — usually
+            # an orphan from a restarted dispatcher that is still working. Re-queue
+            # rather than race it under the same sender name.
+            log(evt="gate_held", profile=profile,
+                message_id=payload.get("message_id"), holder=(holder or None))
+            gate.release()
+            _enqueue(profile, payload, seq)
+            _work.task_done()
+            time.sleep(5.0)
+            continue
         with _lock:
             _active += 1
         try:
-            _run_one(profile, payload)
+            _run_one(profile, payload, lock_fd)
         finally:
             with _lock:
                 _active -= 1
             gate.release()
+            if isinstance(lock_fd, int) and lock_fd >= 0:
+                try:
+                    os.close(lock_fd)   # the child's inherited copy owns it now
+                except OSError:
+                    pass
             _spill_drop(seq)
             _work.task_done()
 def sd_notify(state):
@@ -450,6 +515,7 @@ class H(BaseHTTPRequestHandler):
                         "draining": _draining,
                         "spilled": spilled, "overflow": len(_overflow),
                         "spill_path": SPILL,
+                        "lock_dir": LOCK_DIR,
                         "timeout_s": TIMEOUT,
                         "timeout_overrides": TIMEOUT_OVERRIDES,
                         "dedupe_ttl_s": DEDUPE_TTL,
