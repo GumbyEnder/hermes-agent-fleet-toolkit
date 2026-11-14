@@ -141,6 +141,30 @@ Procedure, in this order:
 Corollary for slots: a behaviour change sitting on disk but not in the process is
 attested by no row yet. Rows written before the next restart grade the old path.
 
+## An artifact's own header must cite a blob, never HEAD -- a tip expires in minutes
+
+The witness that captures an hourly slot wrote `# HEAD <short sha>` into its own output. That is a
+citation with a ten-minute lifetime: master moved three times in one afternoon, and the 16:28:35
+capture's `# HEAD 10a4811` stopped resolving as a name eight minutes after the capture wrote it,
+while the bytes that capture was actually reporting never changed. The header now prints the
+instrument's own content id beside it:
+
+    # WITNESS blob <git hash-object> size <N> md5 <M> path <ExecStart path>
+
+- **Prefer `git hash-object` to a commit sha for identifying a file.** It is content-addressed:
+  no repo, no index and no object required. Measured on this host, `git hash-object -- <path>`
+  run outside any repo returned c1474b47 for the NAS exec copy and e8dafb6c for the edited copy
+  -- the same value `git rev-parse <commit>:<path>` gives a committed identical file. It survives
+  the commit being GC'd and works on a deploy that was never committed at all.
+- **Print the resolved executable path next to it.** `readlink -f "${BASH_SOURCE[0]}"` is what
+  makes "the file that produced this row" resolvable a week later; a bare hash is not.
+- **Relabel `# HEAD`, do not delete it.** It still carries lineage (which commit the tree was at,
+  plus `tree: N modified`); the blob carries identity. Read HEAD as lineage, cite the blob.
+- **An honest rehearsal artifact is off-grid and self-labeling.** A header-proof run against the
+  live unit (`WINTERVAL=$(( now - start + 5 ))`) writes a `pairsplit2-<stamp>.log` whose slot is
+  not on the grid and whose verdict is rc=4. Rename it `REHEARSAL-<what>-<stamp>.log` instead of
+  leaving a non-grid capture where the next census counts it as a slot.
+
 ## A quoted number is a sample, not a state — re-take it at send time
 
 Every number in a room post is a reading of a moving object, and the reader who checks it

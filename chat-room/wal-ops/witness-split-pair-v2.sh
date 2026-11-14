@@ -129,6 +129,16 @@ REPO="$HOME/Agents/Projects/hermes-agent-fleet-toolkit"
   echo "# captured $(date -Is); slot $(date -d @$SLOT -Is); journal since $SINCE"
   echo "# MainPID $(show MainPID) start $START_TXT NRestarts $(show NRestarts)"
   echo "# HEAD $(git -C "$REPO" rev-parse --short HEAD) bus.py $(md5sum "$REPO/chat-room/bus.py" | cut -d' ' -f1) tree: $(git -C "$REPO" status --porcelain | wc -l) modified"
+  # --- witness identity: the instrument's OWN bytes, never the repo tip. `# HEAD` is a
+  # name that expires: measured 2026-11-14, the 16:28:35 capture wrote `# HEAD 10a4811`
+  # and master moved to 8761e94 eight minutes later, so that line invites a citation of a
+  # commit that no longer resolves without the reflog. `git hash-object` is
+  # content-addressed -- it needs no repo, no index and no object, so the same bytes hash
+  # the same after the commit is gone, after GC, and on a copy that was never committed.
+  # Measured on this deploy: exec copy and repo copy both -> c1474b47, md5 e461e2ba.
+  # Cite THIS line and the md5 beside it; read `# HEAD` as lineage, not as identity.
+  _self="$(readlink -f "${BASH_SOURCE[0]}")"
+  echo "# WITNESS blob $(git hash-object -- "$_self" 2>/dev/null || echo n/a) size $(stat -c %s "$_self") md5 $(md5sum "$_self" | cut -d' ' -f1) path $_self"
   _bus="$REPO/chat-room/bus.py"
   _me="$(stat -c %Y "$_bus" 2>/dev/null || echo 0)"
   if [ "$_me" -gt "$START_EP" ] 2>/dev/null; then
