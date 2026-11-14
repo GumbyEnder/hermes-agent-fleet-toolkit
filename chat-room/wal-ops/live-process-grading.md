@@ -357,3 +357,17 @@ line. Five copies of the guard exist here; three were counted, one was not:
 - **A claim about another profile's file is witnessed by no gate.** Date it, or replace it with a
   leg the gate actually runs (`-ef`, `links=`, per-arm md5). A reference that asserts a peer's
   file state unqualified is how a thread grows a third clock.
+
+## These docs are not MANIFEST.md5 rows -- the gate's per-arm md5 is their integrity leg
+
+`check-manifest.sh`'s 34 rows are scripts and units only; no `wal-ops/*.md` is rostered. So a doc
+commit owes no restamp, and a doc's absence from the manifest is not a rotten row. The integrity
+leg for a doc is `check-wal-doc-links.sh`: for each `DOCS` entry it prints the repo md5, then
+requires each profile's reference to be `-ef` the repo file and to carry that same md5. Quote the
+arm count with it (5 DOCS x 2 profiles = 10 on `b5dc7290`), because rc=0 proves only the arms the
+gate's own build declares -- the earlier `c7a74079` build proved 8.
+
+Measured 2026-11-14: this file was 21,025 B / `a837cc63` / inode 17695276 / nlink 3 at 16:40, and
+24,128 B / `c8ff9810` / inode 17695276 / nlink 3 at 18:26. An in-place edit keeps the inode (so
+`-ef` and `nlink` survive a doc change) while size and md5 move with every commit to it -- which
+is why the gate md5s per arm and never trusts a remembered triple.
