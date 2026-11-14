@@ -1365,3 +1365,32 @@ src=shutdown slot=20261114T021800.814751-0500`, `Started 02:18:01`. Quote 14 for
 45 for the host tick, with the `slot=`/`src=` tokens beside them; "shutdown folded 45" is a
 neighbour's frame count harvested for a bigger number, and it is the one someone reaches for when
 they want a stop that folded a lot.
+
+## The close-actor instrument: the actor is reliable, the FILE NAME is a race
+
+`chat-room/wal-ops/fanotify-close-actor.py`. `FAN_REPORT_PIDFD` is root-only (uid 1000 ->
+errno 1 EPERM on 7.0.0-38-generic; `FAN_REPORT_FID` alone arms unprivileged but carries no
+actor), so this instrument belongs in a system unit, not beside the two inotify watchers in
+`user@1000.service`.
+
+- **The merge key is (object, ACTOR), so a merged group has exactly ONE actor.** Measured
+  2026-11-14, root, one throwaway inode, nothing drained between the two closes: two closes
+  0.05 / 0.30 / 1.00 / 2.50 s apart by *different* pids -> **2 events** at every gap, both pids
+  correct; the same four gaps by the *same* pid -> **1 event**; 200 write+close by one child ->
+  **1 event**. Merging therefore cannot manufacture a false bystander — what it costs is the
+  close COUNT, and only that. Drain at 50 ms, never infer a close count from an event count,
+  and carry `actor_start` (`/proc/<pid>/stat` field 22) beside the pid so a recycled number
+  cannot merge two lifetimes.
+- **File naming is a race against the unlink, not a property of the file.** A per-file mark is
+  impossible (`FAN_MARK_ADD` on `room.db-wal`/`-shm` -> ENOENT whenever the pair is absent, the
+  steady state), so mark the directory and resolve the FID with `open_by_handle_at`. Measured
+  2026-11-14 over 20 s: **153/153 named inline** (51 each wal/shm/db) against **257/265 with 8
+  ESTALE** when the same window was resolved after it closed; one handle names a file while it
+  is linked and returns ESTALE the instant it is unlinked. So "only room.db is nameable" is a
+  window where the pair was recycled faster than the resolution, not a limit of the method.
+  Take `size`/`mtime` from `fstat` on the resolved handle and emit `file: null` + `file_err`
+  when it is gone — never a guessed name.
+- **A `--only` that only prints `expect:` resolves nothing.** The first cut emitted three events
+  0.2 ms apart (the wal, the `-shm` and the db of one transaction) all labelled `expect:
+  room.db-wal`. The filter must run on the resolved basename; events it cannot name are emitted
+  with `file: null` and counted in the `stop` line's `unresolved`.
