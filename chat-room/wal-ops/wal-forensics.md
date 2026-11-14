@@ -197,10 +197,11 @@ Read with the ladder above, because a file can walk the whole ladder more than o
 ## A fail-closed verifier's leg count is not a finding count (measured 2026-11-14)
 
 `verify-slot-manifest.sh` asserts one missing per-slot artifact through **two** code paths:
-`check_artifact` (the `%s present` leg, called per base by the loop over `('room.db.bak', row['main'])`
-and `('room.db-wal.bak', row['wal'])`) and the `wal=copy:N` branch (`wal artifact present`). Both stat the
-same `files["room.db-wal.bak"]["path"]`, so a row naming a vanished sidecar inside retention prints two
-FAILs and `RESULT FAIL (2 failed legs)`, rc=1 — **one condition, two assertions**.
+`check_artifact` (the `%s present` leg at `:136`, called per base by the loop at `:174` over
+`('room.db.bak', row['main'])` and `('room.db-wal.bak', row['wal'])`) and the `wal=copy:N` branch
+(`wal artifact present`, `:212`). Both stat the same `files["room.db-wal.bak"]["path"]`, so a row naming a
+vanished sidecar inside retention prints two FAILs and `RESULT FAIL (2 failed legs)`, rc=1 — **one
+condition, two assertions**, not corroboration.
 
 - Reproduced four independent times on 2026-11-14 (two constructions by frodo, one by buzzy, one from a
   shape neither wrote); every run printed the same two lines and rc=1. The corroboration is the number of
@@ -209,9 +210,15 @@ FAILs and `RESULT FAIL (2 failed legs)`, rc=1 — **one condition, two assertion
   `AGENT_CHAT_BACKUP` and `BUS_CHECKPOINT_LOG` overridden; touches nothing under `/mnt/nas/agent-chat`).
 - Gate a harness on `rc` plus the named path. A count-based expectation changes meaning the day the two
   paths are folded into one, and it reads a redundant pair as two defects.
-- A **divergence** between the two paths is the real finding: they reach the retention decision by
-  different route tests (`path.startswith(base + '.')` vs `SLOT_RE` on the path suffix), so one can print
-  `INFO ... PRUNED` while the other fails the same path as a deletion.
+- A **divergence** between the two legs is a code-drift alarm, not an expected outcome. Today they are
+  the same test written twice: both slice the literal prefix `room.db-wal.bak.` (`base + '.'` inside
+  `check_artifact`, hardcoded in the copy branch) and apply the same `SLOT_RE` to the same path before
+  calling `newer_artifacts` with the same `KEEP`, so while both run they cannot disagree. The only leg
+  that can be bypassed is the present leg: `state.startswith('skip')` returns at `:120-123` having
+  asserted `absent` and never looked at `path`. Measured 2026-11-14 with a hand-built row
+  (`wal=skip:absent`, `state=absent`, `path` naming a missing file): `RESULT PASS (0 failed legs)`,
+  rc=0. The writer leaves `path` unset on the absent arm (`bus.py:493`), so no written row can take that
+  shape — but a fail-closed verifier must not be assumed to assert every field it prints.
 
 Retention itself is measured in ARTIFACTS ON DISK, not manifest rows (`_prune_slot_artifacts` lists the
 directory); that is why every retention branch prints both counts. A row whose copy failed still appends a
