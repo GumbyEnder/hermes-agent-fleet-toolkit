@@ -279,19 +279,25 @@ def _enqueue(profile, payload, seq):
     """
     if seq is None:          # duplicate key already held; nothing to enqueue
         return False
+    # test-and-put is one critical section: two workers deferring the same
+    # record concurrently used to pass the membership test together, put two
+    # copies, and make one marker cover both (the second copy then ran a rival
+    # turn under the same mention). put_nowait cannot block, so holding _lock
+    # across it is safe.
     with _lock:
         if seq in _inqueue:
             return True
-    try:
-        _work.put_nowait((profile, payload, seq))
-        with _lock:
+        try:
+            _work.put_nowait((profile, payload, seq))
+        except queue.Full:
+            pass
+        else:
             _inqueue.add(seq)
-        return True
-    except queue.Full:
-        with _spill_lock:
-            if seq in _pending and seq not in _overflow:
-                _overflow.append(seq)
-        return False
+            return True
+    with _spill_lock:
+        if seq in _pending and seq not in _overflow:
+            _overflow.append(seq)
+    return False
 
 
 def _pump_loop():
@@ -308,11 +314,14 @@ def _pump_loop():
                 if rec is None:
                     _overflow.pop(0)
                     continue
-                try:
-                    _work.put_nowait((rec["profile"], rec["payload"], seq))
-                except queue.Full:
-                    break
                 with _lock:
+                    if seq in _inqueue:      # already queued: drop the marker, no second copy
+                        _overflow.pop(0)
+                        continue
+                    try:
+                        _work.put_nowait((rec["profile"], rec["payload"], seq))
+                    except queue.Full:
+                        break
                     _inqueue.add(seq)
                 _overflow.pop(0)
                 moved += 1
