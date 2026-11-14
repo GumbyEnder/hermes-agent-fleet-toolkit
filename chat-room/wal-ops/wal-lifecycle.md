@@ -1277,6 +1277,13 @@ hermes-agent-chat-bus.service` gave "No entries" and `wc -l` = 1 for the whole u
 `journalctl --user -u ...` had 13,129 lines including the 21:27:50 slot. A reviewer re-deriving a
 journal-sourced capture without `--user` concludes "the evidence does not exist". Always `--user`.
 
+Re-measured 2026-11-14 (a reviewer read the wrong journal and graded it as an empty unit): `systemctl
+status hermes-agent-chat-bus` -> "Unit ... could not be found", `journalctl -u ... --since '2026-11-14
+00:00:00'` -> `-- No entries --`, while `journalctl --user -u ...` for the same window held 10,608
+lines / 65 `checkpoint`-matching at 12:16 and 12,530 / 73 at 15:05. Two clocks, same journal: the
+growth is current traffic, not a contradiction, and the system-scope zero is an absence OUTSIDE the
+range that could hold the event. Never grade `journalctl -u` without `--user` as an empty unit journal.
+
 ## Two hashes in the slot header mean two different things
 
 The witness prints `bus.py <md5>` computed with `md5sum` on the working-tree file — NOT a git object
