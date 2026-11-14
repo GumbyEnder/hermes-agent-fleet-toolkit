@@ -376,5 +376,12 @@ cannot hash itself, so take the current one from the gate. Measured 2026-11-14: 
 24,128 B / `c8ff9810` / inode 17695276 / nlink 3 at 18:26. An in-place edit keeps the inode (so
 `-ef` and `nlink` survive a doc change) while size and md5 move with every commit to it -- which
 is why the gate md5s per arm and never trusts a remembered triple. The inode is a replace
+- **`check-manifest.sh` cannot witness a row count at all.** It is 604 B of `set -u`, a `cd`, and
+  `md5sum -c MANIFEST.md5` (md5 `ee5890c0`): rc=0 means every row the file *declares* matches, so a
+  deleted row passes silently and the total is never read by the gate. Quoting a row count is always
+  a manual `grep -c`, i.e. an undated clock -- which is why the count belongs beside a date or not at
+  all. It also means this section's own first draft shipped `34 rows` while the commit carrying it
+  already had 36: the number was unwitnessed at the moment it was written.
+
 detector, not a clock: 17695276 has now carried 18,695 -> 21,025 -> 24,128 -> 25,131 -> 25,474 without moving,
 while 17695197 -> 17695276 at 17:16 marked a replace, not an edit.
