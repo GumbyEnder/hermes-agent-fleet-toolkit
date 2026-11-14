@@ -1304,3 +1304,16 @@ edit.
 The ladder, in one line, so it cannot be mis-quoted from here: a `-wal` is a 32 B header plus
 4,120 B frames (24 B frame header + 4,096 B page), so `(N - 32) % 4120` is the predicate — `0` =
 k complete frames, `24` = header-only tail, anything else torn, and `N >= 4152` is not "complete".
+
+## The checkpoint-pair unit is (slot, arm), not (stop, row-pair)
+
+`bus-checkpoint.log` rows group by `slot=` **and** arm, and the two arms write different shapes:
+the `src=backup` arm writes `checkpoint-pre:` -> `checkpoint:` -> `backup:` (3 rows), the
+`src=janitor` arm writes `checkpoint-pre:` -> `checkpoint:` only (2 rows, never a backup).
+Measured 2026-11-14 on a 153 L file: 16 slot-bearing groups = 8 triples (all backup) + 8 pairs
+(all janitor), same second, different slots (`05:27:58.084738` triple / `05:27:58.087857` pair).
+Two consequences: "one pair per stop" undercounts a stop by half (a stop is up to 2 slots = 5 rows),
+and a gate asserting "3 rows per slot" grades a healthy janitor slot as broken. Correct invariant:
+3 rows iff `src` in `{backup, shutdown}`, 2 iff `janitor`. Rows written before `slot=` existed cannot
+be slot-keyed at all - the backup row rolls to the next second (`23:46:10` pair + `23:46:11` backup),
+so key `(second, db=)` and allow one second of roll rather than reporting a missing row.
