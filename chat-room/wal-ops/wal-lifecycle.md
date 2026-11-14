@@ -997,7 +997,20 @@ Measured 2026-11-13 on `dwell-two-column-watch.csv` (33,041 generations, 430 fra
   a persisted anchor would only move the coincidence to the next restart.
 - Live witness (restart 09:28:33, MainPID 1880879): `checkpoint-pre: busy=0 log=1 folded=1 src=janitor
   slot=20261114T092933.762138-0500` then `moved=1` at `start+60.76 s` — the first non-zero janitor fold
-  since 21:27:50. Slots are now `:28:33` of the hour and the janitor ticks at `:29:33`.
+  since 21:27:50.
+- **Describe the grid as `ExecMainStart + 3600k + accumulated overshoot`, never as a fixed second of the
+  hour.** Measured slot seconds walk `10:28:33.760681` -> `11:28:34.073259` -> `12:28:34.388698`, i.e.
+  **+0.31 s/hr** of sleep-first drift, so ":28:33 of the hour" is already wrong in the third decimal place
+  and someone will later call a 0.6 s difference a failure. A 60 s offset leaves ~190 h of headroom, so the
+  drift is not urgent — it only means the slot must be derived from `ExecMainStartTimestamp` at read time.
+- **The janitor is now the arm that meets a long-running transaction, and that is the shape that looks like
+  the patch failing.** With the janitor a minute after the backup, a held read mark or a long write lands on
+  the janitor's TRUNCATE: it prints `checkpoint-pre: busy=1 log=-1 folded=-1 src=janitor BUSY` and
+  `checkpoint: ... moved=0 src=janitor BUSY`. Grade that as the busy arm (busy>0, folded<log, moved==0),
+  never as "the phase patch stopped working" — and before raising a pin, check whether the refusal line is
+  the NEWEST line and whether any `busy=0` line follows it. The backup's own slot second stays the one
+  `FOLD-THEN-COPY` grades (`verify-slot-manifest.sh:191`/`:222-227` read `pre['backup']` only), so a busy
+  janitor cannot move a verdict.
 - Probe shape: two runs on a scratch DB with intervals shrunk to 4 s — the unpatched file fires
   `src=backup`/`src=janitor` 0.6-2.2 ms apart, the patched one interleaves them. Override `AGENT_CHAT_DB`,
   `AGENT_CHAT_PORT` (8096 is already bound on this host), `AGENT_CHAT_BACKUP=''`, and ALWAYS

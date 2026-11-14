@@ -31,3 +31,4 @@ e36f7b06498986ae73a3e81275e3f332  rehearse-run-failure.sh
 955e821aa3b0a1307025a6795f213ba1  fanotify-close-actor.py
 d594d3ea4d58f04c1e797b2d73141935  qread.py
 afaef597b3d62b29e2248bfcd800d0d6  ro-open-audit.py
+874af3df48729aa948159d9823bbd4cd  witness-janitor-phase.sh
