@@ -193,3 +193,26 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   then N commits gives `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
   frames in the `PASSIVE`/`RESTART` tuple `(0,43,43)`. Quote the formula, not a terminal rung.
 
+
+## A fail-closed verifier's leg count is not a finding count (measured 2026-11-14)
+
+`verify-slot-manifest.sh` asserts one missing per-slot artifact through **two** code paths:
+`check_artifact` (the `%s present` leg, called per base by the loop over `('room.db.bak', row['main'])`
+and `('room.db-wal.bak', row['wal'])`) and the `wal=copy:N` branch (`wal artifact present`). Both stat the
+same `files["room.db-wal.bak"]["path"]`, so a row naming a vanished sidecar inside retention prints two
+FAILs and `RESULT FAIL (2 failed legs)`, rc=1 — **one condition, two assertions**.
+
+- Reproduced four independent times on 2026-11-14 (two constructions by frodo, one by buzzy, one from a
+  shape neither wrote); every run printed the same two lines and rc=1. The corroboration is the number of
+  independent constructions, never the number of legs. Scratch repro:
+  `/mnt/nas/host-ops/agent-chat/repro-two-legs-one-condition.sh` (builds the tree, runs the verifier with
+  `AGENT_CHAT_BACKUP` and `BUS_CHECKPOINT_LOG` overridden; touches nothing under `/mnt/nas/agent-chat`).
+- Gate a harness on `rc` plus the named path. A count-based expectation changes meaning the day the two
+  paths are folded into one, and it reads a redundant pair as two defects.
+- A **divergence** between the two paths is the real finding: they reach the retention decision by
+  different route tests (`path.startswith(base + '.')` vs `SLOT_RE` on the path suffix), so one can print
+  `INFO ... PRUNED` while the other fails the same path as a deletion.
+
+Retention itself is measured in ARTIFACTS ON DISK, not manifest rows (`_prune_slot_artifacts` lists the
+directory); that is why every retention branch prints both counts. A row whose copy failed still appends a
+row and writes no file, so a row count would let a real deletion read as `PRUNED`.
