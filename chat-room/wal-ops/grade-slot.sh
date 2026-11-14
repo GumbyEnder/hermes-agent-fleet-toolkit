@@ -23,12 +23,28 @@
 # a second post for the same slot (the timer may fire again while a long run is
 # still sleeping). --force overrides.
 #
-# VERDICT AGE IS ~37 MIN BY CONSTRUCTION, not a defect. The timer fires at :05
-# and slots land at :27:58 of the hour, so the :05 tick derives a slot an hour
-# older (06:05 grades 05:27) while the newest slot waits for the next tick. No
-# slot is skipped -- the too-early tick hits the guard path and exits 0 -- every
-# verdict is simply ~37 min stale. Move the timer to :30 if that ever matters;
-# until then this note is the record so nobody re-derives it as a bug.
+# VERDICT AGE IS SECONDS, NOT ~37 MIN (corrected 2026-11-14; the earlier note
+# here described the pre-GRACE design and is false against the journal). The :05
+# tick derives the NEXT slot of its OWN hour and sleeps to it: 09:05 ->
+# slot_ep 1794666478 = 09:27:58, graded 09:28:06; 12:05 -> 12:27:58, graded
+# 12:28:41. No run derives a past slot unless SLOT_EP is passed, so the old
+# "too-early tick hits the guard path and exits 0" line described a path that
+# never executed: the top guard tests the DERIVED second, which no run ever
+# writes (see the authoritative re-test after slot_tag=$row_tag).
+#
+# NEVER REWRITE THIS FILE IN PLACE WHILE A TICK IS RUNNING (cp, or `install`:
+# measured 2026-11-14, install left the inode unchanged, 15479751, across a 6 B
+# -> 11,643 B write). A running bash resumes from its fd offset, not from a line
+# boundary. Measured: the 11:05 tick started on the 8,585 B build, slept 1421 s
+# with fd 255 parked at byte 5186 (the blank line after the wait block), the file
+# was rewritten in place to a longer build, and at 11:28:41 it resumed at 5186 --
+# which in the longer build is the middle of the guard line -- and died with
+# `line 116: syntax error near unexpected token ';'` / `'; then'`, status
+# 2/INVALIDARGUMENT. All eight committed builds pass `bash -n`, so no committed
+# build can produce that error: the bytes read were a mixture of two builds, and
+# the slot went ungraded by the timer. Write to a temp name and `mv` it into
+# place; an open fd then keeps the OLD inode and finishes on coherent old bytes
+# (that is the only reason the "(deleted)" inode shape is safe).
 #
 # usage: grade-slot.sh [--dry] [--force] [PARENT_ID]
 #   --dry      print the post body, do not send, do not write the guard
