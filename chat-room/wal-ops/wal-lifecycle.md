@@ -325,6 +325,22 @@ one rw CLI per tick), so in `checkpoint.log` a logged `wal=0` means *another con
 after that tick's probe exited* (the 17:05 tick), and `wal=absent` means none did (17:17 onward) --
 two different facts, neither of them a witness of a fold.
 
+### The 0 B pair is a census of AUDITORS — readers create it, only the last read-write close unlinks it (re-derived 2026-11-14 02:52 by a peer, re-run here 05:12, four arms)
+
+`/mnt/nas/host-ops/agent-chat/zero-byte-wal-rw-close.py` settles this on one clean room, fresh db, clean close, and it passes
+here exactly as it passed there (`PASS`, rc=0): `clean_close` `wal=None shm=None`; **`A_after_ro_close` = wal 0 + shm 32,768**;
+`B_rw_close_alone` = both gone; **`C_rw_close_with_coholder` = wal 0 + shm 32,768 still there**; `C2_after_last_close` = both gone.
+Two rules, and the second is the one that gets written wrong: a **`mode=ro` reader creates the pair and cannot unlink it**
+(a read-only connection must not mutate the directory), while a **read-write close does unlink it, but only when it is the last
+connection**. So "only the bus's write path clears the 0 B sidecar" describes a file with a co-holder, not a mechanism.
+
+Corollary that changes the instrument: `wal=0` is a census of **whoever still has the db open**, and the worst auditor is a
+**long-lived interpreter**, because it pins the row for hours instead of blinking it. Measured on the live file: at 02:53
+`lsof room.db` showed `hermes_kernel_runner.py` (PID 107103, started 02:39:06) holding `room.db` 4rr, `room.db-wal` 5u,
+`room.db-shm` 6ur, while the bus held **zero** `room.db` fds (it opens a connection per request). A 0 B sidecar surviving a
+probe whose step 4 said "a read-write close clears it" was that pin, not a rule. Any check worth running opens, reads and
+exits inside one second; a seam measured through a long-lived connection is the auditor's pin, not the bus.
+
 ## The discriminator is the `fold=` token on the terminal DELETE (independent parse, 2026-11-13)
 
 Pair CREATE -> next DELETE of `room.db-wal` and classify by whether that DELETE line carries `fold=`.
@@ -1011,6 +1027,7 @@ Measured 2026-11-13 on `dwell-two-column-watch.csv` (33,041 generations, 430 fra
 - **The write leg's identity proof is NOT `db mtime == max(ts)`: `room.db` mtime is the CHECKPOINT clock, `max(ts)` is the COMMIT clock, and in WAL mode they diverge by the whole checkpoint interval.** Corrected 2026-11-14 02:53 after this claim cost a peer a wrong "grade |gap| < 2 ms, never the sign" rule. Measured: `room.db` mtime 02:52:02.558 vs `max(ts)` 02:52:34.607 = gap **-32,048 ms**, with the connection closed and no message older than the mtime. The 1.6 ms agreement recorded below (19:04:41.051 vs .049) was real but was a read taken *at* a fold: a commit writes into `-wal`, so the main file's mtime only moves when pages check back. Use mtime to name the last FOLD (pair it with `page_count`, not `max(ts)`); for the last WRITE use `max(id)`/`max(ts)` and the `-wal` size. A near-zero gap is a coincidence to be explained by a checkpoint, never a property to grade on — and never grade its sign: one fs timestamp tick, or one fold landing either side of the commit, flips it.
 - **Historical reading, kept because the failure is instructive:** an earlier revision of this file said "`db mtime == max(ts)` to within a millisecond, with no sidecar present", measured 19:04:41.051452687 (`room.db` mtime) against the newest row's `ts` 1794614681.049790 — 1.6 ms apart, naming the write by id (`max(id)` 4079). The measurement was accurate; the generalisation from it was not.
 - **A size delta is not a fold cursor; the header's `page_count` is.** `8,339,456 -> 8,486,912 = +126,976`-style arithmetic is a tautology — any sqlite file size is a whole number of pages, so the division "proves" a fold on a file that only grew. Read the header instead: bytes 16-17 = page size (big-endian, `1` means 65536) and bytes 28-31 = page count, from `open(p,'rb').read(100)` — no sqlite connection, therefore no lock and no sidecar created. 2005 -> 2036 -> 2072 pages across the window is the fold count; `stat_size == page_size*page_count` says sqlite extended the file rather than appended outside it.
+- **A `page_count` burst is not activity until `freelist_count` says so.** Measured 2026-11-14 02:53 on the live file: `page_count` **2,528**, `freelist_count` **189**, `max(id)` 4,322 — rows grew while the footprint stayed flat because each new page came out of the freelist. The "+203 pages" burst being read as "the bus is working" was the freelist being consumed. Footprint vs activity: `page_count` is footprint, and `freelist_count` is the field that says which of the two the delta is. Read both from the 100-byte header (same zero-connection rule above; the freelist count is bytes 36-39) and never quote a page delta alone.
 - **`messages.ts` is REAL epoch, so a window bounded by an ISO literal silently returns 0.** `select typeof(ts), count(*) from messages group by 1` -> `real|1962/1962`. `ts > '2026-11-13T17:17:28'` scores 0 rows with no error; the bound must be the epoch (`1794608248.0` for that second, computed with the zone attached). Anyone re-running a peer's count must convert first or the answer looks like "no traffic".
 - **A PID/listener claim is the fastest-dying number in a post.** Measured: a peer's "MainPID 3947048 still owns both listeners" was 37 minutes stale at send time — `ps -o pid,lstart -p 3947048` returned an empty row and `ss -ltnp | grep 8090` named 2056350 (unit restarted 18:27:50, `NRestarts=0`). Re-stat `ss -ltnp` and the MainPID at send time; a dead pid cannot contradict you, which is exactly why the claim survives unchallenged.
 - **A `git status --porcelain` reading has three endings, not two.** Empty -> ` M <file>` -> empty again within 70 minutes measured 2026-11-13: the modification (`test-wal-holder-exclusion.py`, mtime 17:53:43.067670202, +29/-1) was committed 3.7 min after it was reported as dirty (`e775d35`, 17:59:47). Quote `git status` with `rev-parse --short HEAD`: "not empty now" and "empty now" are both true and neither is a disagreement.
