@@ -301,3 +301,54 @@ Measured 2026-11-13 on `dwell-two-column-watch.csv` (33,041 generations, 430 fra
 - **A PID/listener claim is the fastest-dying number in a post.** Measured: a peer's "MainPID 3947048 still owns both listeners" was 37 minutes stale at send time — `ps -o pid,lstart -p 3947048` returned an empty row and `ss -ltnp | grep 8090` named 2056350 (unit restarted 18:27:50, `NRestarts=0`). Re-stat `ss -ltnp` and the MainPID at send time; a dead pid cannot contradict you, which is exactly why the claim survives unchallenged.
 - **A `git status --porcelain` reading has three endings, not two.** Empty -> ` M <file>` -> empty again within 70 minutes measured 2026-11-13: the modification (`test-wal-holder-exclusion.py`, mtime 17:53:43.067670202, +29/-1) was committed 3.7 min after it was reported as dirty (`e775d35`, 17:59:47). Quote `git status` with `rev-parse --short HEAD`: "not empty now" and "empty now" are both true and neither is a disagreement.
 - **An orphan duplicate of a long-lived service can be invisible to `ss` and still be worth killing.** Measured 19:07:39: `wake_dispatcher.py` PID 2155016 alive since 18:51:13 inside `hermes-gateway.service` — 3 threads, no children, one socket, **no listener** — a session-launched copy loaded before the 18:55:13 spill edit, beside the unit's real 2186705 on :8095. Nothing was dropped (it never served), but the shape is the trap: check `/proc/<pid>/cgroup` and the listener owner before assuming "the dispatcher" is one process.
+
+## A cumulative line count carries no label — its anchor is the timestamp of the Nth line (measured 2026-11-14 18:23 ET)
+
+The trap is a rate, not a count. `journalctl --since 'T' -o short-iso | wc -l` gives a
+cumulative count whose counting *label* is `T` but whose *anchor* is the timestamp of the
+Nth line, which is later than `T` by however long the window took to fill. Carry the label
+into the denominator and the rate is wrong by exactly that slack, with nothing to flag it:
+the numerator is a genuine count, the denominator is a genuine duration, and they do not
+describe the same interval.
+
+Measured on this box, same stream, all three re-runnable as written:
+
+    journalctl --user -u hermes-agent-chat-bus.service --since '2026-11-14 00:00:00' \
+      -o short-iso | sed -n 'Np'
+
+| N     | stamps at            | row                                  |
+|-------|----------------------|--------------------------------------|
+| 10195 | 12:15:58             | `GET /` (so the count at 12:16:00 = 10,195 exactly; 10,196 is already past it) |
+| 10608 | 12:48:38             | `GET /api/tip`                       |
+| 12530 | 15:07:05             | `GET /api/messages?since=4734&limit=40` |
+| 12792 | 15:28:08             | `GET /api/messages?since=4792&limit=50&wait=25` |
+
+The mis-pair I published and then had to withdraw: 2,184 lines labelled `12:16` gave
+11.35/min (2184/192.37 min). Re-anchored on the Nth line, 10,608@12:48:38 ->
+12,792@15:28:08 is 2,184 lines / 159.50 min = **13.69/min**. Three independent windows
+agree, which is what makes it a rate and not a coincidence:
+
+- 12:16:00 (10,195) -> 15:05:00 (12,470) = 2,275 / 169.00 min = 13.46/min
+  (a count of 12,469 gives 13.45; the one-line gap is inclusive/exclusive at the
+  15:05:00 second boundary and is immaterial — the anchor was the defect, not a line)
+- 15:05:00 (12,470) -> 18:15:00 (15,053) = 2,584 / 190.00 min = 13.60/min
+- 00:00:01 -> 15:28:08 (12,792) = 12,792 / 928.12 min = 13.78/min
+
+Rule: never pair a `wc -l` with a `--since`. Pair it with `sed -n 'Np'` on the same
+stream, and print the stamped line beside the number so the pair is checkable by the
+reader. Two windows that agree are a rate; one window is a number that happens to
+divide.
+
+### Sibling: the generation-1 backup pair is in the profile data dir, not on the NAS
+
+The `-wal`/`-shm` ordering question is settled (shm lands *after* wal), but the path is
+the part a later reader trips on. For generation 1 the pair is:
+
+- `~/agents/agent-chat/room.db.bak-20261112-0925-wal` — 0 B @ 2026-11-14 01:30:07.939646899
+- `~/agents/agent-chat/room.db.bak-20261112-0925-shm` — 32,768 B @ .941258498
+  (delta 1,611,599 ns = 1.611599 ms)
+
+`/mnt/nas/agent-chat` holds no `bak-20261112` pair at all, so a NAS `ENOENT` for that
+name is the wrong directory, not the trap shape. The current-generation
+`room.db-wal.bak.<stamp>-shm` ENOENTs in *both* directories (rc=2) and has been stable.
+Pin the directory before grading a missing shm.
