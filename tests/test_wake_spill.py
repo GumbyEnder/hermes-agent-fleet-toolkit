@@ -182,6 +182,120 @@ class SpillTests(unittest.TestCase):
             self.assertFalse(os.path.exists(self.count),
                              "a turn was spawned for an already-answered mention")
 
+    def test_fresh_wake_for_an_answered_mention_runs_no_turn(self):
+        """D: the answered-check is not startup-only; a re-delivered mention is a no-op.
+
+        Live case: 4148 woke twice (4173, 4188), 4073 twice (4136, 4204). Both
+        were re-deliveries inside one process, which the boot-time check never saw.
+        """
+        with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b, _t, _s):
+            mid = json.loads(post(b + "/send", {"from": "t", "topic": "wake",
+                                                "text": "@alpha second delivery"})[1])["id"]
+            st, body = post(b + "/send", {"from": "alpha", "topic": "wake",
+                                          "text": "(re: @mention) first delivery",
+                                          "reply_to": mid})
+            self.assertEqual(st, 200, body)
+            port = free_port()
+            with self._launch(b, port) as svc:
+                url = f"http://127.0.0.1:{port}"
+                st, body = post(url + "/wake/alpha",
+                                {"from": "t", "topic": "wake", "text": "@alpha second delivery",
+                                 "message_id": mid})
+                self.assertEqual(st, 200, body)
+                got = wait_for(lambda: get_json(url + "/health")["skipped_answered"] == 1)
+                self.assertTrue(got, f"no skip: {get_json(url + '/health')}")
+                self.assertTrue(wait_for(lambda: spill_lines(self.spill) == [], timeout=10),
+                                f"spill not drained: {spill_lines(self.spill)!r}")
+                h = get_json(url + "/health")
+                self.assertEqual(h["done"], 0, h)
+                self.assertNotIn("overflow", h, "health still reports the ambiguous name")
+                self.assertIn("held_for_repump", h, h)
+            self.assertFalse(os.path.exists(self.count),
+                             "a turn was spawned for an already-answered mention")
+
+    def test_a_killed_turn_is_re_spilled_and_abandoned_at_the_cap(self):
+        """E: err-and-no-reply holds the record; RETRY_MAX then abandons it.
+
+        Live case: 4164 ran 900.1 s against a 900 s budget, rc null, posted 0, and
+        was dropped from the spill even though the orphan child posted #4200
+        eleven seconds later. A killed turn is not a finished turn.
+        """
+        with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b, _t, _s):
+            port = free_port()
+            # The stub outlives the 1 s budget by ~1 s: that is the real shape of
+            # the defect — subprocess.run gives up at the budget, but the pipe is
+            # held by the grandchild, so the wrapper cannot even return promptly.
+            with self._launch(b, port, STUB_SLEEP="2", WAKE_TIMEOUT="1",
+                              WAKE_RETRY_MAX="2") as svc:
+                url = f"http://127.0.0.1:{port}"
+                st, body = post(url + "/wake/alpha",
+                                {"from": "t", "topic": "wake", "text": "@alpha dies",
+                                 "message_id": 7001})
+                self.assertEqual(st, 200, body)
+                got = wait_for(lambda: get_json(url + "/health")["retried"] >= 1, timeout=25)
+                self.assertTrue(got, f"no retry after a dead turn: {get_json(url + '/health')}")
+                got = wait_for(lambda: get_json(url + "/health")["abandoned"] == 1, timeout=40)
+                self.assertTrue(got, f"never abandoned at the cap: {get_json(url + '/health')}")
+                h = get_json(url + "/health")
+                self.assertEqual(h["retried"], 2, h)      # attempt 1 and attempt 2
+                self.assertTrue(wait_for(lambda: spill_lines(self.spill) == [], timeout=10),
+                                f"abandoned record still on disk: {spill_lines(self.spill)!r}")
+            starts = 0
+            if os.path.exists(self.count):
+                with open(self.count) as fh:
+                    starts = fh.read().count("start")
+            self.assertEqual(starts, 3, f"expected 3 spawns (1 + 2 retries), got {starts}")
+
+    def test_a_turn_killed_by_a_stop_is_re_spilled(self):
+        """G: rc=-15 with no reply is not a finished turn either.
+
+        Live: the 00:16:37 restart killed the two active wrappers — buzzy/4205 and
+        game/4203 both logged rc=-15, posted 0 — and the old code dropped both
+        records. A stop is the one kill the dispatcher causes itself.
+        """
+        with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b, _t, _s):
+            port = free_port()
+            stub = os.path.join(self.tmp, "suicide-stub.sh")
+            with open(stub, "w") as fh:
+                fh.write("#!/bin/sh\necho start >> \"$STUB_COUNT\"\nkill -TERM $$\n")
+            os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
+            with self._launch(b, port, WAKE_BIN=stub, WAKE_RETRY_MAX="1") as svc:
+                url = f"http://127.0.0.1:{port}"
+                st, body = post(url + "/wake/alpha",
+                                {"from": "t", "topic": "wake", "text": "@alpha dies",
+                                 "message_id": 7200})
+                self.assertEqual(st, 200, body)
+                got = wait_for(lambda: get_json(url + "/health")["retried"] >= 1, timeout=20)
+                self.assertTrue(got, f"rc=-15 was treated as finished: {get_json(url + '/health')}")
+                got = wait_for(lambda: get_json(url + "/health")["abandoned"] == 1, timeout=20)
+                self.assertTrue(got, f"never abandoned at the cap: {get_json(url + '/health')}")
+
+    def test_duplicate_records_on_disk_collapse_to_one_turn(self):
+        """F: the spill file is the durable duplicate key, not the 600 s TTL.
+
+        The live spill carried buzzy/4205, buzzy/4212 and buzzy/4220 twice each.
+        """
+        with bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000") as (b, _t, _s):
+            with open(self.spill, "w") as fh:
+                for seq in (1, 2):
+                    fh.write(json.dumps({"seq": seq, "profile": "alpha",
+                                         "payload": {"from": "t", "topic": "wake",
+                                                     "text": "@alpha twice",
+                                                     "message_id": 7100}}) + "\n")
+            port = free_port()
+            with self._launch(b, port, STUB_SLEEP="1") as svc:
+                url = f"http://127.0.0.1:{port}"
+                got = wait_for(lambda: get_json(url + "/health")["done"] >= 1, timeout=25)
+                self.assertTrue(got, f"the surviving record never ran: {get_json(url + '/health')}")
+                self.assertTrue(wait_for(lambda: spill_lines(self.spill) == [], timeout=10),
+                                f"spill not drained: {spill_lines(self.spill)!r}")
+                time.sleep(1.0)
+            starts = 0
+            if os.path.exists(self.count):
+                with open(self.count) as fh:
+                    starts = fh.read().count("start")
+            self.assertEqual(starts, 1, f"duplicate key ran {starts} turns")
+
 
 class DeriveTests(unittest.TestCase):
     """The cutover tool's one rule: unanswered mention == accepted-but-unfinished wake."""

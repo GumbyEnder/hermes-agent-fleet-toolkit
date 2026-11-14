@@ -21,6 +21,8 @@ Env:
   WAKE_MAX_QUEUE         queued mentions allowed before 429 (default 20)
   WAKE_TIMEOUT           seconds per turn (default 900)
   WAKE_DEDUPE_TTL        seconds to remember a delivered mention (default 600)
+  WAKE_RETRY_MAX         re-spills for a turn that died with no reply, before it
+                         is abandoned (default 2; 0 disables retries)
   WAKE_TEXT_MAX          last-resort cap on the mention body (default 100000);
                          only reached when the re-fetch fails, and a cut is
                          always marked in the prompt
@@ -84,6 +86,7 @@ def timeout_for(profile):
 
 
 DEDUPE_TTL = int(os.environ.get("WAKE_DEDUPE_TTL", "600"))
+RETRY_MAX = max(0, int(os.environ.get("WAKE_RETRY_MAX", "2")))
 
 START = time.time()
 _work = queue.Queue(maxsize=MAX_QUEUE)
@@ -96,6 +99,9 @@ _done = 0
 _failed = 0
 _deduped = 0
 _rejected_full = 0
+_retried = 0
+_abandoned = 0
+_skipped_answered = 0
 
 # --- spill: the queue lives in this process, so a restart used to eat it -------
 # A SIGTERM dropped every accepted-but-unfinished wake: the HTTP 200 had already
@@ -103,11 +109,34 @@ _rejected_full = 0
 # (bus_watch advances its cursor on 200). Every accepted payload is therefore
 # written to WAKE_SPILL until its turn finishes, and re-queued at startup.
 _spill_lock = threading.Lock()
-_pending = {}           # seq -> {"profile": str, "payload": dict}
-_overflow = []          # seqs spilled because _work was full, oldest first
+_pending = {}           # seq -> {"profile": str, "payload": dict, "attempts": int}
+_overflow = []          # seqs HELD because _work was full, oldest first
 _seq = int(time.time() * 1000)
 _draining = False
 SPILL_MAX = max(1, int(os.environ.get("WAKE_SPILL_MAX", "200")))
+
+
+def _spill_key(profile, payload):
+    """Identity of a wake: one turn per (profile, message). None when unknown."""
+    mid = payload.get("message_id") if isinstance(payload, dict) else None
+    return (profile, mid) if isinstance(mid, int) and mid > 0 else None
+
+
+def _key_held_locked(profile, payload):
+    """Seq already holding this (profile, message) in the spill, or None.
+
+    The TTL dedupe in `_claim` forgets a mention after 10 minutes, which is why
+    the same message woke a profile twice 37 minutes apart (4148 -> 4173, 4188)
+    and why the spill file carried the same key twice. The spill outlives the
+    TTL, so the file itself is the durable answer to "is this already queued".
+    """
+    k = _spill_key(profile, payload)
+    if k is None:
+        return None
+    for seq, rec in _pending.items():
+        if _spill_key(rec["profile"], rec["payload"]) == k:
+            return seq
+    return None
 
 
 def _spill_flush_locked():
@@ -116,6 +145,8 @@ def _spill_flush_locked():
     Whole-file rewrite inside one process, at most MAX_QUEUE+MAX_CONC records, so
     cost is a few hundred bytes. os.replace keeps the file readable to any
     observer (a truncated file would read as "queue empty" at the next boot).
+    The attempt count is persisted: a turn that dies on a budget kill must not
+    restart its retries from zero every time the dispatcher is restarted.
     """
     tmp = SPILL + ".tmp"
     try:
@@ -131,12 +162,17 @@ def _spill_flush_locked():
         log(evt="spill_write_failed", path=SPILL, error=str(e)[:200])
 
 
-def _spill_add(profile, payload):
+def _spill_add(profile, payload, attempts=0):
+    """Add a wake to the spill. Returns its seq, or None when the key is held."""
     global _seq
     with _spill_lock:
+        held = _key_held_locked(profile, payload)
+        if held is not None:
+            return None
         _seq += 1
         seq = _seq
-        _pending[seq] = {"profile": profile, "payload": payload}
+        _pending[seq] = {"profile": profile, "payload": payload,
+                         "attempts": attempts}
         _spill_flush_locked()
         return seq
 
@@ -151,6 +187,50 @@ def _spill_drop(seq):
             _spill_flush_locked()
 
 
+def _spill_retry(seq, profile, payload):
+    """A turn died with no reply: hold its record for another attempt.
+
+    Timeout is the case that forced this. `subprocess.run(timeout=...)` returns
+    control to the wrapper, but the turn child can outlive it and post later
+    (4164: rc null at 900.1 s, posted_id 0 — the orphan posted #4200 eleven
+    seconds after the dispatcher gave up). Dropping the record loses the mention
+    when the orphan dies, and re-running it blindly double-posts when it does
+    not. So: hold it, and let the answered-check at re-entry decide.
+    """
+    global _retried, _abandoned
+    with _spill_lock:
+        rec = _pending.get(seq)
+        if rec is None:
+            return False
+        attempts = rec.get("attempts", 0)
+        if attempts >= RETRY_MAX:
+            _pending.pop(seq, None)
+            try:
+                _overflow.remove(seq)
+            except ValueError:
+                pass
+            _spill_flush_locked()
+            give_up = True
+        else:
+            rec["attempts"] = attempts + 1
+            if seq not in _overflow:
+                _overflow.append(seq)
+            _spill_flush_locked()
+            give_up = False
+    mid = payload.get("message_id") if isinstance(payload, dict) else None
+    if give_up:
+        with _lock:
+            _abandoned += 1
+        log(evt="wake_abandoned", profile=profile, message_id=mid,
+            attempts=attempts, retry_max=RETRY_MAX)
+        return False
+    with _lock:
+        _retried += 1
+    log(evt="wake_retry_spilled", profile=profile, message_id=mid,
+        attempt=attempts + 1, retry_max=RETRY_MAX)
+    return True
+
+
 def _enqueue(profile, payload, seq):
     """Put a record on the work queue, or hold it for the pump when the queue is full.
 
@@ -159,6 +239,8 @@ def _enqueue(profile, payload, seq):
     the six hours to 18:50 on 2026-11-13). A record is now accepted once it is on
     disk; the in-memory queue is just the working window.
     """
+    if seq is None:          # duplicate key already held; nothing to enqueue
+        return False
     try:
         _work.put_nowait((profile, payload, seq))
         return True
@@ -213,10 +295,13 @@ def _spill_load():
             profile, payload = rec["profile"], rec["payload"]
             if not isinstance(profile, str) or not isinstance(payload, dict):
                 raise ValueError("bad record shape")
+            attempts = int(rec.get("attempts", 0) or 0)
+            if attempts < 0:
+                raise ValueError("bad attempts")
         except Exception:  # noqa: BLE001
             bad += 1
             continue
-        out.append((profile, payload))
+        out.append((profile, payload, attempts))
     log(evt="spill_load", path=SPILL, records=len(out), malformed=bad)
     return out
 
@@ -395,6 +480,12 @@ def _run_one(profile, payload, lock_fd=-1):
                            stdin=subprocess.DEVNULL, **kwargs)
         rc, reply = r.returncode, (r.stdout or "").strip()[-4000:]
         err = (r.stderr or "")[:400]
+    except subprocess.TimeoutExpired:
+        # TimeoutExpired's str() carries the whole argv, i.e. the entire prompt,
+        # which would put the mention in the journal a second time. And the kill
+        # reached this wrapper, not necessarily the turn: the child can outlive
+        # it and post later (4164 -> orphan #4200, 11 s after we gave up).
+        err = f"timeout after {budget}s"
     except Exception as e:  # noqa: BLE001
         err = str(e)[:400]
     posted = _post_reply(profile, payload.get("topic", "general"), reply,
@@ -409,6 +500,7 @@ def _run_one(profile, payload, lock_fd=-1):
         dur_s=round(time.time() - started, 1), budget_s=budget,
         prompt_chars=len(text), text_src=text_src,
         reply_chars=len(reply), posted_id=posted, error=(err[:200] or None))
+    return {"rc": rc, "reply": reply, "err": err, "posted": posted}
 
 
 def _gate_for(profile):
@@ -424,7 +516,7 @@ def _gate_for(profile):
 
 
 def _worker():
-    global _active, _rejected_full
+    global _active, _rejected_full, _skipped_answered
     while True:
         profile, payload, seq = _work.get()
         gate = _gate_for(profile)
@@ -449,8 +541,27 @@ def _worker():
             continue
         with _lock:
             _active += 1
+        retry = False
         try:
-            _run_one(profile, payload, lock_fd)
+            # The answered-check belongs at the choke point, not only at boot.
+            # Boot-time was the only place it ran, so a re-delivered or repumped
+            # mention ran a whole turn under a message that already had this
+            # profile's reply: 4148 -> 4173 then 4188 (37 min apart, past the
+            # 600 s TTL), 4073 -> 4136 then a 900 s turn that could only post
+            # duplicate coverage (4204). Inside the profile gate no turn of ours
+            # is in flight, so "a reply exists" cannot be our own work in progress.
+            mid = payload.get("message_id")
+            if _already_answered(profile, mid):
+                with _lock:
+                    _skipped_answered += 1
+                log(evt="wake_skip_answered", profile=profile, message_id=mid)
+            else:
+                out = _run_one(profile, payload, lock_fd)
+                # "Finished" means a clean exit. rc=-15 (the service was stopped
+                # under the turn) and a budget kill (rc None) both leave a turn
+                # with no reply; neither is an answer. rc=0 with empty stdout is
+                # a model that chose silence, and that is allowed.
+                retry = bool(not out["reply"] and (out["err"] or out["rc"] != 0))
         finally:
             with _lock:
                 _active -= 1
@@ -460,7 +571,10 @@ def _worker():
                     os.close(lock_fd)   # the child's inherited copy owns it now
                 except OSError:
                     pass
-            _spill_drop(seq)
+            if retry:
+                _spill_retry(seq, profile, payload)
+            else:
+                _spill_drop(seq)
             _work.task_done()
 def sd_notify(state):
     """Minimal sd_notify: READY=1 and WATCHDOG=1 without a dependency."""
@@ -513,7 +627,15 @@ class H(BaseHTTPRequestHandler):
                         "done": _done, "failed": _failed, "deduped": _deduped,
                         "rejected_full": _rejected_full,
                         "draining": _draining,
-                        "spilled": spilled, "overflow": len(_overflow),
+                        "spilled": spilled,
+                        # HELD, not rejected: records on disk waiting for a queue
+                        # slot. The old name ("overflow") read as "dropped at the
+                        # cap" and oscillated 1..9 on every pump tick, which is
+                        # what a hold looks like. Rejections are rejected_full.
+                        "held_for_repump": len(_overflow),
+                        "retried": _retried, "abandoned": _abandoned,
+                        "skipped_answered": _skipped_answered,
+                        "retry_max": RETRY_MAX,
                         "spill_path": SPILL,
                         "lock_dir": LOCK_DIR,
                         "timeout_s": TIMEOUT,
@@ -558,6 +680,14 @@ class H(BaseHTTPRequestHandler):
             self._json({"ok": True, "duplicate": True, "profile": profile})
             return
         seq = _spill_add(profile, m)
+        if seq is None:
+            # Same (profile, message_id) is still queued: the durable spill, not
+            # the 600 s TTL window, is what makes this idempotent.
+            with _lock:
+                _deduped += 1
+            self._json({"ok": True, "duplicate": True, "held": True,
+                        "profile": profile})
+            return
         with _lock:
             draining = _draining
         with _spill_lock:
@@ -594,16 +724,18 @@ def main():
     # Re-queue whatever the previous process accepted but never finished. The
     # already-answered check is what makes a restart safe: a turn killed after it
     # posted is dropped here instead of double-posting under the same mention.
+    # Two lines for the same (profile, message_id) collapse to one: the file
+    # outlives the 600 s dedupe window, so it is the durable duplicate guard.
     resumed = []
-    for profile, payload in _spill_load():
+    for profile, payload, attempts in _spill_load():
         mid = payload.get("message_id")
         if _already_answered(profile, mid):
             log(evt="spill_skip_answered", profile=profile, message_id=mid)
             continue
-        with _spill_lock:
-            _seq += 1
-            seq = _seq
-            _pending[seq] = {"profile": profile, "payload": payload}
+        seq = _spill_add(profile, payload, attempts)
+        if seq is None:
+            log(evt="spill_dup_dropped", profile=profile, message_id=mid)
+            continue
         resumed.append((seq, profile, payload))
     with _spill_lock:
         _spill_flush_locked()
