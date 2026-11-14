@@ -12,7 +12,9 @@
 # rc: 0 healthy, 1 repaired (was unarmed), 2 repair FAILED. A run that is still
 # active is HEALTHY (rc 0) by design -- restarting the timer under a live run
 # wedges it -- but it is bounded: past STUCK_AFTER the guard writes a STUCK? line
-# and keeps watching, and writes RUN ENDED when the run releases.
+# and keeps watching, and writes RUN ENDED when the run releases. A run that
+# EXITED non-zero is reported once as RUN FAILED -- the timer being armed does
+# not mean the last run produced anything (rc 0, observe only).
 #
 # THE AUTHORITY IS `list-timers`, NOT THE PROPERTIES. Measured here (systemd
 # 255): a MONOTONIC timer (OnUnitActiveSec) leaves BOTH NextElapseUSecRealtime
@@ -135,6 +137,33 @@ reap_flag() {   # announce and clear a flag left by a run that is gone
     rm -f "$STUCK_FLAG"
 }
 
+# A FAILED RUN IS NOT HEALTHY, EVEN WHEN THE TIMER RE-ARMED.
+# Measured 2026-11-14: the 11:05 grade run died at 11:28:41 with `syntax error
+# near unexpected token ';'` because grade-slot.sh was rewritten IN PLACE
+# (mtime 11:19:49) while the run still had the file open -- bash resumes a
+# script at a byte offset, so it read the new file mid-construct. The timer
+# re-armed for 12:05, NextElapseUSecRealtime was future, `busy` was false, so
+# every leg above read HEALTHY and the guard stayed silent while the 11:28 slot
+# went ungraded. An armed timer proves the next run will start, never that the
+# last one produced anything, so the activated unit's failure state is checked
+# here too. One line per failing run, deduped on (ExecMainStart, ExecMainStatus);
+# cleared when the unit is no longer failed, so "zero lines" keeps its meaning.
+# This leg observes only -- it never restarts, re-arms or grades anything.
+FAILED_FLAG=${FAILED_FLAG:-$LOG.failed}
+note_failed() {
+    local act failed key st start
+    act=$(activates_unit)
+    [ -n "$act" ] || return 0
+    failed=$(systemctl --user is-failed "$act" 2>/dev/null || true)
+    if [ "$failed" != failed ]; then rm -f "$FAILED_FLAG"; return 0; fi
+    st=$(systemctl --user show "$act" -p ExecMainStatus --value 2>/dev/null || true)
+    start=$(systemctl --user show "$act" -p ExecMainStartTimestamp --value 2>/dev/null || true)
+    key="$start rc=$st"
+    [ "$(cat "$FAILED_FLAG" 2>/dev/null)" = "$key" ] && return 0
+    say "RUN FAILED: $act started ${start:-?} exited rc=${st:-?} -- timer is armed, but that run produced no verdict (journalctl --user -u $act)"
+    printf '%s\n' "$key" > "$FAILED_FLAG" 2>/dev/null || true
+}
+
 healthy() {
     local st raw cand
     st=$(systemctl --user show "$TIMER" -p ActiveState --value 2>/dev/null || true)
@@ -186,6 +215,8 @@ pre_state() {
     lt=$(systemctl --user list-timers --output=json --all "$TIMER" 2>/dev/null | tr -d '\n')
     printf 'pre-state: %s list-timers: %s' "${props:-<none>}" "${lt:-<none>}"
 }
+
+busy || note_failed          # never attribute a live run's stale failure to it
 
 if healthy; then
     # A flag left by a run that released normally is reaped here: the release
