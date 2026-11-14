@@ -63,7 +63,27 @@ BIND = os.environ.get("WAKE_BIND", "127.0.0.1")
 PORT = int(os.environ.get("WAKE_PORT", "8095"))
 ALLOW = {p.strip() for p in os.environ.get("WAKE_ALLOW", "").split(",") if p.strip()}
 MAX_CONC = max(1, int(os.environ.get("WAKE_MAX_CONCURRENCY", "2")))
+# Concurrency is capped by PROFILE COUNT, not by cores: workers serialize per
+# profile (`_gate_for`), so a worker beyond the number of profiles with pending
+# work can only take a record, fail the gate or the gateway probe and defer it.
+# Measured 2026-11-14 on the reloaded build: 3 profiles had turns, 2 workers at
+# 95% duty (13 wakes, 4,458 s of turn time in 2,345 s x 2) — so 2->3 is a real
+# gain today (63% would be idle headroom) and a 4th worker buys gate probes, not
+# turns. Raise this with the profile count, not because the queue is full: a full
+# queue here is a level, and the overflow (spill/held) is what absorbs the excess.
 MAX_QUEUE = max(1, int(os.environ.get("WAKE_MAX_QUEUE", "20")))
+# A record deferred because its profile's gate or gateway is busy is PARKED: it
+# leaves the work queue and is not put back before its not-before deadline, and
+# then only when the gateway answers idle for that profile. Putting it straight
+# back is a spin, not a retry — `_enqueue` succeeds whenever `qsize` has room, so
+# a spare worker dequeued the same record milliseconds later, probed the same
+# busy gateway and deferred it again: measured at 20/20 the pump re-added a held
+# record within 1 s, and with two workers both burned their window on one
+# already-busy profile. The delay doubles per repeat park (5 -> 10 -> 20 -> 40 ->
+# 60 s cap) so a stalled profile costs ~1 probe/min per parked record, not ~1 per
+# worker turn.
+PARK_DELAY = max(1.0, float(os.environ.get("WAKE_PARK_DELAY", "5")))
+PARK_DELAY_MAX = max(PARK_DELAY, float(os.environ.get("WAKE_PARK_DELAY_MAX", "60")))
 TIMEOUT = int(os.environ.get("WAKE_TIMEOUT", "900"))
 TEXT_MAX = int(os.environ.get("WAKE_TEXT_MAX", "100000"))
 BUS_URL = os.environ.get("AGENT_CHAT_URL", "http://127.0.0.1:8090").rstrip("/")
@@ -144,6 +164,9 @@ _inqueue = set()        # seqs currently in _work (one copy each)
 _spill_lock = threading.Lock()
 _pending = {}           # seq -> {"profile": str, "payload": dict, "attempts": int}
 _overflow = []          # seqs HELD because _work was full, oldest first
+_park_lock = threading.Lock()
+_parked = {}            # seq -> {"profile", "not_before", "delay"}  (deferred, off-queue)
+_park_delay = {}        # seq -> current backoff; survives a requeue, cleared on drop
 _seq = int(time.time() * 1000)
 _draining = False
 SPILL_MAX = max(1, int(os.environ.get("WAKE_SPILL_MAX", "200")))
@@ -218,6 +241,7 @@ def _spill_drop(seq):
             except ValueError:
                 pass
             _spill_flush_locked()
+    _park_forget(seq)
 
 
 def _spill_retry(seq, profile, payload):
@@ -327,6 +351,114 @@ def _pump_loop():
                 moved += 1
         if moved:
             log(evt="spill_repump", moved=moved, overflow=len(_overflow))
+
+
+def _park(profile, payload, seq, why="", delay=None):
+    """Defer a record OFF the work queue until its not-before deadline.
+
+    The record stays in `_pending` (it is on disk, so a restart re-queues it) but
+    leaves `_work`/`_overflow`, so no worker can take it and re-defer it in the
+    same second. One log line per park; the escalation lives in `_park_delay`,
+    NOT in the `_parked` entry, because a requeue empties that entry — measured
+    2026-11-14: an orphan turn held the flock for 30 s and every cycle re-parked
+    at the base delay (5.0 s in every log line) instead of backing off.
+    """
+    if seq is None:
+        return False
+    now = time.time()
+    step = delay or PARK_DELAY
+    with _park_lock:
+        prev = _park_delay.get(seq)
+        wait = step if prev is None else min(max(prev, step) * 2, PARK_DELAY_MAX)
+        _park_delay[seq] = wait
+        _parked[seq] = {"profile": profile, "not_before": now + wait,
+                        "delay": wait}
+        first = prev is None
+    if first:
+        mid = payload.get("message_id") if isinstance(payload, dict) else None
+        log(evt="wake_parked", profile=profile, message_id=mid, why=why,
+            delay=round(wait, 1))
+    return True
+
+
+def _park_forget(seq):
+    """The record is gone for good: forget both its deadline and its backoff."""
+    with _park_lock:
+        _parked.pop(seq, None)
+        _park_delay.pop(seq, None)
+
+
+def _unpark(seq):
+    """Back on the queue/held list; keep the backoff so a re-park escalates."""
+    with _park_lock:
+        _parked.pop(seq, None)
+
+
+def _park_bump(seq):
+    """Push a parked record's deadline out without logging (bounded probe rate)."""
+    now = time.time()
+    with _park_lock:
+        rec = _parked.get(seq)
+        if rec is None:
+            return
+        rec["delay"] = min(rec["delay"] * 2, PARK_DELAY_MAX)
+        rec["not_before"] = now + rec["delay"]
+        _park_delay[seq] = rec["delay"]
+
+
+def _park_loop():
+    """Re-inject parked records only after their profile's gateway answers idle.
+
+    One gateway probe per profile per tick, never one per record: the probe is a
+    control call to the profile's gateway and a parked profile usually has
+    several records waiting. `unknown` (no gateway socket) fails open, exactly as
+    the worker path does — a gateway that is down cannot run the turn anyway.
+    """
+    while True:
+        time.sleep(0.5)
+        now = time.time()
+        due = {}
+        with _park_lock:
+            for seq, rec in _parked.items():
+                if rec["not_before"] <= now:
+                    due.setdefault(rec["profile"], []).append(seq)
+        for profile, seqs in due.items():
+            seqs.sort()
+            with _spill_lock:
+                live = [s for s in seqs if s in _pending]
+            for dead in set(seqs) - set(live):
+                _park_forget(dead)
+            if not live:
+                continue
+            gate = _gate_for(profile)
+            if not gate.acquire(blocking=False):
+                for s in live:      # a turn for this profile is running here
+                    _park_bump(s)
+                continue
+            try:
+                gstate = _gateway_turn_active(profile)[0]
+            except Exception:  # noqa: BLE001  (a probe must never kill the loop)
+                gstate = "unknown"
+            finally:
+                gate.release()
+            if gstate == "busy":
+                for s in live:
+                    _park_bump(s)
+                log(evt="park_still_busy", profile=profile, n=len(live))
+                continue
+            moved = 0
+            for s in live:
+                with _spill_lock:
+                    pend = _pending.get(s)
+                if pend is None:
+                    _unpark(s)
+                    continue
+                # queues it, or holds it in _overflow when the queue is full
+                _enqueue(pend["profile"], pend["payload"], s)
+                _unpark(s)
+                moved += 1
+            if moved:
+                log(evt="park_requeue", profile=profile, moved=moved)
 
 
 def _spill_load():
@@ -687,11 +819,13 @@ def _worker():
             _inqueue.discard(seq)
         gate = _gate_for(profile)
         if not gate.acquire(blocking=False):
-            # another turn for this profile is running: put this one back at the
-            # tail (or hold it on disk) so other profiles are not blocked.
-            _enqueue(profile, payload, seq)
+            # Another turn for this profile is running. PARK it: re-queueing put
+            # the record back where a second worker took it and deferred it again
+            # within milliseconds, so two workers spent their windows on one
+            # already-busy profile. The park loop re-probes this profile's gate
+            # after a delay and nothing else blocks behind it.
+            _park(profile, payload, seq, why="gate_local")
             _work.task_done()
-            time.sleep(0.5)
             continue
         lock_fd, holder = _acquire_profile_lock(profile)
         if lock_fd is None:
@@ -701,9 +835,8 @@ def _worker():
             log(evt="gate_held", profile=profile,
                 message_id=payload.get("message_id"), holder=(holder or None))
             gate.release()
-            _enqueue(profile, payload, seq)
+            _park(profile, payload, seq, why="gate_flock_held", delay=5.0)
             _work.task_done()
-            time.sleep(5.0)
             continue
         # An acquired flock means the wrapper that asked for the turn is gone — not
         # that the turn is. Ask the process that runs turns; only it can answer.
@@ -725,9 +858,8 @@ def _worker():
                 os.close(lock_fd)
             except OSError:
                 pass
-            _enqueue(profile, payload, seq)
+            _park(profile, payload, seq, why="gate_busy", delay=3.0)
             _work.task_done()
-            time.sleep(3.0)
             continue
         if gstate == "unknown":
             # No gateway answered: the gate is the flock alone, as before. Fail
@@ -816,11 +948,12 @@ class H(BaseHTTPRequestHandler):
             return
         # The counts are a partition, not four independent gauges: a record lives
         # in _pending for its whole life and sits in exactly one of _inqueue (a
-        # worker will take it), a worker's hands (taken, not yet dropped) or
-        # _overflow (held because the queue was full). `in_workers` is DERIVED
+        # worker will take it), a worker's hands (taken, not yet dropped),
+        # _overflow (held because the queue was full) or _parked (deferred until
+        # its profile's gate/gateway answers idle). `in_workers` is DERIVED
         # from those sets instead of counted, because the gate/gateway deferral
-        # paths hold a record outside the queue for seconds and a hand-kept
-        # counter would need decrementing on every one of those `continue`s.
+        # paths hold a record outside the queue and a hand-kept counter would need
+        # decrementing on every one of those `continue`s.
         with _spill_lock:
             pend = set(_pending)
             held_raw = len(_overflow)
@@ -828,21 +961,26 @@ class H(BaseHTTPRequestHandler):
         with _lock:
             inq = set(_inqueue)
             active = _active
+        with _park_lock:
+            park = set(_parked)
         held_set = set(held)
         partition = {
             "spilled": len(pend),
             "on_queue": _work.qsize(),
             "on_queue_set": len(inq),
-            "in_workers": len(pend - inq - held_set),
+            "in_workers": len(pend - inq - held_set - park),
             "active_turns": active,
             "held": len(held_set),
-            # The three ways the partition can be wrong, each counted so an
-            # `ok:false` says which one fired instead of sending the reader back
-            # to the source mid-queue.
+            "parked": len(park),
+            # The ways the partition can be wrong, each counted so an `ok:false`
+            # says which one fired instead of sending the reader back to the
+            # source mid-queue.
             "orphan_queued": len(inq - pend),      # queued, no spill record
             "orphan_held": len(held_set - pend),   # held, no spill record
-            "dupes": len(inq & held_set),          # in two places at once
-            "ok": not (inq - pend) and not (held_set - pend) and not (inq & held_set),
+            "orphan_parked": len(park - pend),     # parked, no spill record
+            "dupes": len(inq & held_set) + len(park & (inq | held_set)),
+            "ok": (not (inq - pend) and not (held_set - pend) and not (park - pend)
+                   and not (inq & held_set) and not (park & (inq | held_set))),
         }
         self._json({"status": "ok", "allowed": sorted(ALLOW),
                     "active": active, "queued": _work.qsize(),
@@ -856,6 +994,10 @@ class H(BaseHTTPRequestHandler):
                     # cap" and oscillated 1..9 on every pump tick, which is
                     # what a hold looks like. Rejections are rejected_full.
                     "held_for_repump": held_raw,
+                    # Deferred off the queue until its profile's gate answers
+                    # idle: counted, so "where did the record go" has an answer
+                    # that is not a guess.
+                    "parked": len(park),
                     "partition": partition,
                     "retried": _retried, "abandoned": _abandoned,
                     "skipped_answered": _skipped_answered,
@@ -991,6 +1133,7 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     threading.Thread(target=watchdog_loop, daemon=True).start()
     threading.Thread(target=_pump_loop, daemon=True).start()
+    threading.Thread(target=_park_loop, daemon=True).start()
     sd_notify("READY=1")
     log(evt="start", bind=BIND, port=PORT, allowed=sorted(ALLOW),
         workers=MAX_CONC, queue=MAX_QUEUE, timeout=TIMEOUT, spill=SPILL)

@@ -80,6 +80,15 @@ class SpillTests(unittest.TestCase):
                     "WAKE_MAX_CONCURRENCY": "1", "WAKE_MAX_QUEUE": "10",
                     "WAKE_DEDUPE_TTL": "60",
                     "WAKE_SPILL": self.spill, "STUB_COUNT": self.count,
+                    # The flock lives in WAKE_LOCK_DIR, and its default is the
+                    # LIVE fleet's ~/agents/agent-chat/locks. Without this line a
+                    # test on profile `alpha` inherits whatever else is holding
+                    # alpha.lock — measured 2026-11-14: a stub child left by an
+                    # earlier case in the same batch held it for 30 s and two
+                    # cases failed at gate_held on both the pre-park and the
+                    # parked build. A test must not read, or write, the fleet's
+                    # lock directory.
+                    "WAKE_LOCK_DIR": os.path.join(self.tmp, "locks"),
                     "STUB_SLEEP": "30"})
         env.update(over)
         return env
@@ -183,8 +192,11 @@ class SpillTests(unittest.TestCase):
                 url = f"http://127.0.0.1:{port}"
                 h = get_json(url + "/health")
                 self.assertEqual(h["spilled"], 2, h)
-                # one record is immediately claimed by the single worker
-                self.assertEqual(h["queued"] + h["active"], 2, h)
+                # One record is immediately claimed by the single worker, and a
+                # record whose profile is still held by the SIGTERM'd process's
+                # surviving turn child is PARKED rather than queued — it must not
+                # race the orphan. Every state that still owns a record counts.
+                self.assertEqual(h["queued"] + h["active"] + h["parked"], 2, h)
                 got = wait_for(lambda: get_json(url + "/health")["done"] >= 2,
                                timeout=40)
                 self.assertTrue(got, f"resumed turns never finished: "
