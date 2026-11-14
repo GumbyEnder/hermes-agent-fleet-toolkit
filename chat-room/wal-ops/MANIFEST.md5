@@ -21,6 +21,6 @@ b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 ee5890c0eaa2b15667945eaa0159e12a  check-manifest.sh
 36e0ce49980097d0287aca6333caeb51  check-wal-doc-links.sh
 88ab9035620fe2688b84d3d71336c09a  test-grader-mixed-db.sh
-963a07c1e6a8f217c0918c5c027a009f  check-grade-timer.sh
+c395c173ae7c6bec67030b3a14cbb2c8  check-grade-timer.sh
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 45dfad832e8c773f49e3eea1622a8bfc  systemd/check-grade-timer.timer
