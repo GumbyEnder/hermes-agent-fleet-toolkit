@@ -1277,3 +1277,47 @@ Closure rule: enumerate the published set from the objects that RUN, not from th
 installed unit, and require each path to be either a leg or a written non-leg with a reason. A
 hand-listed table cannot enumerate a set nobody listed; a grep of the units can at least name the
 candidates, and the non-leg then has to be argued rather than omitted.
+
+## The enumerator: five unwitnessed paths, not one
+
+`enumerate-exec-set.sh` is the closure rule as a script, and it prints a ledger rather than an opinion.
+It greps `Exec(Start|StartPre|Stop|Reload)` out of `systemd/`, asks `systemctl show -p ExecStart` for every
+unit installed in `~/.config/systemd/user` and `/etc/systemd/system`, pulls every `*.sh`/`*.py` out of the
+directives (`bash -c '... exec /path/x.sh'` included), keeps the paths in this repo's universe, and
+classifies each one `LEG` / `INPLACE-REPO` / `NONLEG: <reason>` / `UNWITNESSED`. The last class fails the
+run. It also asserts the unit set in both directions and prints a `leg-no-executor` line per table row no
+installed unit runs. Measured at `090470e`, as user (the `/etc` root-owned units are read through
+non-interactive sudo): `paths=10 legs=2 inplace=3 nonleg=0 unwitnessed=5 extra_units=2 orphan_units=0
+legless=2 skipped_host_units=50 rc=1`.
+
+Two corrections to the story that produced it, both from the ledger rather than from argument.
+
+**The roster does see the units, in one direction.** `MANIFEST.md5` has 12 `systemd/*.service|*.timer`
+rows, one per repo unit file, and `check-manifest.sh` hashes all 12 on every run. What no token does is
+compare those bytes to an installed copy -- `LEG_TABLE` contains no unit, so `mirror_ok` counts 5 legs
+over 4 table rows and the units contribute none. So the unit hole is not "the roster cannot see units";
+it is 12 roster rows with zero legs, which is exactly the shape `verify-slot-manifest.sh` had before
+`9ff5b76`, repeated twelve times. If a unit leg is ever added it must be a directive comparison and not a
+digest: the installed `check-grade-timer.service`/.timer differ from the repo copies by one 0x0a apiece
+(`cmp` EOF at 602/193; installed ends `...Nice=10\n` and `...target\n`), which systemd's parser discards,
+and md5 prints the same red for that as for a changed `ExecStart`.
+
+**An enumeration whose origin is the tree reproduces the tree's blind spot.** Reading the exec set out of
+`systemd/` yields 8 distinct script paths; reading it out of the installed units yields 9, because
+`grade-slot.service` is the unit that is not in the tree. The ninth is the one the whole entry is about.
+That is the mechanical reason the rule says "objects that RUN" and not "units in the repo".
+
+The ledger's `UNWITNESSED` rows at `090470e`, each byte-identical to its repo file today, none in any
+table: `/mnt/nas/host-ops/agent-chat/` `check-grade-timer.sh` `a15db06f`, `wal-keeper.py` `5271966c`,
+`wal-unlink-watch.py` `2bbd0c25`, `wal-unlink-watch-verdict.py` `3a57232c` -- four hand-maintained NAS
+copies, the same class as the verifier before `9ff5b76`, each one an edit that changes nothing until
+somebody remembers to copy it -- and `~/agents/agent-chat/wal-checkpoint.sh` ino 15344036 nlink 1 against
+the repo copy's 17726110, the janitor at `README.md:14`, a `cp` nobody records into the directory the bus
+writes to. `unit-extra` adds `grade-slot.service`/.timer and `hermes-wake-dispatcher.service`: the unit
+that wakes every agent has no repo copy either. `leg-no-executor` reports `run-gate-logged.sh` and
+`verify-slot-manifest.sh` -- both real table rows, both invoked by hand or from another script, which is
+why that line is printed and not failed.
+
+Four NAS copies plus one out-of-tree copy plus two unrostered units is the honest count; "the unit is the
+hole" was one instance of it. Coverage is a property of a set that was enumerated, and the only set this
+directory can enumerate from its own contents is the one it already lists.
