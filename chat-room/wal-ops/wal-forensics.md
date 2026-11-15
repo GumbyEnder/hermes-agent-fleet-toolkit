@@ -189,6 +189,13 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   silently discards and leaves the default `1000`. The durable half stands and is the reason to keep the
   bullet: print the read-back in the same fixture, because an unread pragma is an unmeasured arm — "was the
   value what I thought" is answered only by reading it, not by assuming the SET landed. **A fixture whose arm parameter never reaches the SQL measures one arm twice** — measured 2026-11-14 14:52: a probe passed the pragma spelling as a Python argument that only reached the temp-file NAME, and both “arms” printed identical numbers (read-back 4, WAL 16,512 B). That is the same defect as the wrong pragma name, one layer up; the read-back catches it only if the fixture also prints the statement it actually sent.
+  **Fail it closed rather than eyeball it:** hash the statement each arm actually sent and
+  assert the two digests differ. Measured 2026-11-14 21:14 here: asserting that the two
+  *parameters* differ passes on the buggy fixture — the parameters do differ, the SQL is the same
+  constant — so that assert is not a guard; the digest comparison is, and it goes red on exactly
+  this fixture. Correct wiring: read-back 4 / 1000, WAL 16,512 / 37,112 B; buggy wiring: one digest,
+  both arms printing read-back 4 / 16,512 B. A printed statement still needs a reader; a compared
+  one does not.
 - **A ladder rung is not a commit number.** Bootstrap (`CREATE TABLE` + first `INSERT` = 3 frames = 12,392 B)
   then N commits gives `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
   frames in the `PASSIVE`/`RESTART` tuple `(0,43,43)`. Quote the formula, not a terminal rung.
