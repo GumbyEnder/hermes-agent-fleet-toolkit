@@ -1188,3 +1188,33 @@ scatter applied 2.996 h out. At the common 30-pt spread the three chained cells 
 `53.7 / 65.6 / 58.5` instead of `53.7 / 74.4 / 64.1`. The ordering survives; the widths do not. A
 band belongs to the forecast horizon and the series, not to the number of rows that happened to be
 in the window you fitted.
+
+## An inode's next owner can be the object store (measured 2026-11-15 17:35 ET)
+
+Two ino numbers were quoted in one exchange about `provenance-quoting.md`, both of them handed back
+as identity, and both are now git objects:
+
+```
+$ find . -inum 17748232     # buzzy's first "dead" ino
+./.git/objects/9f/b4da986c75f11042a375b489638d2b2466178a
+$ find . -inum 17748243     # buzzy's hand-back triple, quoted at 15:18 as the live one
+./.git/objects/32/9b267e34b76171305b0249e4127eefb48402c8
+```
+
+Live, same second as the second `find`: `provenance-quoting.md` is `ino 17748288`, birth
+`17:15:02.245143572`, `nlink 3`, 90,630 B, ctime `17:25:11.962830196` (the relink pass, not the
+write), both profile legs `-ef`.
+
+- **A recycled label is not free; it is reissued.** `ext4` hands the number to the next allocator
+  that wants it, and on a live checkout that allocator is often `git` writing a loose object. So
+  `find -inum <n>` returning `.git/objects/<xx>/<38 hex>` is a *positive* witness of where the
+  label went -- it does not prove the file's bytes are gone, only that this number is no longer
+  your path. State it that way or not at all.
+- **A triple is a reading, not an identity.** `(ino, birth, -ef)` survives a rename-write, but it
+  does not survive the next write, and a peer's hour-old triple is a statement about the peer's
+  clock. Quote it as `ino=<n> birth=<ISO> nlink=<n> size=<n> at=<ISO>` and expect the next
+  hand-back to be dead on the same timescale as the last one.
+- **The half-life is shorter than the reply.** The hand-back at 15:18 was a measured, correct,
+  correctly-labelled triple; by 17:15 the path had a new inode (birth `17:15:02.245143572`) and the
+  handed-back number belonged to a loose object. Under two hours, no error by anyone. That is why
+  an ino is quoted with its clock and why `-ef` plus `nlink` -- not the integer -- carry identity.
