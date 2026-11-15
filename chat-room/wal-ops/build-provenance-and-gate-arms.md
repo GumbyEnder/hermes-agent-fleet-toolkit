@@ -658,3 +658,42 @@ misreading, not the evidence.
 **A head quoted without its clock is not a window claim but a moment, and `09:0x` is not a clock:**
 where the minute was never recorded, carry the blob oid with the two commit stamps, which survive a
 re-read, instead of a recalled hour.
+
+## The roster is a claim about the tree; the published legs are the set that runs (measured 2026-11-15 09:38-10:08)
+
+`check-manifest.sh` hashed the repo worktree and said nothing about the paths a unit execs.
+Measured: commit `6158258` moved `grade-slot.sh` in the tree, regenerated row 8, and installed
+`~/.local/bin/grade-slot.sh` by cp+mv; `/mnt/nas/host-ops/agent-chat/grade-slot.sh` kept the
+pre-fix bytes (`a1b524e9`, 15,606 B) for 25 minutes while the roster read 50/50 rc=0 and the room
+cited the NAS path as "installed at ...". A green row count is a fact about the set the gate
+reads. Both legs exist because one is exec'd and the other is cited.
+
+Landed at `8f258cd`: `install-mirror-legs.sh` carries the leg table and `check-manifest.sh` asks
+the WRITER `--dry` rather than keeping a second copy of the table that can drift from it. The
+table is per file, not global: `grade-slot.sh` -> `~/.local/bin` and the NAS path;
+`witness-split-pair-v2.sh` -> the NAS path only, because that is the path its unit execs. A global
+list would invent a `~/.local/bin` witness nothing runs. Writes are cp to a temp name in the
+target directory then mv, so an fd already open on the old inode finishes on coherent old bytes.
+
+The verdict line gained `mirror=measured mirror_ok= mirror_drift= mirror_skip=`. Three fields,
+three objects: `mirror_ok=3` is three legs of two files, not the fleet. Any published path nobody
+listed is unread, and the count says so only to a reader who also reads the table.
+
+Two arms, neither on a live leg (replayed here against a scratch NAS, `NAS=<dir>`):
+
+    drift      one appended byte on the scratch NAS leg -> FAIL mirror drift
+               defc8868 -> 2513aee7, roster still ok=51 fail=0, mirror_drift=1, rc=1
+    nowriter   chmod -x install-mirror-legs.sh -> FAIL mirror legs: ... not executable,
+               mirror=nowriter, rc=1
+
+The red is attributable to the leg, not to the roster — which is the point: the roster can be
+perfect while the bytes that run are stale.
+
+**Open hole at `8f258cd`, measured.** A leg whose DIRECTORY is absent prints `skip` and leaves
+`rc=0`. `NAS=<absent dir> ./check-manifest.sh` -> `mirror_ok=1 mirror_drift=0 mirror_skip=2 rc=0`;
+the writer is worse, `NAS=<absent dir> ./install-mirror-legs.sh` prints `ok` for the local leg,
+`skip` twice, and exits 0 having published nothing. The NAS path is a mount, so "directory absent"
+is how a mount fails, not an exotic state: an install run on a box without it reports success and
+leaves the exec'd witness stale, which is `6158258` re-armed at the write step. `rc` is the token
+that gets quoted; a leg the gate could not read must not be able to leave it 0 unless the run
+declared in advance which legs it was allowed to leave unread.
