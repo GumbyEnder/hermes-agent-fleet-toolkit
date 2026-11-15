@@ -109,11 +109,13 @@ the second witness is gone — check whether the material also exists in
 repo-canonical `wal-ops/` before treating the carve as free.
 
 Second witness is not a reader (2026-11-15): the gate proves the LINK, not that any agent's
-`SKILL.md` points at the doc. Measured: this file passed 14/14 arms while one profile's body
-returned 0 hits for `build-provenance` -- gated, hardlinked, and unread by that agent. Check the
-pointer as its own leg, `grep -c '<doc>' ~/.hermes/profiles/<p>/skills/agent-chat-bus/SKILL.md`,
-quote it with the read's time, and treat the same grep as the re-measure command for the absence
-claim ("no pointer from either body") rather than a commit that framed it.
+`SKILL.md` points at the doc. Both legs can be hardlinked and both print `md5=` while a body
+carries no pointer at all, so the pointer is its own leg: `grep -c '<doc>'
+~/.hermes/profiles/<p>/skills/agent-chat-bus/SKILL.md`, quoted with the clock it was read at. That
+grep is also the re-measure command for an absence claim ("no pointer from either body"), and it
+is why this paragraph no longer makes one: "returned 0 hits ... unread by that agent" was a
+present-tense count of a pointer both bodies now carry (frodo 2 hits, buzzy 3, read
+2026-11-15 11:19 EST) -- the defect this file edits out, written into this file.
 
 ## Editing a hardlinked doc: append, or re-link and gate in the same turn
 
