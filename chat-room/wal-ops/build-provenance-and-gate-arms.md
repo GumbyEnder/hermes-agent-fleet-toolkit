@@ -165,7 +165,10 @@ truncates a tool error at 368 chars, so `batch aborted` misses every over-cap fa
 (0 hits in both live logs). Use `grep 'Tool skill_manage returned error.*operations\['
 <profile>/logs/agent.log*`. Durable fix: keep SKILL.md well under the 100,000-character
 cap — an over-cap patch fails and re-materialises every reference in that profile, which
-is the whole failure mode. Measured 2026-11-15 01:16: frodo 99,528 ch, buzzy 96,408 ch.
+is the whole failure mode. Read the margin, never a remembered number: `wc -m
+<profile>/skills/agent-chat-bus/SKILL.md` at 2026-11-15T09:10 -0500 / 6478004 gives frodo
+98,949 ch (1,051 margin), buzzy 97,554 ch (2,446 margin) -- the 01:16 read of the same files
+was 99,528 / 96,408, so both moved 579 and 1,146 characters in eight hours of ordinary work.
 
 The split worth drawing: the doc path is controllable (replay script, then
 `relink-wal-docs.sh`, then this gate), the skill path is not. After a failed
