@@ -191,11 +191,35 @@ commit that produced the build — one slot proves one mechanism, not a series.
 
 Existence is not completeness. The 0 B window above is bounded and reaches only peer
 globbers, so the fix is a reading rule, not another code change: **before grading any
-`pairsplit2-*.log`, `stat -c %s` it and require > 0, and require the final line to be
-a marker** — either `# flush-retry:` (present only when `_tries > 0`, and then always
-the last line written) or a `VERDICT:` line (the zero-retry path falls through to the
-presence/verdict block). A tail that ends on a bare journal line is a capture still
-being written: wait, do not grade.
+`pairsplit2-*.log`, `stat -c %s` it and require > 0, then read the tail under the cutover
+clause below — this rule has two arms and one head.** One regex cannot cover both: before
+`61e21f2` no verdict reached the file at all, because every `VERDICT:` in the witness is
+echoed OUTSIDE the `} | tee "$OUT"` group (the group closes at `:267`, the grade block runs
+from `:276`). Measured 2026-11-15 at `61e21f2`: `grep -c VERDICT` over every capture on
+disk returned 0, so "the zero-retry path falls through to a `VERDICT:` line" was never true
+of the file — it falls through to the journal.
+
+**Pre-trailer (`< 61e21f2`) — the last line is a marker of its era, and the verdict comes
+from the journal.** `tail -1` over the 62 captures on disk at 2026-11-15 08:58 gives three
+classes: 42 `# keeper ` (zero-retry), 18 `# flush-retry:` (present only when `_tries > 0`,
+and then always the last line written), 2 `# wal absent holders:` (the 11-13 pre-fix fuser
+artifacts). Count the classes with `tail -1`; do not copy the numbers — the 08:28 slot
+alone took 61 to 62. A tail that ends on a bare journal line is a capture still being
+written: wait, do not grade. For these artifacts the slot's verdict exists only in the
+unit journal, so read it there and name the slot it belongs to.
+
+**Post-trailer (`>= 61e21f2`) — exactly one
+`^# VERDICT: rc=[0-9]+ [A-Z_]+ late=[^ ]+ deadline=[0-9]+s$`, and it is the last line.**
+The trailer is appended with `>>` after the tee pipeline closed and after the flush-retry
+append (tee opens without `O_APPEND`, so a trailer written inside the group is overwritten
+at tee's own offset). Two trailers, a trailer that is not last, or a non-matching tail is a
+finding, not a shape to paper over. Absence means killed OR never reached the capture
+branch (exit 2 has no `OUT`; exit 3 runs before `: > "$OUT"`), so compare the trailer's
+`rc=` with `ExecMainStatus` and never read absence as "killed": an untrapped fatal signal
+runs the EXIT trap and writes a trailer that says `rc=0` (measured, bash 5.2.21). `late=`
+is computed from the artifact's own `checkpoint-pre:` `slot=`, never from `tail -1` of the
+checkpoint log (on an expired arm that is the previous hour and prints ~3600 s); no
+`slot=` line gives `late=absent`.
 
 Keep `: > "$OUT"`. Do not replace it with `mktemp` + rename. The exposure is named and
 bounded — nothing inside the script globs `pairsplit2-*` (only the usage comment and the
