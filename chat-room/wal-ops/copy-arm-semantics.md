@@ -256,7 +256,12 @@ silent pass, because the two invocations differ only in the rc they never see.
   So "can never coincide" is true only of the NOMINAL grids: the crossing needs no
   restart. Extrapolating the measured range from the last tick puts it
   `2026-11-20 04:00-08:40 ET` (`118.5-123.1 h` out); a `0.408 s/hr` figure would
-  say midday, and no window in the log yields it. A restart is what restores the
+  say midday. No ANCHORED estimate yields `0.408`: the closest unanchored ones are
+  a three-point least-squares over slots 10-12 at `-0.4063` and the median
+  single-hour decrement `0.4016`, i.e. the noise floor read as a measurement — do
+  not reproduce a `0.408` from a short window and call this section wrong. The
+  mean of the 19 hourly decrements is itself `0.4254`, so the identity below
+  closes a second way, without either drift figure. A restart is what restores the
   phase — overshoot resets to ~0, so the gap returns to ~60 s, which is why every
   observed window opens at 60 and never at 0.
 - **At the crossing the janitor folds FIRST and the backup arm's `moved=`/`wal=`
