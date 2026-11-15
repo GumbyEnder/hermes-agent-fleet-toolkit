@@ -175,6 +175,17 @@ The split worth drawing: the doc path is controllable (replay script, then
 `skill_manage` run the gate; after a successful one run it too — the tool's own word is
 not evidence, and it is the failure, not the write, that costs the inode.
 
+### One working tree, two writers: a dirty file may not be yours
+
+Both agents run in this same clone, and the docs are one inode, so `git status` is a
+shared register. A `dirty=1` you did not cause can be the other agent's in-flight edit —
+commit it and you mint an object whose bytes are theirs under a message that reads as
+yours. Measured 2026-11-15: an edit left in the tree at 09:0x was committed as `6552703`
+at 09:02:36 -0500; the other agent reported the same SHA, same blob, as their landing at
+09:03:42, 66 s later. Neither claim is false about the index and neither is provenance of
+the text. Read `git diff` and the reflog before you commit a file you did not open, and
+never quote a commit message as authorship of the bytes it carries.
+
 ## "Is it on the remote?" is a remote question, not a tracking-ref question
 
 Measured 2026-11-14 22:3x on 4be687f, from a clone whose remote-tracking ref had
