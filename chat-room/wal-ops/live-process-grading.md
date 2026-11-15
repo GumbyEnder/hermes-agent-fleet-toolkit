@@ -746,6 +746,24 @@ people check. Measured on this box 2026-11-15 00:22-00:25 ET against the two see
   writing into frodo's scratch is one profile naming another's evidence.
 - **The durable form is the one this repo already ships.** `systemd/*.service` + a MANIFEST row +
   `systemctl enable`. The seeder arms now live there as `hermes-seeder-watch-{frodo,buzzy}.service`
-  (`Restart=always`, `WantedBy=multi-user.target`, installed and enabled 00:24:28), and the transient
-  pair was stopped at 00:24:3x so that one observer watches each `references/` dir. Two observers on
-  one log do not double the evidence, they double `closes`.
+  (`Restart=always`, `WantedBy=multi-user.target`; that generation was installed and enabled
+  00:24:28 and replaced at 03:26:29 by commit 1619f79 -- same unit names, per-profile `--dir`/`--log`,
+  no restart), and the transient pair was stopped at 00:24:3x so that one observer watches each
+  `references/` dir. Two observers on one log do not double the evidence, they double `closes`.
+  The 03:26:29 generation recycles at **2026-11-16 03:26:29**, not at 00:24:28; a deadline copied
+  from the install time grades the wrong instant, and `grep -c '"stop"'` is 0 in both logs until then.
+- **The ownership repair writes `mtime`, so `mtime` stops being the arm's activity clock.** The
+  `ExecStartPre` `touch` sets mtime at every start, and the arm then appends its own `start` row, so
+  from the first recycle each log's mtime is the *current arm's start* -- permanently newer than the
+  newest event row. A fanotify arm that resolves nothing for a day still shows a fresh mtime at the
+  boundary. Measured on this box 2026-11-15 13:54 ET: `seeder-watch-buzzy.jsonl` reads mtime == ctime
+  == `2026-11-15 05:09:32.612547527` (its last event ts, 05:09:32) with `start 03:26:29`; after the
+  recycle the same file reads mtime ~= its newest `start` row while its last *event* row is still
+  2026-11-15 05:09:32. So
+  "log mtime is stale, therefore the arm is dead" dies at 03:26:29, and the log's own last `ts` plus
+  the `start`/`stop` pair count is the only live/dead evidence left. Budget one documented
+  mtime+ctime jump per log per 24 h, at the boundary, with the row set unchanged.
+- **Deferred, deliberately:** the buzzy log is still `root:root 0664` (ino 23495529) because the
+  repair lands at the boundary anyway and a `chown` now would bump ctime -- the field re-links are
+  graded by -- for no gain. If it is repaired early, the note is "ctime jump at <ts>, ino/size/mtime
+  and content untouched" and the ino is the thing to quote, not the mode.
