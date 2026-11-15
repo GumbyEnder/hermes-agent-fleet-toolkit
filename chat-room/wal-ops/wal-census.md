@@ -270,12 +270,23 @@ produce one (measured 309 vs 155 in one minute).
   connections are allowed. Measured 2026-11-14 on the 20-row artifact: 12 distinct pids → **10
   episodes** under this key; the 00:41:45→01:21:45 chain splits three ways (`3752901:4+7+9` →
   `+11` → `4+7`) and 03:21:50→03:31:50 (`237701:5+8` → `5+8+10`) splits the same way.
-  **Do not call the other column "holder-set equality":** runs of consecutive rows carrying an
-  identical verbatim `holders=` string (no Δt and no `no_delete_for` gate) gave 14/16/19/21 at
-  20 rows / 04:25 / 06:41 / 07:42, strict PID-set equality on the same cuts gives 12/13/16/18, and
-  distinct pids 12/13/17/19. Three different numbers, and the middle one is not an episode count at
-  all — name the quantity (episodes / runs / distinct values), never the "key".
-  Distinct holder count discriminates nothing — it grows in every reading (11 pids/19 rows, 12/20, 13/23).
+  **Do not call the other column "holder-set equality":** over the same frozen 20-row artifact
+  (`census/20261114T082421Z/`, pair sha256 `b92c806b…` + `2d81cea0…`), runs of consecutive rows
+  carrying an identical verbatim `holders=` string (no Δt and no `no_delete_for` gate) = **14**,
+  strict PID-set equality = **12**, episodes = **10**, distinct pids = **12**. Four quantities,
+  four numbers, one dataset, and neither the middle pair nor the run count is an episode count.
+  **A count is a (parser, window) pair, and the window bound is not recoverable from the parser.**
+  On a frozen artifact the window is the whole directory; on any live or growing file the count is
+  a function of the slice, so quote the slice (stamp or row index) with the number and never a bare
+  series. `episodes-cut.py` in this directory prints pids and all three parsers for a named window
+  (`./episodes-cut.py`, `--first N`, `2026-11-14T01:00`), so a reader re-runs the number instead of
+  trusting it. A cut series published without its script is a memory, not a count: the 2026-11-14
+  note "14/16/19/21 at 20 rows / 04:25 / 06:41 / 07:42, strict 12/13/16/18, pids 12/13/17/19" is
+  **withdrawn** 2026-11-15 — no cut of this data yields those values, and there is no WAL-IDLE row
+  at 11-14T04:25, 06:41 or 07:42 at all, so all three "cuts" select the same 20 rows (measured
+  now: rows 20/20/20, episodes 10/10/10).
+  Distinct holder count discriminates nothing — it grows in every reading (11 pids/19 rows,
+  12/20 on the frozen pair).
 - **A holder can hand over mid-episode, so one episode is not one pid.** 22:48:22 `holders=3249971:4`,
   22:58:22 `holders=3249971:4,3314691:4+7+9`, 23:08:23 `holders=3314691:4+7+9` — three rows, two pids,
   one continuous idle run (`no_delete_for` 600→1200→1800, age 1232→1832→2432). Quote `holders=`
