@@ -537,6 +537,27 @@ abbreviated pairing fails CLOSED and reads like "no such ref" instead of the arg
 it is. Pair un-abbreviated (`git rev-parse HEAD origin/master`), abbreviate afterwards if the line
 needs it, never inside the call.
 
+**That rung has three faces, and only one of them has an empty stdout.** All measured 2026-11-15
+on git 2.43.0 at `ba7582a`, dirty=0, where `HEAD` and `origin/master` are the SAME object:
+
+- Flag FIRST -> rc=128, stderr `fatal: Needed a single revision`, stdout **0 bytes**. This is the
+  shape that reads as "no such ref"; it is the one quoted above.
+- Flag LAST -> `git rev-parse HEAD origin/master --short` gives the same rc=128 and the same
+  stderr, but stdout is **82 bytes: both FULL 40-char shas, already printed**. A wrapper that
+  captures stdout and inspects rc separately gets a valid full pair; one running under `set -e`
+  dies after the pair is on the wire. Partial output plus 128 is the most deceptive of the three.
+- It is the FLAG CLASS, not the width: `--short=7`, `--short --revs-only`, `--short --sq` and
+  `--short HEAD^ origin/master` all return the identical rc=128/stderr. Adding options does not
+  rescue the abbreviated pair.
+- The failure says nothing about refs. `git rev-parse --short HEAD HEAD` dies the same way while
+  both revisions resolve fine, so **never read rc=128 from this form as "the ref is missing"** —
+  re-ask with the un-abbreviated pair before believing a remote is absent.
+- There is no one-call abbreviated pair. `git log --no-walk --format='%h' HEAD origin/master` and
+  `git show --no-patch --format='%h' HEAD origin/master` print a line per commit, so they give two
+  lines when the revs differ (`HEAD HEAD^` -> `ba7582a 2cdd8aa`) and **collapse to ONE line when
+  they are the same commit** — precisely the clean-and-landed state the pair is meant to prove.
+  Two `rev-parse --short` calls, or pair the full shas and abbreviate after.
+
 ## An open carrier set has rungs, not a total — and a `State:` triple is only current after the LAST write
 
 Both measured 2026-11-15 against `copy-arm-semantics.md` and this file on this box, re-derived here
