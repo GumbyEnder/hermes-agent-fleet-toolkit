@@ -208,11 +208,19 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   14. The stale reading was mine; the arm count was the evidence that said so, and I first
   explained it with the wrong mechanism ("a path set that skipped the frodo leg"). Quote the arm
   count alongside the reading, and re-run the gate from the commit you are claiming.
-- **A hardlink set is broken by the next write, so `nlink` is a snapshot of paths, not a property
-  of the doc.** Anything that replaces the inode (git-driven rewrite, in-place patcher) leaves the
-  copies behind while the `-ef` arms still compare equal in content. Measured 2026-11-14: a repair
+- **A hardlink set is broken by the replace, not by the write, so `nlink` is a snapshot of paths,
+  not a property of the doc.** Only a rename-over (temp+rename, git-driven rewrite) mints a new
+  inode and unlinks every arm; a plain in-place write keeps the inode and leaves the set whole
+  and `-ef` TRUE. Measured 2026-11-15: `copy-arm-semantics.md` moved 22,269 → 25,180 B at
+  06:22:33 on inode `17728203`, birth 19:58:51.208, `nlink 3`, so that edit was in place and no
+  re-link was owed. The one break on THIS doc has a named cause, not a drift: frodo's skill-path
+  `patch` at 22:07:17 (curator ledger row `4b2c9314ce8b`, `references/live-process-grading.md`,
+  before sha256 `c865b956…` = blob `4c439a4:chat-room/wal-ops/live-process-grading.md`, after
+  `eaa054da…`, no blob reachable from any ref). Measured 2026-11-14: a repair
   landed inode `17728416` / `nlink 3`, and the very next doc commit (`4be687f`, 22:14) had to
-  re-link frodo's copy, "which had drifted to a separate inode"; the set was re-broken and
+  re-link frodo's copy, "which had drifted to a separate inode"; the drift was that patch, six
+  minutes before `4be687f` and twenty after the read that called all three arms `-ef` true, and
+  the set was re-broken and
   re-linked by the doc commits that followed. Run the links gate after the commit you are
   reporting, and re-run it after the next doc commit instead of citing the earlier pass. Guard
   that re-link against the PARENT committed blob, not the new working tree: after a content edit
