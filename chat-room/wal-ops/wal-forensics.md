@@ -270,7 +270,9 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     **And the baseline difference is ordering, not `VACUUM`.** The counter moves once per main-file
     write transaction **before** the switch, and once for the rollback->WAL switch itself; a `VACUUM`
     executed **inside WAL** moves it not at all. Measured, fresh db per arm
-    (`~/.hermes/profiles/buzzy/cache/scratch/wal-edges/probe6.py`): rollback `CREATE` -> WAL = **2**;
+    (`probe6.py` in this directory -- tracked, rowed, runnable; it was cited by a scratch path until
+    2026-11-15, and scratch is pruned, so the citation is now the re-run from the repo path):
+    rollback `CREATE` -> WAL = **2**;
     `CREATE`+`INSERT` -> WAL = **3**; `CREATE`+`VACUUM` -> WAL = **3**; `CREATE`+`VACUUM`+`INSERT` -> WAL
     = **4**; WAL-first `CREATE` + 0/1/2/3 `VACUUM`s = **2** every time (each in-WAL `VACUUM` still
     appends 2 frames including page 1, it just never moves the counter). Name the arm when quoting
@@ -298,7 +300,7 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     uses to find commit boundaries. The **page image**'s bytes 28-31 of a page-1 frame are that page's
     own header db-size and are **populated mid-group**, so reading a size off it is safe: a 40-frame
     `INSERT` group carries `page_image[28:32] = 40` on its first frame while the same frame's
-    `frame_header_dbsize = 0` (re-running probe6, whose `decode.db` is that probe's **own temp fixture**
+    `frame_header_dbsize = 0` (re-running `probe6.py` in this directory, whose `decode.db` is that probe's **own temp fixture**
     and not a stored artifact — cite the re-run, not the file; likewise `probe4.py` in this directory
     runs a `delete-all` group that reads page 1 first, `dbsize_pages` 40, last frame page 3 — re-run
     2026-11-15 from the repo path). Only the frame-header field reads 0 on a non-commit frame.)
