@@ -194,8 +194,14 @@ if [ "$FORCE" = 0 ] && [ "$DRY" = 0 ] && [ -e "$GUARD_DIR/$slot_tag" ]; then
   exit 0
 fi
 
-# The witness runs every 5 min and captures a WINDOW, so the log covering this
-# slot is written up to ~5 min AFTER the slot second. Pick the OLDEST log whose
+# The witness runs HOURLY, not every 5 min, and captures a WINDOW: measured over
+# six consecutive captures (092835, 102835, 112835, 122835, 132835, 142835 on
+# 2026-11-15) the spacing is exactly 3600 s and each capture lands ~2 s AFTER its
+# own slot second, so the log covering this slot exists a couple of seconds after
+# it, not "up to ~5 min" after. The sentence here said "every 5 min / up to ~5
+# min AFTER" until 2026-11-15; the 300 s floor below is inherited from it and is
+# kept only because a floor that is too low never excludes a covering capture --
+# it is a lower bound, not the cadence. Pick the OLDEST log whose
 # "# captured" is >= the slot, and wait for it.
 # Why oldest and not newest: the test is one-sided (captured >= slot_ep), so in a
 # backfill EVERY later capture satisfies it and `ls -1t | head -6` handed back the

@@ -5,7 +5,7 @@ a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
 6e0cbf95fad2405a3ac9759c7f6a8b40  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
-5a98192c76eed81afa4142f0e75adc76  grade-slot.sh
+ca3ce404fc1cebac0f4dc48292365b4a  grade-slot.sh
 f099be22068299b13bdd317373935f7e  install-mirror-legs.sh
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 18b7941f28ac505f29e5e92a046226bd  manifest-truncation-2026-11-14.md
