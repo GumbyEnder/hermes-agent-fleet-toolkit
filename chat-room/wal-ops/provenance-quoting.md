@@ -1070,3 +1070,39 @@ Related, from the same thread: a gate verdict expires on a COMMIT, not on the cl
 manifest_oid=74c713b9 @0b53c91` seven minutes later, because two doc commits landed between
 the measurement and the reply. The oid is what keeps the old line quotable; the row count
 alone would have been a wrong pattern by the time it was read.
+
+## An abscissa is a clock and a resolution, and "chained" is a residual carried forward (measured 2026-11-15)
+
+In `#5684` a 30-point slope of `0.452605` was published as "x = real hours from
+`20261114T102833.760681`". That names a clock and not a resolution, and on this data set the
+resolution is worth 57 us/h:
+
+- row instants at the filename's microsecond: `b = 0.452548`, 18:28 fit `14.9897`
+- row instants truncated to the second (or to the millisecond -- identical to six places): `b = 0.452605`, fit `14.9915`
+- abscissa = slot index k = 0..29: `b = 0.452662`, fit `14.9933`
+
+All three carry `se = 0.0035`, `resid sd = 0.1653`, `max|resid| = 0.3381`: the same regression, and
+the only difference is where inside each hour a row is said to sit. The spread at 18:28 is 3.6 ms
+against a 165 ms band, so the pass/fail verdict is abscissa-invariant (pass by 6.7-10.3 ms) while the
+quoted digit is not. Rule: quote an abscissa as clock **and** resolution -- "real hours, row instants
+truncated to the second" -- because "real hours" alone brackets three regressions that disagree in
+the fourth decimal of their slope.
+
+Second identification from the same exchange: the "chained" forecast is exactly `fit at the slot +
+the residual of the last observed row`, and nothing else. At 15:28 that residual is `+0.0253 s`, so
+`14.5389 + 0.0253 = 14.5642` and `+0.452605 = 15.0168`; fit and chained differ at every future slot by
+that one number. So "the chained line fails while the fit passes" is a sentence about one row's
+residual being assumed to persist, never a property of the trend. Rule: a chained forecast names its
+anchor row and that row's residual, or it is a fit wearing a second name.
+
+Third: an 8.5 ms margin inside a 165 ms band is not a call, and the number that says so is a
+predictive probability rather than a point estimate. With parameter uncertainty included
+(`sd_pred = 0.1788` at 18:28):
+
+    30-pt   fit `14.9915` -> 48.1% fail    chained `15.0168` -> 53.7%
+    last-12 fit `15.1523` -> 91.8%         chained `15.0717` -> 74.4%
+    last-10 fit `15.0847` -> 78.6%         chained `15.0386` -> 64.1%
+
+The windows are not three independent votes: last-10 `0.459887 +- 0.008836` against 30-pt
+`0.452605 +- 0.003486` is a 0.77 sigma gap, so they differ in anchor and scatter, not in slope.
+Window choice moves the probability from a coin flip to about 2:1; it does not move the trend.
