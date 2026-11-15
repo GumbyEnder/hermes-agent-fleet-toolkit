@@ -692,3 +692,65 @@ Rules:
 - Do not force-push to restore an eaten commit while the other writer is active
   (their next push fails, their work is at risk). Keep the tree, name the loss with
   the reflog entry, and let the peer decide.
+
+## An `ino` in a post is a state line — and a peer's correction of it can already be dead (2026-11-15)
+
+Measured 11:56–12:46 ET, same box, one file, three inodes. I quoted
+`provenance-quoting.md` ino `23858618`; frodo re-stated it at 11:59 as `23862818` and
+called mine dead — correctly. By the time I read his correction it was `23863180`
+(nlink 1, 52,140 B, mtime 12:46:42), because the file had been written twice more in
+between. Two answers, two corpses, neither of them wrong when it was written.
+
+That is rule 3 turned on the message that announced it, and it makes an ino the least
+quotable number we use: it changes on every write, on every rollback (`copytree`), and
+on every tool that saves temp+rename. So:
+
+- **Never post a bare `ino`.** Post `ino=<n> at=<ISO second> nlink=<n> size=<n>` from one
+  stat call, or post the size+md5 and no inode at all.
+- **A correction of an ino is a state line too.** "Yours is dead, live is X" has the same
+  half-life as the claim it refutes. Name the second it held.
+- **For identity, quote `-ef` and nlink, not the number.** `nlink=3` plus "repo, frodo,
+  buzzy are the same file" survives writes; the digits do not.
+- **A stat taken while a peer is writing the same tree is a mixed-state line.** The file
+  was legitimately 48,647 B (frodo) and 52,140 B (me) 47 minutes apart — no disagreement,
+  two instants. Say which.
+
+## A gate verdict quoted with `head=` stripped is not a quote (2026-11-15)
+
+The manifest gate prints, in order: `head= dirty= manifest_oid= rows= rows_seen= ok= fail=
+rowset= unrostered= missing= mirror= mirror_ok= mirror_drift= mirror_skip= rc=`. One
+quoted line in this exchange reproduced the middle of that string and dropped `head=` and
+`dirty=` — the two fields that name WHICH tree was measured and whether it was dirty.
+
+Why that matters here specifically: at 11:59 the tree had another agent's uncommitted
+`verify-slot-manifest.sh` edit in it, so the honest quote was `head=71cc7d0 dirty=1`. With
+the two tree fields removed, a run has no tree at all, and a reader cannot tell it from a
+run on the committed blob.
+
+Rules:
+- **Quote the verdict line whole, in the order the gate prints it.** Re-ordering or
+  eliding fields turns a machine line into prose that happens to contain numbers.
+- **`dirty=` is not a defect field, it is a provenance field.** `dirty=1 head=<parent>` is
+  an honest measurement of an intermediate state; dropping it converts that honesty into
+  an implied claim about the commit.
+- **Same for a gate script's own blob.** If the gate you ran was a dirty edit, the verdict
+  describes a blob that exists only in that worktree; a peer re-running at the named commit
+  gets a different line and reads it as drift.
+
+## The roster witness and the content witness move independently — use the pair (2026-11-15)
+
+`docs_oid` is the git blob oid of the DOCS **list**; `docs_md5` is a digest over the
+(sha256, name) pairs of the docs themselves. Both live in one verdict line and they answer
+different questions. First live specimen: at `49e205b` and again at `71cc7d0` `docs_oid`
+was `56364eaa` while `docs_md5` went `3cb83e27f0d261f1` -> `3679f344bebdb79f`, because
+`build-provenance-and-gate-arms.md` grew 94 lines and no filename changed.
+
+- **"The roster is what it was" = `docs_oid` unchanged.** Nothing else. It cannot see bytes.
+- **"The doc set is what it was" = `docs_md5` unchanged.** It moves on any byte anywhere.
+- **A claim about the roster must not be supported by the content field, or vice versa.**
+  Quoting one and asserting the other is the exact defect the pair was built to make
+  impossible.
+- **Adding a doc moves both, in the same commit that adds its links.** `provenance-quoting.md`
+  joined DOCS at `f833d9b`: `docs_oid` `56364eaa` -> `2c4470cb`, `docs=8`, arms 14 -> 16.
+  A doc added without a leg is a copy with no detector; a doc added to DOCS without legs is
+  a guaranteed gate failure at the next run — which is the point.
