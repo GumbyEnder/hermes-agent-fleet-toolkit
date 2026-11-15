@@ -825,3 +825,47 @@ people check. Measured on this box 2026-11-15 00:22-00:25 ET against the two see
   repair lands at the boundary anyway and a `chown` now would bump ctime -- the field re-links are
   graded by -- for no gain. If it is repaired early, the note is "ctime jump at <ts>, ino/size/mtime
   and content untouched" and the ino is the thing to quote, not the mode.
+
+## The break is not the inode — `ln -f` repairs a set without minting, and birth's AGE is the discriminator, not its order against ctime
+
+a2ad076 named the four mechanisms (`ln -f` mints nothing, an append moves mtime on every arm, `mv`-over-name
+adopts a new inode, `cp -p`/`rsync -t` plant the SOURCE's mtime). Each was re-run here once, same box, same
+`ext4` (`/dev/nvme0n1p2`), in a 3-arm link set, to test the sentence "only ctime vs birth separates them".
+**Every arm has `ctime > birth`; the ordering separates nothing.** What separates them is whether `birth` sits
+INSIDE the observation window, and how big the `birth`->`ctime` gap is.
+
+| sequence | ino | birth | mtime | ctime |
+|---|---|---|---|---|
+| `ln -f a b` (stack a leg onto a live one) | kept | kept | kept | new |
+| `printf >> b` (append through the second name) | kept | kept | new | new, == mtime |
+| `cp a tmp; mv -f tmp a` (temp+rename, i.e. a patch tool) | **new** | = temp's birth | = the temp's write | new, +2.2 ms |
+| `cp -p src a` (src touched 2026-11-14 09:00) | kept | kept | **source's**, 1 day older than birth | new |
+| `rsync -t src slave` | kept | kept | source's | new |
+| `rm a; ln -f b a` (**break**, then repair off the survivor) | kept | **kept** | kept | new, +8 ms |
+| `rm a; write new a; ln -f a b; ln -f a c` (mint-then-adopt) | new | new | new | new, +1.0 ms |
+| `cp a tmp; edit tmp; mv tmp a; ln -f a b; ln -f a c` (edit-then-relink) | new | new | new | new, +2.7 ms |
+
+Measured 2026-11-15 14:29:43 ET, 3 arms each, `stat -c '%i %h %w %y %z'` at every step.
+
+- **A break repaired off the survivor leaves `birth` untouched.** `ln -f b a` links b's existing inode to the
+  dropped name; nothing is minted, so ino 23864095, birth 14:29:43.240 and mtime all survive and `nlink` is back
+  to 3 with ctime 14:29:43.248 as the only trace. So "nlink==arms with birth==mtime is a replace" is true only of
+  the arms that ADOPTED a new inode; a repair that re-links the survivor is invisible in birth entirely.
+- **`mtime` vs `ctime` is what is left in that arm.** In-place write through a leg: mtime == ctime, both new,
+  birth old. Re-link only: mtime old, ctime new. Both keep ino and birth.
+- **mint-then-adopt and edit-then-relink are stat-identical** — new ino, birth inside the window, ctime a
+  millisecond later, nlink back to 3 (23864098 vs 23864102, birth .257208 vs .266488, ctime .258235 vs .269198).
+  No stat field separates them; only the content diff does. So the two arms on a new inode are "edited and
+  re-linked" and "edited by adoption", and calling either one a *break* is a claim the stat cannot carry.
+- **`birth == mtime` is a rounding, not an invariant.** A temp written before the rename has birth strictly
+  earlier (20.8 ms with one `echo` in between). Gate on "birth inside the write window", never on equality.
+- **A planted mtime dies at the next write.** After `cp -p` (mtime 2026-11-14 09:00, birth 14:28:56.800), one
+  append moved mtime to 14:28:56.826 — inside the response, `mtime < birth` is a one-write-lifetime witness, and
+  the arm that shows it then reads as a plain local delta.
+- **Ino numbers recycle faster than a census can be quoted.** 5/5 freed names were reminted with the same number
+  on the next create (23864010, 23864012, 23864016, 23864017, 23864018), and in the same run the inode freed by
+  `ln -f` at 14:28:56.770 was handed to the next temp at 14:28:56.775 — 5 ms. Key on ino+birth, and never compare
+  a birth across a delete.
+- **This file is the witness.** At 1983ebf (14:24:42) the repo leg moved to ino 17748212, birth 14:24:35 (patch:
+  temp+rename). At 3bbf359 (14:26:20) the same ino kept birth 14:24:35 with mtime == ctime == 14:26:08 (a write
+  through the link). Two consecutive commits, two identity outcomes -- the tool differed, not the agent.
