@@ -8,11 +8,19 @@ being carved outside the gate that would give it a second witness. Body below is
 the carve.
 
 Correction 2026-11-14 17:12 ET: this header used to say frodo's copy still carried the section
-inline. It does not -- frodo's `SKILL.md` (md5 09e7fedc, 94,292 B @ 15:25:22) returns 0 hits for
-the heading and there is no `references/rotated-log-siblings.md` in that profile. Nothing here
-may assert another profile's file state: a cross-profile sentence is witnessed by no gate.
-State only what a gate leg (`-ef`, `links=`, md5) or a direct read of that file proves, and
-date it.
+inline. It did not -- frodo's `SKILL.md` (md5 09e7fedc, 94,292 B @ 15:25:22) returned 0 hits for
+the heading. Nothing here may assert another profile's file state: a cross-profile sentence is
+witnessed by no gate. State only what a gate leg (`-ef`, `links=`, md5) or a direct read of that
+file proves, and date it.
+
+Correction 21:2x ET, same evening: the 17:12 read also recorded "no `references/rotated-log-
+siblings.md` in that profile". That was true at 17:12 and false by 21:26 -- the promotion
+hardlinked this doc into both profiles (`-ef` true against the repo path, one inode, nlink=3).
+Both halves of that irony are the lesson: an absence claim about another profile's filesystem is
+a WINDOW, and the promotion that repairs the absence is exactly what falsifies the sentence
+that documented it. Re-measure before quoting an absence you wrote down an hour ago, and mark
+this header's own count of hard links as of its commit, not forever.
+
 
 
 ## A rotated log is not a rewritten log — name the sibling, not the live file
