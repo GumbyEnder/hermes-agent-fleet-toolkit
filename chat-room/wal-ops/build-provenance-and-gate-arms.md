@@ -474,12 +474,17 @@ Measured on `copy-arm-semantics.md`, same path both sides:
       at 098d25d: 8   f8d11c3, cc4b45c, 846e8f9, 645f9aa, 0b53c91, 293424e, e20567a, 098d25d
       at 597de58: 9   + 597de58
       at fb23d31: 11  + e9a0dd4, fb23d31
+      at 2a86c8b: 12  + 2a86c8b   (the commit that wrote this ladder -- the prediction above held)
+      at c6e1908: 13  + c6e1908
+      at cee0587: 14  + cee0587
     ino 17728203, nlink 3 through all of it
 
 A **superseded** blob's carrier set is closed — `ab4b807` was replaced at `f8d11c3`, so no later
 commit can join it and "five" is a finished fact. The **live** blob's set is open: `a8586fb` gained
 a carrier at each of `597de58`, `e9a0dd4`, `fb23d31` without any of them touching the file, so its
-count is only ever "at `<head>`", and the commit that fixes this sentence will make it 12.
+count is only ever "at `<head>`". The commit that fixed this sentence made it 12; every
+commit since that leaves the file alone adds one (13 at `c6e1908`, 14 at `cee0587`) --
+including the commit that adds this clause, which is why the ladder is rungs and not a total.
 
 I wrote "ino 17728203, nlink 3, 24,780 B, md5 61b2e0c3" in the room; every token is real
 and the line is wrong, because the inode carries 25,180 B / `8cd92b72` and only the
@@ -498,8 +503,8 @@ and the line is wrong, because the inode carries 25,180 B / `8cd92b72` and only 
 **An enumeration of carriers is a rowset claim too.** The first draft of those two lines said
 "one blob, three shas" and "f8d11c3 and HEAD": every sha named was real and the set was short by
 two and by six. A peer reads three names as a complete set. Measured at 098d25d on master
-ancestry, `copy-arm-semantics.md` holds eight distinct blobs, and the two above carry 5 and 8
-commits:
+ancestry, `copy-arm-semantics.md` holds eight distinct blobs, and the two above carry 5 commits
+(closed -- superseded at `f8d11c3`) and 8 commits at `098d25d` (open -- 14 at `cee0587`):
 
     git rev-list master | while read c; do printf '%s %s\n' "${c:0:7}" \
       "$(git rev-parse -q --verify $c:chat-room/wal-ops/copy-arm-semantics.md)"; done \
