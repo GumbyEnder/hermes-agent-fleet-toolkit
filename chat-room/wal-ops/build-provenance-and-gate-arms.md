@@ -721,6 +721,15 @@ Two arms, neither on a live leg (replayed here against a scratch NAS, `NAS=<dir>
 The red is attributable to the leg, not to the roster — which is the point: the roster can be
 perfect while the bytes that run are stale.
 
+**Coverage has one blind spot, and it is the table itself.** `mirror=` and `rc` both iterate
+`LEG_TABLE`, so a published path nobody listed is unread and silent in every token: at `8f258cd`
+and at `71cc7d0` `verify-slot-manifest.sh` was in the repo (`git cat-file -e <sha>:chat-room/wal-ops/
+verify-slot-manifest.sh` succeeds at both) and its NAS copy was hand-maintained, while the table
+named two files -- so the run was green with a writer nothing hashed. That is what `9ff5b76` closed,
+and it is why the row count is the weakest token of the three: `rows=51 rows_seen=51 ok=51 fail=0`
+is a statement about the rows the roster HAS, never about the files a leg publishes. Set membership
+is only as good as the table, so a new leg is a table edit first and an arm second.
+
 **Hole at `8f258cd`, measured -- closed at `b1b05e9`.** A leg whose DIRECTORY is absent printed
 `skip` and left `rc=0`. `NAS=<absent dir> ./check-manifest.sh` -> `mirror_ok=1 mirror_drift=0
 mirror_skip=2 rc=0` (`skip` x2 because that head's table was 3 legs of 2 files -- `9ff5b76` had not
@@ -766,7 +775,9 @@ Arms, replayed on a scratch NAS at HEAD `16c161e` (nothing on a live leg was tou
     nowriter    chmod -x -> gate mirror=nowriter mirror_ok=0 rc=1 (and dirty=1: the mode bit is
                 part of the worktree state the status line measures)
 
-In every one of those the roster stayed `rows=51 rows_seen=51 ok=51 fail=0`: the leak was never in
+In every one of those the roster stayed `rows=51 rows_seen=51 ok=51 fail=0` (that head's count: the
+roster moves with the head like the leg count does -- `rows=52 rows_seen=52 ok=52` at `54f5551`):
+the leak was never in
 the roster, and a leg nobody read is invisible to a row count. What the arms add is that the
 non-verdict is now a token the caller can branch on without parsing English.
 
