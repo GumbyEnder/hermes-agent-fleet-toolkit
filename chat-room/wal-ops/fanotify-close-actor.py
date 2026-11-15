@@ -204,10 +204,12 @@ def empty_argv_label(pstate, unit_err, kthread):
       - state known, cgroup readable              -> EXIT_WINDOW_UNSEEN
     Kept as one function because the label is a rule, not a line of code: the
     residual this closes (2026-11-15T02:28:04, comm="cp", cmdline="", state R,
-    actor_err=null) survived because the ARGV_TORN_DOWN arm only fires for a task
-    this arm happened to read alive first. The label says "the argv is not
-    readable as a fact", not "the task was exiting": a NULL-argv execve() and a
-    self-scrubbing daemon land here too, alike at the row."""
+    actor_err=null) was emitted by a build with no `seen_argv` cache at all -- its
+    own OPEN_PERM sibling carried the argv two microseconds earlier -- so on the
+    CURRENT build the shape survives only when a userspace task's FIRST read is
+    the close row. The label says "the argv is not readable as a fact", not "the
+    task was exiting": a NULL-argv execve() and a self-scrubbing daemon land here
+    too, alike at the row."""
     if kthread:
         return None
     if pstate is None or unit_err == "ENOENT":

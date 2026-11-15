@@ -310,21 +310,37 @@ Cost of the arm: every open in the marked directories is serialized through user
 (~100 us), and the group must run in LEGACY mode (see the script header). It is an
 identity instrument at that price; the non-permission arms are pid records.
 
-## The one shape the emit rule still asserted falsely: `EXIT_WINDOW_UNSEEN`
+## The exit window with no cached argv: `EXIT_WINDOW_UNSEEN`
 
-The rule above ("`cmdline: null` has exactly one reading") had a hole, found by
-walking the 151 new-schema rows in frodo's `references/` on 2026-11-15. One row:
+The rule above ("`cmdline: null` has exactly one reading") had a hole. The row that
+surfaced it is itself a stale-build row, and both halves matter, in this order.
+
+THE ROW, as emitted (frodo's log, 2026-11-15T02:28:04-0500 — five fields only, no
+`argv_seen` key at all):
 
     {"ts":"2026-11-15T02:28:04-0500","mask":"CLOSE_WRITE","file":".probe-fast-cp",
      "comm":"cp","actor_state":"R","actor_err":null,"cmdline":"",
-     "unit":"hermes-gateway.service","unit_err":null,"argv_seen":null}
+     "unit":"hermes-gateway.service","unit_err":null}
 
-`cp` cannot have an empty argv, so `cmdline: ""` with `actor_err: null` asserted a
-false fact about a process that no longer existed. `ARGV_TORN_DOWN` did not fire
-because it needs the arm to have read the SAME task alive with an argv first, and
-this row never had that live read; `GONE_RACE` did not fire because the pass-2
-cgroup read *succeeded* (`hermes-gateway.service` surfaced while the task was in
-its exit window). So the gap is exactly "exit window, seen from the cgroup side".
+THE PROVENANCE, which is the part a reader gets wrong. That log carries two
+schemas: **705** rows from `01:10:50` to `02:30:54` carry `actor_err` and no
+`argv_seen`, and the first row carrying `argv_seen` is `02:34:11` — which is also
+the first row that carries `ARGV_TORN_DOWN` anywhere in the file. So at 02:28:04
+the running build had no `seen_argv` cache: `ARGV_TORN_DOWN` was not unlucky, it
+was unimplementable. And the row's own `OPEN_PERM` sibling at the same stamp, for
+the same `actor_pid` 2490967 and `actor_start` 313928427, carries the full argv
+(`cp .probe-src .../.probe-fast-cp`) — so the task **was** read alive with an argv,
+two microseconds earlier, by a build that had nowhere to put it. Write that as
+"the row predates the cache", never as "the task was never seen alive": the second
+sentence is false in this file. There are **two** such rows, not one — `02:24:39`
+(state `null`, unit `null`) and `02:28:04` (state `R`, cgroup readable) — and
+neither is a rate about the current build.
+
+THE HOLE THAT DOES SURVIVE, in the `argv_seen` build: a userspace task whose first
+read arrives at the CLOSE row — its `OPEN_PERM` read failed `GONE`, or the
+512-entry cache turned over — still lands `cmdline: ""` with `actor_err: null`
+whenever the pass-2 cgroup read succeeds. `GONE_RACE` only fires when that read
+also fails, and that is exactly the gap.
 
 Fix, shipped 2026-11-15: the pass-2 resolution is one pure function,
 `empty_argv_label(pstate, unit_err, kthread)` — `GONE_RACE` when the state is
@@ -341,10 +357,14 @@ Gate: `test-actor-err-labels.py` — 10 assertions, unprivileged, no fanotify, a
 six label shapes plus the flag read (`[kthreadd]` carries `PF_KTHREAD`, a python
 test process does not). It exists because the shape cannot be reproduced on demand
 against a millisecond copier, so the RULE is tested and the live arm only has to
-show the invariant. Rehearsal on a scratch dir with the shipped build: 28 event
-rows (16 `OPEN_PERM`, 12 `CLOSE_WRITE`), 28/28 carrying a name via `cmdline` or
-`argv_seen`, 0 rows with `cmdline: ""` and `actor_err: null`, 12/12 closes joined
-to an `OPEN_PERM` row on `(file, actor_pid)`.
+show the invariant. Two independent runs on the shipped build: a scratch-dir
+rehearsal, 28 event rows (16 `OPEN_PERM`, 12 `CLOSE_WRITE`), 28/28 carrying a name
+via `cmdline` or `argv_seen`, 0 rows with `cmdline: ""` and `actor_err: null`,
+12/12 closes joined to an `OPEN_PERM` row on `(file, actor_pid)`; then the live
+arms after their 03:23:44 restart, a 10-file `cp` burst, 20 event rows, 20/20
+named, 10/10 closes joined, `actor_err` 18 null + 2 `ARGV_TORN_DOWN`, states `D`
+on every open and `R` on every close. No live `EXIT_WINDOW_UNSEEN` sample yet —
+the label is proven by the rule gate, not by a lucky row.
 
 Unit names, because the short form is not a unit: the durable set is
 `hermes-seeder-watch-frodo.service` and `hermes-seeder-watch-buzzy.service`
