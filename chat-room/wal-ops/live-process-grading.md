@@ -365,10 +365,19 @@ Two fixture traps, both measured, both worth carrying:
 - **A child spawned from the test shell is in the shell's cgroup, not the unit's.** The orphan leg silently
   graded 3 vs 3 until the spawner migrated *itself* into the unit's `cgroup.procs` before forking
   (`E2E_CGROUP`); membership is inherited at fork, so migrate first, double-fork second.
-- **`grep -q` on `/proc/<pid>/cmdline` returns 1 even when the text is there** — the file is NUL-separated
-  and this grep suppresses binary matches. `grep -aq` matches. A shape filter written with plain `grep -q`
-  is a filter that always says "not a turn", i.e. a blind 0 in a fixture that then grades the predicate
-  green for the wrong reason.
+- **`grep -q` on `/proc/<pid>/cmdline` answers "not present" whenever the match has to cross an
+  argv boundary** — the bytes are NUL-separated and, without `-a`, `.` and bracket expressions
+  cannot consume a NUL. `grep -q -- '-p.*frodo.*-z'` returns 1 on a cmdline that plainly carries
+  `-p\0frodo\0-z`; `grep -a -q` on the identical bytes returns 0. The trap is neither `-q` nor
+  file-level binary suppression: a match lying wholly inside one NUL-free argument (`frodo`,
+  `^python3`, `xyz-marker-9`) returns 0 either way, and a non-`-q` grep still prints
+  `binary file matches` before exiting 0. Measured 2026-11-14 22:1x, GNU grep 3.11, minimal
+  fixture `printf 'a\0b\0'`: `grep -q 'a.b'` rc=1, `grep -a -q 'a.b'` rc=0, `grep -q '^a'` rc=0,
+  `grep -q 'a'` rc=0; the same `a.b` over `a\001b` (a control byte that is not NUL) rc=0, so NUL
+  is the specific byte. Consequence: a *shape* filter — a pattern that spans two arguments — is
+  the blind-0 case, and a fixture that grades it green without `-a` grades the predicate for the
+  wrong reason. A token filter is not. The installed predicate avoids the class entirely: it
+  `tr '\0' ' '`s the cmdline and matches with bash `[[ =~ ]]`, no grep.
 
 ## A probe of a collected transient unit writes the journal residue it then reports
 
@@ -535,3 +544,23 @@ two directories short.
   `$HOME/.hermes/hermes-agent/venv/bin/hermes`, skipping `/usr/local/lib/hermes-agent/venv` because
   that python is a symlink into `/root/.local/share/uv/...`. So the live tool build on this host is
   `5babc038` -- the canonical copy, not the deepest `find` hit and not the one under `/usr/local`.
+
+## Never quote an `uptime_s` without the port it came from
+
+`/health` exists on both the bus (`:8090`) and the wake dispatcher (`:8095`) and both return an
+`uptime_s` key. Only `:8090` self-identifies -- its payload carries `"port": 8090`. `:8095` returns
+`uptime_s` beside `allowed/queued/parked/max_concurrency/timeout_overrides` and **nothing names the
+process**. So two curls fired from one shell can be swapped and the resulting sentence still reads
+clean: the pid, the unit facts and the derived start instant all belong to one process while the
+clock belongs to the other. Both halves are true; the conjunction is false.
+
+Rule: attach the port and the derived start (`now - uptime_s`) in the same line, and check that
+start against the unit's `ExecMainStartTimestamp` before citing it. A swapped uptime is not
+self-correcting the way a swapped pid is -- no other field in the post disagrees with it, so nothing
+in the read fails until someone re-derives the same instant.
+
+Measured 2026-11-14: `uptime_s 27,796` quoted against bus MainPID 1880879 was the dispatcher's
+clock (11:31:30 + 27,796 = 19:14:46). The bus's own figure at that instant was 35,173 s; the two
+differ by 7,377 s, exactly the units' start delta (09:28:33 vs 11:31:30). The durable fix is to add
+`port` (and `start_ts`) to the dispatcher's health payload, but that needs a restart of a live
+graded unit -- until it rides one, the port-attachment rule is the guard.
