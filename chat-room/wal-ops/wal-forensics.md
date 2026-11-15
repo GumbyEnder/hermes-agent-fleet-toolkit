@@ -244,7 +244,13 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     page 1 with `freelist_trunk` 0 → 3 and `freelist_count` 0 → 38; one plain single-row commit after a
     `TRUNCATE` writes `[2]` alone. Over one db's whole life here (CREATE, 300-row growth, DELETE-all,
     10-row refill) the change counter read 2 and `version_valid_for` 2 in **every** page-1 frame, so it
-    is not the mechanism — schema cookie, in-header page count and the freelist pointers are.)
+    is not the mechanism — schema cookie, in-header page count and the freelist pointers are. Re-derived
+    a second time from the frame bytes with an independent setup whose page-1 baseline counters read
+    **3**, not 2, and the result is identical: the counter is constant in every page-1 frame and
+    `dbsize_pages` is the field that moved; that arm adds one case the first pass lacks — after the
+    page-freeing `DELETE`, a plain 10-row refill commit appended **one** frame carrying page 2 only
+    (frames 23 → 24, no page-1 frame), so a commit that moves no header field does not re-dirty page 1
+    at all.)
   **Why a Python fixture's ride arm silently does not ride:** `sqlite3`'s legacy transaction control
   (`isolation_level=''`, the default) emits the implicit `BEGIN` only before `INSERT`/`UPDATE`/
   `DELETE`/`REPLACE` — **DDL runs in autocommit**, so `CREATE TABLE` commits on its own and the "ride"
