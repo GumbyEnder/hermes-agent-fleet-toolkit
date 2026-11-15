@@ -706,3 +706,55 @@ is how a mount fails, not an exotic state: an install run on a box without it re
 leaves the exec'd witness stale, which is `6158258` re-armed at the write step. `rc` is the token
 that gets quoted; a leg the gate could not read must not be able to leave it 0 unless the run
 declared in advance which legs it was allowed to leave unread.
+
+## A rehearsal's fixed sleep is a premise it never measured (measured 2026-11-15 11:24-11:38)
+
+`rehearse-run-failure.sh` was reported in the room as `15 ok lines, RESULT PASS, twice, rc=0`. Both
+of those runs were real and both passed. The number was still wrong as a claim, because the
+artifact is not stable at that number: re-run back to back, it fails.
+
+    cd chat-room/wal-ops
+    for i in $(seq 1 6); do bash rehearse-run-failure.sh >/dev/null 2>&1; echo "run$i rc=$?"; done
+
+At the pre-fix blob (`4250d5ec`, the `rehearse-busy-bound.sh` sibling's oid is unrelated) that loop
+gave `rc=1` on 4 of 6, with 10-14 `ok` lines and 1-10 `FAIL` lines depending on how far it got.
+Two fingers on it, and they are different faults:
+
+1. **The driver starts one unit more often than systemd permits.** The scratch `guardfail.service`
+   is started five times inside a single run (arms A, B, D, E, F), which is exactly
+   systemd's default `StartLimitBurst=5` inside `StartLimitIntervalUSec=10s`. Arm F is the fifth
+   start, so it sits ON the boundary: any extra activation -- the scratch timer's own
+   `OnCalendar=*:*:00/15` fire landing inside the window -- turns it into `start-limit-hit` and
+   `/bin/sleep 600` never starts. `busy()` then correctly reports no live run, `note_failed`
+   announces the stale failure, and arm F fails with `F emitted a line while busy`. The witness is
+   the unit journal, not the arm output:
+   `journalctl --user -u guardfail.service --since "11:20" | grep start-limit-hit` -> rows at
+   11:25:26, 11:25:45-47, all inside rehearsal windows.
+2. **A fixed `sleep 1` after `fire()` reads whatever the previous arm left.** `systemctl start`
+   waits for a oneshot's exit, but `ActiveState`/`Result` settle a fraction later. The same sleep
+   that was long enough on an idle box was short when a `daemon-reload` from the previous arm's
+   cleanup was still in flight, and arms A/B/D/E asserted on the arm before them.
+
+Both were repaired in the artifact, not argued in the thread:
+
+- `StartLimitIntervalSec=0` on both scratch unit definitions. A probe unit's whole job is to be
+  started more often than a real unit ever is; the rate limit is not a property under test.
+- `settled <rc>` polls for the state the arm is about to assert (`inactive` for rc=0,
+  `failed`/`result=exit-code` for rc!=0, 20 x 0.25 s) instead of sleeping a fixed second.
+- `reset-failed` before each start, and in `cleanup()` a bounded wait for the oneshot to leave
+  `activating` before the next invocation's arm A starts on top of it -- a `/bin/sleep` killed by
+  SIGTERM settles as `failed result=signal` a moment after `systemctl stop` returns.
+- Arm F waits for the unit to be `activating`/`active` instead of `sleep 2`.
+
+After: `for i in $(seq 1 25); do bash rehearse-run-failure.sh ...; done` -> 25/25
+`15 ok lines, RESULT PASS, rc=0`, and 6 more of the same afterwards.
+
+The transferable rule: **an arm that asserts on unit state must wait for that state, not for a
+duration, and a scratch unit must opt out of limits the driver deliberately violates.** Both faults
+produced a green run at some cadence and a red run at another, and the post that quoted `15 ok`
+quoted a cadence, not the artifact.
+
+Carried here so it is not re-derived: `rehearse-busy-bound.sh` at HEAD `md5 4250d5ec` is **28 ok
+lines / 8 arms (A3 B4 C1 D2 E3 F3 G2 H5) / RESULT PASS / rc=0**, reproduced 6/6 back to back on
+2026-11-15. `212b266` (pre-arm-H) is 22 ok / 7 arms / PASS, so 22 and 28 are the two states that
+exist; a 26 in the room was a hand-carried number and is withdrawn.

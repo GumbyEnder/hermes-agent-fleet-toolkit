@@ -33,6 +33,18 @@ fails=0
 
 cleanup() {
     systemctl --user stop "$SVC" "$TIMER" >/dev/null 2>&1 || true
+    # A STOPPED ONESHOT IS NOT YET A SETTLED UNIT: /bin/sleep dies on SIGTERM and
+    # the unit settles as "failed result=signal" a moment later. Returning while
+    # that is still in flight hands the NEXT invocation an arm A that starts on
+    # top of a deactivating unit -- the exact shape of the intermittent
+    # "A log not empty" / count-mismatch failures.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        case "$(systemctl --user show "$SVC" -p ActiveState --value 2>/dev/null)" in
+            inactive|failed) break ;;
+        esac
+        sleep 1
+    done
+    systemctl --user reset-failed "$SVC" >/dev/null 2>&1 || true
     rm -f "$UNITDIR/$TIMER" "$UNITDIR/$SVC"
     systemctl --user daemon-reload >/dev/null 2>&1 || true
     rm -rf "$TMP"
@@ -54,6 +66,7 @@ set_rc 0
 cat > "$UNITDIR/$SVC" <<EOF
 [Unit]
 Description=rehearsal: stand-in whose exit code is controlled by the driver
+StartLimitIntervalSec=0
 [Service]
 Type=oneshot
 ExecStart=$RUNNER
@@ -73,18 +86,37 @@ systemctl --user start "$TIMER" >/dev/null 2>&1
 
 run_guard() { TIMER=$TIMER LOG=$LOG FAILED_FLAG=$FLAG STUCK_FLAG=$TMP/guard.log.stuck bash "$GUARD" 2>/dev/null; echo $?; }
 mono() { systemctl --user show "$TIMER" -p ActiveEnterTimestampMonotonic --value 2>/dev/null; }
+# fire() RETURNS WHEN THE UNIT HAS SETTLED, NOT WHEN A SECOND ELAPSED.
+# `systemctl start` waits for a oneshot's exit but the unit's ActiveState/Result
+# settle a fraction later; a fixed sleep 1 sometimes read the previous arm's
+# state (no RUN FAILED line for a genuinely failed run) and sometimes read it too
+# late. Poll the state the arm is about to assert.
+settled() {
+    local want="$1" st res _
+    for _ in $(seq 1 20); do
+        st=$(systemctl --user show "$SVC" -p ActiveState --value 2>/dev/null)
+        res=$(systemctl --user show "$SVC" -p Result --value 2>/dev/null)
+        if [ "$want" = 0 ]; then
+            [ "$st" = inactive ] && return 0
+        else
+            [ "$st" = failed ] && [ "$res" = exit-code ] && return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
 # fire <rc>: run the unit once with that exit code
-fire() { set_rc "$1"; systemctl --user start "$SVC" >/dev/null 2>&1 || true; }
+fire() { set_rc "$1"; systemctl --user reset-failed "$SVC" >/dev/null 2>&1 || true; systemctl --user start "$SVC" >/dev/null 2>&1 || true; }
 
 # A -- a run that exits 0 is silent
 fire 0
-sleep 1
+settled 0
 rc=$(run_guard); [ "$rc" = 0 ] && ok "A rc=0 after a clean run" || bad "A rc=$rc"
 [ ! -s "$LOG" ] && ok "A log empty (silence keeps meaning nothing happened)" || bad "A log not empty: $(wc -l < "$LOG") lines"
 
 # B -- a run that exits 7 is reported once
 fire 7
-sleep 1
+settled 7
 m0=$(mono)
 rc=$(run_guard); [ "$rc" = 0 ] && ok "B rc=0 (a failed run is not a timer fault)" || bad "B rc=$rc"
 expect_count 1
@@ -97,14 +129,14 @@ expect_count 1
 
 # D -- a later clean run clears the dedupe
 fire 0
-sleep 1
+settled 0
 rc=$(run_guard); [ "$rc" = 0 ] && ok "D rc=0 after a clean run" || bad "D rc=$rc"
 expect_count 1
 [ ! -s "$FLAG" ] && ok "D dedupe cleared" || bad "D dedupe still set: $(cat "$FLAG")"
 
 # E -- a new failure after a clean run is a NEW line
 fire 7
-sleep 1
+settled 7
 rc=$(run_guard); [ "$rc" = 0 ] && ok "E rc=0" || bad "E rc=$rc"
 expect_count 2
 
@@ -112,6 +144,7 @@ expect_count 2
 cat > "$UNITDIR/$SVC" <<EOF
 [Unit]
 Description=rehearsal: long run, still active
+StartLimitIntervalSec=0
 [Service]
 Type=oneshot
 ExecStart=/bin/sleep 600
@@ -120,7 +153,15 @@ EOF
 systemctl --user daemon-reload >/dev/null 2>&1
 rm -f "$FLAG"
 systemctl --user start "$SVC" >/dev/null 2>&1 &
-sleep 2
+# A FIXED SLEEP IS A RACE, NOT A PREMISE: daemon-reload + a queued oneshot can
+# still be pending after 2 s, and then busy() reports no live run and the stale
+# failure is announced -- arm F fails and the counts shift with it. Wait for the
+# unit to actually be up (Type=oneshot -> "activating" while /bin/sleep runs).
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    st=$(systemctl --user show "$SVC" -p ActiveState --value 2>/dev/null)
+    [ "$st" = activating ] || [ "$st" = active ] && break
+    sleep 1
+done
 before=$(count)
 rc=$(run_guard); [ "$rc" = 0 ] && ok "F rc=0 while a run is live" || bad "F rc=$rc"
 [ "$(count)" = "$before" ] && ok "F no RUN FAILED line for a live run" || bad "F emitted a line while busy"

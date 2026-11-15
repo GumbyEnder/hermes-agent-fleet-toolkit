@@ -16,7 +16,7 @@ d594d3ea4d58f04c1e797b2d73141935  qread.py
 4b6346533f4b3399708dde2aa8f24cca  recover-manifest-from-logs.py
 4250d5ecc2e5823735af660658297adb  rehearse-busy-bound.sh
 2e612b3a13760cd02051d7d4f002a082  rehearse-per-slot-backup.py
-e36f7b06498986ae73a3e81275e3f332  rehearse-run-failure.sh
+d265f17dd557ab5387596786460b2d67  rehearse-run-failure.sh
 42244df17ba82bb422519279a6bb2fb8  rehearse-verify-rolled-and-pruned.sh
 81cd467620e85398422f8095aaf2d005  relink-wal-docs.sh
 5fc43fd95e68382b8987b73e3d56abde  restart-dispatcher-when-no-turns.sh
