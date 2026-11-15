@@ -499,6 +499,14 @@ two directories short.
 - **A copy count is a file count, not a distinct-hash count.** "Five builds" and "thirteen files"
   are both true and describe different things; quoting one alone understates how many tool bodies
   sit on the box.
+- **13/5 is a four-root number; the three-root number is 12/4.** Arithmetic behind the table, so it
+  can be checked without a walk: 10 env snapshots + `~/.hermes/hermes-agent/tools` (7th copy of
+  `5babc038`, so +1 file +0 builds = 11/3) + `~/hermes-agent/tools` (`100d078e`, +1 file +1 build =
+  12/4) + `/usr/local/lib/hermes-agent/tools` (`f922e2da`, +1 file +1 build = 13/5). Drop the fourth
+  root and the same walk returns 12 files / 4 builds. Never carry a running total across an added
+  root: re-run the union (`wc -l` on the path list, `sort -u` on the hashes) and quote the total
+  beside the root list it belongs to. 10+1+1 = 12, not 13 -- the sum carried forward is (e) in its
+  cheapest form.
 - **A count is a quantity at a root set; a commit count is a quantity at a HEAD.** "13 files" and
   "18 files" were both true in the same minute because the walks had different roots, and "6" and
   "10" commits were both true because one was a wall-clock window and the other a rev range.
