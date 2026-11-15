@@ -433,3 +433,19 @@ and the db mtime falls **inside that tick's second**.
 - Do not carry the size across the next tick: `out` counted 44/44 at 18:21:09 and
   41/41 at 18:23:09 with identical bytes, so two consecutive folds leave a
   byte-identical sidecar. Only the db mtime separates them.
+
+### A counter that is declared and printed but never incremented reads `0` forever
+
+`fanotify-close-actor.py`'s stop/signal census carries `scan` (`n_scan`), initialised
+in the counter tuple and printed at the census — and the name has exactly two
+occurrences in the blob, so nothing increments it. Every stop line that arm writes
+says `scan: 0`, and that zero is a shipped artifact, not a measurement: grade it
+**absent**, exactly like a missing field, and never as "no scan-leg rows". The same
+code carries `"scan": true` inside `mark_failures` entries (a key left by an
+uncommitted `--follow-new-dirs` draft that was reverted), so a failed mark looks like
+it distinguishes a scan leg from a mark leg when no scan leg exists.
+
+- Before quoting a zero from a census field, grep the field name and count its
+  occurrences: a name with an init and a print and no `+=` is a constant.
+- Fix it in the commit that adds the leg it was written for, not before — `named`
+  and the OPEN_PERM denominator land with the notify-class companion arm.
