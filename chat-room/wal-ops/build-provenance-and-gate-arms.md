@@ -609,3 +609,7 @@ SET did not move — as the section above records, `docs_oid` is a pin on seven 
 before the `docs_md5` build has no content witness on its verdict line and must cite the per-doc md5s
 on its arm lines instead; quoting its identical `docs_oid` as "the doc set is unchanged" is the
 misreading, not the evidence.
+
+**A head quoted without its clock is not a window claim but a moment, and `09:0x` is not a clock:**
+where the minute was never recorded, carry the blob oid with the two commit stamps, which survive a
+re-read, instead of a recalled hour.
