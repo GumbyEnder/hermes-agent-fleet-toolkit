@@ -2,7 +2,7 @@ a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 0ab0ac96b398029e1885af6d0df941fb  check-manifest.sh
 50cad920ae8661b9522999609ac8effd  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
-3ff82bc385f9fd6fe7eb52ff585fc065  fanotify-close-actor.py
+91b97800e1354b399a976d583b11b231  fanotify-close-actor.py
 25638c8adf38ea5efd3f780d98460e62  grade-slot.sh
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
@@ -27,6 +27,7 @@ c91142a41a33ad4b86e73c6a397cf4a0  systemd/hermes-agent-chat-walcheck.timer
 b98c9de1da6693d991db267a9d4b3803  systemd/hermes-seeder-watch-frodo.service
 358f12819ef4a5c4120bfbe4870ad11e  systemd/hermes-wal-unlink-verdict.service
 b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
+94daec2cc9a7d250acbf6097fbd58a9e  test-actor-err-labels.py
 88ab9035620fe2688b84d3d71336c09a  test-grader-mixed-db.sh
 0209449fe9f0d3dbdbc89c8e87a91a75  test-live-turns-cgroup.py
 bcfaae45a7431097906c5ffd2836d1c9  test-verify-skip-path-arm.sh

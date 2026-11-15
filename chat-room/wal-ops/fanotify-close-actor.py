@@ -102,9 +102,21 @@ responding would hold opens indefinitely -- that is inherent to permission event
                      this process's lifetime, so the empty read now is exit_mm(),
                      not an argv-less process. `cmdline` on the row carries the
                      earlier live read, so the name is relocated, not lost.
+  "EXIT_WINDOW_UNSEEN" -> the same exit window, but this arm never read this task
+                     with an argv: empty cmdline, comm readable, state not Z, the
+                     cgroup still readable, and PF_KTHREAD clear -- so a userspace
+                     task that cannot be argv-less. The argv is gone, not absent.
+                     (Measured 2026-11-15T02:28:04: comm="cp", cmdline="",
+                     state R, unit readable, actor_err=null -- a row asserting a
+                     false fact. Two other generators are indistinguishable at
+                     the row and both mean the same thing operationally -- the
+                     argv is not readable as a fact, never "empty": execve()
+                     with argv={NULL}, and a daemon that zeroes its own argv
+                     area (setproctitle-style scrubbing, usually alive in S).)
   "NO_PID"        -> the event carried no PIDFD handle at all
   "CMDLINE_UNREAD"-> comm readable, cmdline read failed (transient)
-Only actor_err=null makes an empty cmdline a fact about the process.
+Only actor_err=null makes an empty cmdline a fact about the process, and after
+2026-11-15 that fact is only ever emitted for a PF_KTHREAD task.
 
 `unit` has the SAME two readings and is the reason `unit_err` exists: the cgroup
 read happens in pass 2, after the actor reads, so it is the first field to lose
@@ -147,14 +159,21 @@ FAN_EVENT_ON_CHILD = 0x08000000
 AT_FDCWD = -100
 INFO_TYPE_FID, INFO_TYPE_PIDFD = 1, 4
 DRAIN_S = 0.05
+PF_KTHREAD = 0x00200000      # /proc/<pid>/stat field 9, bit 21
 
 
 def _pid_stat(pid):
-    """ONE open of /proc/<pid>/stat -> (state, starttime). Field 3 is the state:
-    'Z' separates "exited, cmdline empty because nothing is left of it" from "has
-    an empty argv", the two readings a bare empty string cannot tell apart.
-    Field 22 is starttime in clock ticks: a pid reused across a merge would
-    otherwise look like one actor across two lifetimes.
+    """ONE open of /proc/<pid>/stat -> (state, starttime, flags). Field 3 is the
+    state: 'Z' separates "exited, cmdline empty because nothing is left of it"
+    from "has an empty argv", the two readings a bare empty string cannot tell
+    apart. Field 22 is starttime in clock ticks: a pid reused across a merge
+    would otherwise look like one actor across two lifetimes.
+
+    Field 9 (flags) is the third value and costs nothing -- same read. PF_KTHREAD
+    is the one STRUCTURAL witness that an empty cmdline is a fact rather than a
+    torn-down mm: a kernel thread has no argv for its whole life, while a
+    userspace task can only read empty because exit_mm() already ran. Ask the
+    kernel for the flag; never pattern-match `comm` for "kworker".
 
     One open and not two on purpose -- every extra open is another chance for the
     task to be released between the event and the read."""
@@ -162,13 +181,38 @@ def _pid_stat(pid):
         with open("/proc/%d/stat" % pid, "rb") as f:
             raw = f.read()
         rest = raw[raw.rindex(b")") + 2:].split()
-        return rest[0].decode("ascii", "replace"), int(rest[19])
+        return (rest[0].decode("ascii", "replace"), int(rest[19]),
+                int(rest[6]))
     except (OSError, ValueError, IndexError):
-        return None, None
+        return None, None, None
 
 
 def _pid_start(pid):
     return _pid_stat(pid)[1]
+
+
+def empty_argv_label(pstate, unit_err, kthread):
+    """-> actor_err for a row whose pass-1 read gave an EMPTY cmdline and which
+    was never read with an argv while alive. Pure, so every shape is testable
+    without racing a millisecond-long copier.
+
+    Return None only for a kernel thread: there the empty cmdline is true. Any
+    other shape is a userspace task (comm readable, PF_KTHREAD clear) that cannot
+    be argv-less, so the empty read is exit_mm() and the argv is LOST:
+      - task already released by the pass-2 cgroup read (state unknown or
+        unit_err=ENOENT) -> GONE_RACE
+      - state known, cgroup readable              -> EXIT_WINDOW_UNSEEN
+    Kept as one function because the label is a rule, not a line of code: the
+    residual this closes (2026-11-15T02:28:04, comm="cp", cmdline="", state R,
+    actor_err=null) survived because the ARGV_TORN_DOWN arm only fires for a task
+    this arm happened to read alive first. The label says "the argv is not
+    readable as a fact", not "the task was exiting": a NULL-argv execve() and a
+    self-scrubbing daemon land here too, alike at the row."""
+    if kthread:
+        return None
+    if pstate is None or unit_err == "ENOENT":
+        return "GONE_RACE"
+    return "EXIT_WINDOW_UNSEEN"
 
 
 def _name(pid, field):
@@ -521,7 +565,8 @@ def main():
             try:
                 cmd, cmd_err = _name(pid, "cmdline") if pid else (None, "NO_PID")
                 comm, _comm_err = _name(pid, "comm") if pid else (None, "NO_PID")
-                pstate, astart = _pid_stat(pid) if pid else (None, None)
+                pstate, astart, pflags = (_pid_stat(pid) if pid
+                                          else (None, None, None))
                 # The argv of an actor that has already been seen WITH an argv is
                 # not lost when a later row reads it empty: exit_mm() empties
                 # cmdline before the task is marked ZOMBIE, so the empty read is
@@ -571,7 +616,12 @@ def main():
                           "pid": pid, "pidfd_pid": fdinfo_pid, "handle": handle,
                           "ev_fd": ev_fd,
                           "cmd": cmd, "comm": comm, "astart": astart,
-                          "pstate": pstate, "aerr": aerr})
+                          "pstate": pstate, "aerr": aerr,
+                          # Read in pass 1 (same stat open) so the pass-2 label
+                          # never has to race for it: a kernel thread's empty
+                          # cmdline is a fact, a userspace task's is exit_mm().
+                          "kthread": bool(pflags is not None
+                                          and pflags & PF_KTHREAD)})
             off += elen
 
         # PASS 2 -- name the files, and only now. resolve() is the expensive,
@@ -635,14 +685,18 @@ def main():
                     if hit:
                         argv_seen_start, argv_seen = hit
             if aerr is None and (ev["cmd"] or "") == "" and ev["pstate"] != "Z":
-                # Empty argv with a state that is not yet Z is the exit window:
-                # exit_mm() empties cmdline BEFORE the task is marked ZOMBIE, so
-                # this shape means "reaped mid-read" unless the cgroup survived.
-                # Measured 2026-11-15T02:24:39 on a 15 B `cp`: CLOSE_WRITE row,
-                # comm="cp", cmdline="", unit=null, actor_err=null -- a row that
-                # claimed a fact about a process that no longer existed.
-                if ev["pstate"] is None or uerr == "ENOENT":
-                    aerr = "GONE_RACE"
+                # Empty argv with a state that is not yet Z. exit_mm() empties
+                # cmdline BEFORE the task is marked ZOMBIE, so for every task
+                # that is not a kernel thread this shape is the exit window --
+                # "reaped mid-read" when the pass-2 cgroup read also lost its
+                # subject, and EXIT_WINDOW_UNSEEN when the cgroup survived.
+                # Measured 2026-11-15T02:28:04 on a 15 B `cp`: CLOSE_WRITE row,
+                # comm="cp", cmdline="", state=R, unit=hermes-gateway.service,
+                # actor_err=null -- a row asserting a fact about a process that
+                # no longer existed, left unlabelled because only the
+                # ARGV_TORN_DOWN arm names the exit window and it needs an
+                # earlier live read of the same task.
+                aerr = empty_argv_label(ev["pstate"], uerr, ev["kthread"])
             emit({"ts": ev["ts"], "mono": ev["mono"],
                   "mask": ev["mtype"], "file": fname, "file_err": ferr,
                   "size": st.st_size if st else None,

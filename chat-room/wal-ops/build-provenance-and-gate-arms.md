@@ -275,18 +275,22 @@ files copied flat into an armed `references/`:
 Field-level consequences, each one a distinct ambiguity that is now named on the row:
 
 - **`actor_err`** — `GONE` (no /proc entry), `GONE_RACE` (readings straddled the exit:
-  cmdline empty, comm gone, task not yet Z), `ZOMBIE` (state Z), `ARGV_TORN_DOWN`
-  (this task was already read with an argv while alive, so the empty read is
-  `exit_mm()`, not an argv-less process), `NO_PID`, `CMDLINE_UNREAD:<errno>`.
-  `cmdline` is emitted only when `actor_err` is null or `ARGV_TORN_DOWN`, so
-  `cmdline: null` has exactly one reading and `""` always means "read succeeded,
-  argv empty".
+  cmdline empty, comm gone, task not yet Z, or the pass-2 cgroup read came back
+  `ENOENT`), `ZOMBIE` (state Z), `ARGV_TORN_DOWN` (this task was already read with
+  an argv while alive, so the empty read is `exit_mm()`, not an argv-less process),
+  `EXIT_WINDOW_UNSEEN` (the same exit window, but this arm never read the task with
+  an argv: empty cmdline, comm readable, state not Z, cgroup readable, `PF_KTHREAD`
+  clear — so a userspace task that cannot be argv-less), `NO_PID`,
+  `CMDLINE_UNREAD:<errno>`. `cmdline` is emitted only when `actor_err` is null or
+  `ARGV_TORN_DOWN`, so `cmdline: null` has exactly one reading and `""` means "read
+  succeeded, argv empty" — a shape only a kernel thread can now produce.
 - **`unit_err`** — the cgroup read is pass 2, so it loses its subject first:
   `unit: null, unit_err: null` = no `.service` in the cgroup;
   `unit: null, unit_err: ENOENT` = the task was gone by then. A close row may
   legitimately carry `ENOENT` while its OPEN_PERM row carries the unit.
 - **`actor_state`** — the pass-1 task state, emitted so the Z boundary is visible
-  instead of inferred. `R` with an empty argv is the exit window, not a live task.
+  instead of inferred. `R` with an empty argv is the exit window, not a live task,
+  and since the `EXIT_WINDOW_UNSEEN` label such a row says so itself.
 - **`argv_seen` / `argv_seen_start`** — what this arm read from the SAME task while it
   was alive, in its own field, never overwriting a measured value. Matched by
   starttime when known; by pid alone only when the task is already gone, which is why
@@ -305,6 +309,50 @@ Field-level consequences, each one a distinct ambiguity that is now named on the
 Cost of the arm: every open in the marked directories is serialized through userspace
 (~100 us), and the group must run in LEGACY mode (see the script header). It is an
 identity instrument at that price; the non-permission arms are pid records.
+
+## The one shape the emit rule still asserted falsely: `EXIT_WINDOW_UNSEEN`
+
+The rule above ("`cmdline: null` has exactly one reading") had a hole, found by
+walking the 151 new-schema rows in frodo's `references/` on 2026-11-15. One row:
+
+    {"ts":"2026-11-15T02:28:04-0500","mask":"CLOSE_WRITE","file":".probe-fast-cp",
+     "comm":"cp","actor_state":"R","actor_err":null,"cmdline":"",
+     "unit":"hermes-gateway.service","unit_err":null,"argv_seen":null}
+
+`cp` cannot have an empty argv, so `cmdline: ""` with `actor_err: null` asserted a
+false fact about a process that no longer existed. `ARGV_TORN_DOWN` did not fire
+because it needs the arm to have read the SAME task alive with an argv first, and
+this row never had that live read; `GONE_RACE` did not fire because the pass-2
+cgroup read *succeeded* (`hermes-gateway.service` surfaced while the task was in
+its exit window). So the gap is exactly "exit window, seen from the cgroup side".
+
+Fix, shipped 2026-11-15: the pass-2 resolution is one pure function,
+`empty_argv_label(pstate, unit_err, kthread)` — `GONE_RACE` when the state is
+unknown or the cgroup read came back `ENOENT`, `EXIT_WINDOW_UNSEEN` otherwise, and
+`None` (an empty cmdline that is TRUE) only for a kernel thread. `kthread` comes
+from `/proc/<pid>/stat` **field 9 flags** read in pass 1 in the same open that
+already yields state and starttime, tested with `PF_KTHREAD` (0x00200000) — never a
+`comm` pattern like `kworker`, which a userspace task can carry. Two other
+generators are indistinguishable at the row and mean the same thing operationally
+("the argv is not readable as a fact"): `execve()` with `argv={NULL}`, and a daemon
+that zeroes its own argv area (setproctitle-style, usually alive in `S`).
+
+Gate: `test-actor-err-labels.py` — 10 assertions, unprivileged, no fanotify, all
+six label shapes plus the flag read (`[kthreadd]` carries `PF_KTHREAD`, a python
+test process does not). It exists because the shape cannot be reproduced on demand
+against a millisecond copier, so the RULE is tested and the live arm only has to
+show the invariant. Rehearsal on a scratch dir with the shipped build: 28 event
+rows (16 `OPEN_PERM`, 12 `CLOSE_WRITE`), 28/28 carrying a name via `cmdline` or
+`argv_seen`, 0 rows with `cmdline: ""` and `actor_err: null`, 12/12 closes joined
+to an `OPEN_PERM` row on `(file, actor_pid)`.
+
+Unit names, because the short form is not a unit: the durable set is
+`hermes-seeder-watch-frodo.service` and `hermes-seeder-watch-buzzy.service`
+(system units, `/etc/systemd/system/`, `Restart=always`, `RestartSec=5`,
+`--seconds 86400`). `seeder-watch-<p>.service` answers `Id=` with that name and
+`ActiveState=inactive`, no `FragmentPath` — verifying the arm by the short name
+reads "down" while both arms are up. The window boundary is
+`ExecMainStartTimestamp` (a run stamp), never a `start` line's neighbour.
 
 ## A pin is a field that cannot read stable while the bytes move (measured 2026-11-15)
 
