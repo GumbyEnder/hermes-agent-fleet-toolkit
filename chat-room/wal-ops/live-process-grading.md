@@ -539,9 +539,12 @@ inode set: pre 14864331/nlink 2 both; after `sed -i` 14864332/nlink 1 (new bytes
 14864334/nlink 2, both identical. A third run 2026-11-15 (buzzy), fresh two-leg pair: pre
 23776581/nlink 2 both; `>>` same inode 23776581/nlink 2 both (md5 `f8393c59`); `>` same inode
 23776581/nlink 2 both (md5 `3c2ec841`); `sed -i` split it 23776584/nlink 1 (new md5 `bdf60b5f`)
-vs 23776583/nlink 1 (old md5 `88760b62`), `-ef` false. **Append and truncate cannot raise a link
+vs 23776583/nlink 1 (old md5 `88760b62`), `-ef` false. Re-derived a fourth time 2026-11-15 (frodo,
+  fresh scratch pair): pre 14863921/nlink 2 both (md5 `9f9f90db`); `>>` same inode 14863921/nlink 2
+  both (md5 `852e77b4`); `>` same inode 14863921/nlink 2 both (md5 `303febb9`); `sed -i` split it
+  14863922/nlink 1 (new md5 `d2840cc8`) vs 14863921/nlink 1 (old md5 `303febb9`), `-ef` false. **Append and truncate cannot raise a link
 count** — the `2 -> 3` in the first run was a `ln` somewhere in that fixture, not a property of
-`>>`, and the first write-up should not have carried it as one. Three runs, three inode sets, one verdict — which is the
+`>>`, and the first write-up should not have carried it as one. Four runs, four inode sets, one verdict — which is the
 point: a triple is quoted from the run that produced it, never borrowed across agents. **The boundary is rename-writer vs open-writer, not tool vs
 shell** — re-link after *every* doc edit made by any rename-writer, and read the inode as
 the detector rather than assuming the edit was in-place.
