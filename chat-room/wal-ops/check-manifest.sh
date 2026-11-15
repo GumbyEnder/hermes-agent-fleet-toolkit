@@ -89,6 +89,14 @@ rm -rf "$rs_tmp"
 # The leg table lives in install-mirror-legs.sh, so the gate asks the WRITER what it
 # would do rather than carrying a second copy of the table that can drift from it.
 # A missing or erroring writer is a FAIL, never a skip: an unread contract cannot pass.
+#
+# THE WRITER'S EXIT STATUS IS THE VERDICT; ITS SENTENCES ARE ONLY LABELS. Measured
+# 2026-11-15 on a shadow tree: a tampered NAS leg produced `dry  would write ...` and
+# the writer exited 0, so this branch was a grep for a phrase -- reword the phrase and
+# the gate prints mirror_ok=3 over a stale leg. install-mirror-legs.sh --dry now exits
+# 3 when it would write anything; this gate treats rc=3 as drift on its own, and only
+# uses the text to say WHICH leg. A gate is a fact about the sentence it parses, so the
+# parse never decides green alone.
 m_ok=0; m_drift=0; m_skip=0; m_state=measured
 if [ -x ./install-mirror-legs.sh ]; then
   m_out=$(./install-mirror-legs.sh --dry 2>&1); m_rc=$?
@@ -100,7 +108,19 @@ if [ -x ./install-mirror-legs.sh ]; then
       | sed 's|^dry  would write |FAIL mirror drift (published leg is stale): |'
     rc=1
   fi
-  [ "$m_rc" -eq 0 ] || { printf '%s\n' "$m_out" | grep '^FAIL' ; rc=1 ; }
+  if [ "$m_rc" -eq 3 ]; then
+    # drift, whatever the wording: if the parse above found none, say so and still fail.
+    [ "$m_drift" -gt 0 ] || {
+      printf '%s\n' "$m_out"
+      echo "FAIL mirror drift (writer rc=3: it would write a published leg; no parseable would-write line)"
+      m_drift=1
+      rc=1
+    }
+  elif [ "$m_rc" -ne 0 ]; then
+    printf '%s\n' "$m_out" | grep '^FAIL'
+    echo "FAIL mirror legs: ./install-mirror-legs.sh --dry exited $m_rc"
+    rc=1
+  fi
 else
   m_state=nowriter; rc=1
   echo "FAIL mirror legs: ./install-mirror-legs.sh is not executable -- the published-leg contract is not readable"
