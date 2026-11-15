@@ -72,29 +72,33 @@ set -u
 #   re-materialises every reference in that profile, which is the whole failure mode.
 #
 # SCOPE -- what this gate does NOT cover. Counted, not assumed:
-#   repo root 13 `.md` (`git ls-files '*.md'`), chat-room/wal-ops 9, DOCS 7 -> 14 arms.
+#   repo root 13 `.md` (`git ls-files '*.md'`), chat-room/wal-ops 10, DOCS 8 -> 16 arms.
 #   The 4 root docs and the 2 wal-ops docs outside DOCS (README.md,
 #   manifest-truncation-2026-11-14.md) have no reference in the frodo, buzzy, aragorn or sam
 #   profile dirs, so they have no drift path. Everywhere else this gate is blind by
-#   construction: 27 reference docs in frodo's dir and 24 in buzzy's -- 51 profile-local docs
-#   against 7 graded -- are neither in DOCS nor in the repo. Coverage is exhaustive for the 7
+#   construction: 38 reference docs in frodo's dir and 34 in buzzy's -- 72 profile-local docs
+#   against 8 graded -- are neither in DOCS nor in the repo. Coverage is exhaustive for the 8
 #   DOCS names x 2 profiles and for nothing else. Never restate it as "exhaustive for drift".
+#   (Counts re-measured 2026-11-15 12:52 ET at 808b897 + this commit: `git ls-files`, `ls` in
+#   each references dir. The previous line read 27/24/51, which was already stale by 10 docs
+#   before provenance-quoting.md was added -- a count in a comment decays silently, so re-count
+#   it in the same edit, never carry it.)
 #
 # Docs covered. Every entry here is repo-canonical in chat-room/wal-ops/ and symlinked into
 # each profile's references/. Add a doc here in the same commit that adds its symlinks, or the
 # new doc drifts with no detector -- measured 2026-11-14: the carve of wal-forensics.md was
 # proposed with this gate covering only wal-lifecycle.md, so the new file would have had two
 # uncontrolled copies from birth.
-DOCS="wal-lifecycle.md wal-forensics.md live-process-grading.md wal-census.md rotated-log-siblings.md copy-arm-semantics.md build-provenance-and-gate-arms.md"
+DOCS="wal-lifecycle.md wal-forensics.md live-process-grading.md wal-census.md rotated-log-siblings.md copy-arm-semantics.md build-provenance-and-gate-arms.md provenance-quoting.md"
 PROFILES="frodo buzzy"
 WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
 # The last line is the verdict, built so that a quote of this gate carries its own
 # evidence: head/dirty name the tree measured, ok/fail remove the need to count OK
 # lines by hand, and the pair of oids names two different objects. docs_oid is the git
-# blob oid of the DOCS LIST -- it pins the ROSTER (which seven filenames are in the
+# blob oid of the DOCS LIST -- it pins the ROSTER (which eight filenames are in the
 # contract) and cannot move when a doc's bytes move. docs_md5 is one digest over the
-# seven (sha256, name) pairs in DOCS order  [order matters: the digest is printed that way] -- it pins the DOC SET's CONTENT and moves
+# eight (sha256, name) pairs in DOCS order  [order matters: the digest is printed that way] -- it pins the DOC SET's CONTENT and moves
 # on any byte anywhere. Quote docs_oid for "the roster is what it was"; quote docs_md5
 # for "the doc set is what it was". Neither one carries the other's claim.
 rc=0
@@ -148,7 +152,7 @@ sha=$(git -C "$WALOPS" rev-parse --short HEAD 2>/dev/null || echo no-git)
 dirty=$(git -C "$WALOPS" status --porcelain --untracked-files=no 2>/dev/null | head -c 1 | wc -c)
 docs_n=$(printf '%s\n' $DOCS | wc -l)
 docs_oid=$(printf '%s\n' $DOCS | git hash-object --stdin 2>/dev/null || echo no-git)
-# docs_md5 is the CONTENT witness: sha256 over the seven (sha256, name) pairs in DOCS
+# docs_md5 is the CONTENT witness: sha256 over the eight (sha256, name) pairs in DOCS
 # order, truncated to 16 hex. A missing doc contributes the token `missing` rather than
 # being skipped, so a deletion moves this field too. Measured 2026-11-15: docs_oid
 # printed 56364eaa at 6478004 and again at 9e978c5 while build-provenance-and-gate-arms.md
