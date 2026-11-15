@@ -37,7 +37,15 @@ Usage:  sudo python3 fanotify-close-actor.py [--dir DIR] [--seconds N] [--log FI
                                                  [--only BASENAME]
 
 Emit one JSON line per event: ts, mono, mask, file, file_err, size, mtime,
-actor_pid, actor_start, actor_err, comm, unit, cmdline.
+actor_pid, actor_pidfd, actor_start, actor_state, actor_err, comm, unit,
+unit_err, cmdline, argv_seen, argv_seen_start.
+
+`cmdline` is what THIS row read. `argv_seen` is what this arm read from the same
+task while it was alive (matched by starttime, or by pid when the task is already
+gone), emitted as a separate field with `argv_seen_start` so a reader can reject
+the join. It exists because a milliseconds-long copier is reaped between its
+CLOSE_WRITE and the read, and a cached name that is labelled as cached is worth
+more than a null.
 
 THREE ARMS, AND ONLY ONE OF THEM ALWAYS NAMES THE ACTOR (all measured
 2026-11-15 on 7.0.0-38-generic):
@@ -86,9 +94,24 @@ responding would hold opens indefinitely -- that is inherent to permission event
                      (kernel thread, or exec with no argv)
   "GONE"          -> no /proc entry: the actor was reaped before the read
   "ZOMBIE"        -> /proc entry in state Z: exited, not yet reaped, empty cmdline
+  "GONE_RACE"     -> the reads straddled the exit: cmdline read back empty (mm
+                     already torn down) but the task was NOT yet marked Z. A row
+                     carrying comm plus an empty argv plus unit_err=ENOENT is this
+                     shape, not a fact about a live process.
+  "ARGV_TORN_DOWN"-> the same task had ALREADY been read with a non-empty argv in
+                     this process's lifetime, so the empty read now is exit_mm(),
+                     not an argv-less process. `cmdline` on the row carries the
+                     earlier live read, so the name is relocated, not lost.
   "NO_PID"        -> the event carried no PIDFD handle at all
   "CMDLINE_UNREAD"-> comm readable, cmdline read failed (transient)
 Only actor_err=null makes an empty cmdline a fact about the process.
+
+`unit` has the SAME two readings and is the reason `unit_err` exists: the cgroup
+read happens in pass 2, after the actor reads, so it is the first field to lose
+its subject on a fast copier. unit=null with unit_err=null means "no .service in
+the cgroup"; unit=null with unit_err=ENOENT means the task was gone by then.
+`actor_state` is the pass-1 task state and is emitted so a reader can see the Z
+boundary instead of inferring it.
 With --only, events whose file could not be named are still emitted (file=null)
 and counted in the closing `stop` line's `unresolved` field -- a name filter
 must never silently drop the events it cannot classify.
@@ -163,13 +186,19 @@ def _name(pid, field):
 
 
 def _unit(pid):
-    """DEEPEST .service component of the cgroup -- every user unit sits under
-    user@1000.service, so a first-component walk excludes nothing."""
+    """-> (unit|None, errname|None). DEEPEST .service component of the cgroup --
+    every user unit sits under user@1000.service, so a first-component walk
+    excludes nothing. The errname exists because this read happens in PASS 2, a
+    few hundred us to a few ms after the /proc reads in pass 1: measured
+    2026-11-15T02:24:39 on a plain 15 B `cp`, the CLOSE_WRITE row carried
+    comm="cp" with unit=null, i.e. the task was alive for pass 1 and reaped
+    before this read. A bare null here has the same two readings an empty
+    cmdline has, so it gets the same treatment: name the failure."""
     try:
         with open("/proc/%d/cgroup" % pid, "r") as f:
             lines = f.read().splitlines()
-    except OSError:
-        return None
+    except OSError as ex:
+        return None, errno.errorcode.get(ex.errno or 0, "E?")
     units = []
     for ln in lines:
         parts = ln.split(":", 2)[-1].split("/")
@@ -177,7 +206,7 @@ def _unit(pid):
             if p.endswith(".service"):
                 units.append(p)
                 break
-    return units[0] if units else None
+    return (units[0] if units else None), None
 
 
 def main():
@@ -297,6 +326,9 @@ def main():
 
     ino_map = {}          # st_ino -> (name, st) for ONE scandir of the marked dir
     ino_gen = [None]      # which batch ino_map was built for
+    seen_argv = {}        # (pid, starttime) -> cmdline already read from a live task
+    pid_argv = {}         # pid -> (starttime, cmdline): the join for a row that
+                          # reads /proc too late to have an argv of its own
 
     def _ino_from_handle(handle):
         """file_handle{handle_bytes(u32), handle_type(i32), f_handle[]}.
@@ -490,6 +522,17 @@ def main():
                 cmd, cmd_err = _name(pid, "cmdline") if pid else (None, "NO_PID")
                 comm, _comm_err = _name(pid, "comm") if pid else (None, "NO_PID")
                 pstate, astart = _pid_stat(pid) if pid else (None, None)
+                # The argv of an actor that has already been seen WITH an argv is
+                # not lost when a later row reads it empty: exit_mm() empties
+                # cmdline before the task is marked ZOMBIE, so the empty read is
+                # the exit window, not a fact about the process. Keyed by
+                # (pid, starttime) so a reused pid cannot inherit a lifetime.
+                if cmd:
+                    if len(seen_argv) > 512:
+                        seen_argv.clear()
+                        pid_argv.clear()
+                    seen_argv[(pid, astart)] = cmd
+                    pid_argv[pid] = (astart, cmd)
             finally:
                 # RELEASE THE OPENER, always, even if a read raised. Under
                 # --block-on-open the copier is parked inside open() until this
@@ -511,6 +554,12 @@ def main():
                 aerr = "ZOMBIE"
             elif cmd is None:
                 aerr = "CMDLINE_UNREAD:" + (cmd_err or "E?")
+            elif cmd == "" and seen_argv.get((pid, astart)):
+                # Already read WITH an argv in this process's lifetime: the empty
+                # read now is exit_mm(), not an argv-less exec. The argv itself is
+                # in `argv` on the row, so the name is not lost, only relocated.
+                cmd = seen_argv[(pid, astart)]
+                aerr = "ARGV_TORN_DOWN"
             else:
                 aerr = None
             if pidfd is not None:
@@ -561,20 +610,62 @@ def main():
             if a.only and fname is not None and fname != a.only:
                 continue
             aerr = ev["aerr"]
+            # The cgroup read is pass 2, so it is the one field that can be gone
+            # while pass 1 succeeded. A bare null unit therefore reads two ways,
+            # exactly like an empty cmdline: "no .service in the cgroup" and "the
+            # task was reaped before this read". unit_err names which.
+            uval, uerr = (_unit(ev["pid"]) if ev["pid"] else (None, "NO_PID"))
+            # BEST-EFFORT JOIN, separate from `cmdline` on purpose: this arm may
+            # have already read THIS task with an argv while it was alive (the
+            # parking OPEN_PERM row, or an earlier row of the same burst). A row
+            # whose own read missed the argv (GONE, or CMDLINE_UNREAD) still gets
+            # a name -- next to its own evidence, in its own field, never
+            # overwriting a measured value with a cached one. Matched by starttime
+            # when that is known; by pid alone only when the task is already gone
+            # (starttime unknowable), which is why argv_seen_start rides along and
+            # lets a reader reject the join.
+            argv_seen = argv_seen_start = None
+            if ev["pid"]:
+                if ev["astart"] is not None:
+                    argv_seen = seen_argv.get((ev["pid"], ev["astart"]))
+                    if argv_seen:
+                        argv_seen_start = ev["astart"]
+                else:
+                    hit = pid_argv.get(ev["pid"])
+                    if hit:
+                        argv_seen_start, argv_seen = hit
+            if aerr is None and (ev["cmd"] or "") == "" and ev["pstate"] != "Z":
+                # Empty argv with a state that is not yet Z is the exit window:
+                # exit_mm() empties cmdline BEFORE the task is marked ZOMBIE, so
+                # this shape means "reaped mid-read" unless the cgroup survived.
+                # Measured 2026-11-15T02:24:39 on a 15 B `cp`: CLOSE_WRITE row,
+                # comm="cp", cmdline="", unit=null, actor_err=null -- a row that
+                # claimed a fact about a process that no longer existed.
+                if ev["pstate"] is None or uerr == "ENOENT":
+                    aerr = "GONE_RACE"
             emit({"ts": ev["ts"], "mono": ev["mono"],
                   "mask": ev["mtype"], "file": fname, "file_err": ferr,
                   "size": st.st_size if st else None,
                   "mtime": time.strftime("%Y-%m-%dT%H:%M:%S",
                                          time.localtime(st.st_mtime)) if st else None,
                   "actor_pid": ev["pid"], "actor_pidfd": ev["pidfd_pid"],
-                  "actor_start": ev["astart"], "actor_err": aerr,
+                  "actor_start": ev["astart"], "actor_state": ev["pstate"],
+                  "actor_err": aerr,
                   "comm": ev["comm"],
-                  "unit": _unit(ev["pid"]) if ev["pid"] else None,
+                  "unit": uval, "unit_err": uerr,
                   # 1024, not 160: a hermes gateway wrapper's first 160 chars are
                   # the generic preamble (hermes-snap-<hash>.sh + AI_AGENT=...),
                   # which discriminates nothing between gateway children; the
                   # distinguishing argv is at the tail. The /proc read is free.
-                  "cmdline": (None if aerr else (ev["cmd"] or "")[:1024])})
+                  # Emitted only when this row's own read is a fact about the
+                  # process (aerr null) or the name was recovered from the live
+                  # read of the same task (ARGV_TORN_DOWN). Otherwise null, and
+                  # actor_err says why -- so `cmdline: null` has exactly one
+                  # reading again, and "" always means "read succeeded, argv
+                  # empty". argv_seen carries the cached name when it exists.
+                  "cmdline": (ev["cmd"][:1024] if aerr in (None, "ARGV_TORN_DOWN")
+                              and ev["cmd"] is not None else None),
+                  "argv_seen": argv_seen, "argv_seen_start": argv_seen_start})
             emissive += 1
     counts = {"closes": n_close, "opens": n_open, "self": self_n,
               "emitted": emissive, "unresolved": unresolved, "scan": n_scan,

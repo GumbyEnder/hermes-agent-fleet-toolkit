@@ -232,14 +232,20 @@ read. A `bash -c` probe is named in full because it outlives its own close; `cp`
 cmdline" holds for wrappers only, and the whole-directory copy — the case the arm
 exists for — is the unnamed one.
 
-Rules that follow:
+Rules that follow, each one now measured rather than prescribed (see
+§"A shipped arm that names every row" below — FAN_OPEN alone was NOT the fix):
 
 - **Arm `FAN_OPEN` (0x20) with the same info types and emit the open row.** At open
   the copier is alive by construction, so the actor fields resolve; join close rows by
   `(file, actor_pid)`. Shortening the drain is not a fix — a reaped child has no
-  `/proc` entry at any interval.
+  `/proc` entry at any interval. **But FAN_OPEN is not sufficient**: measured
+  2026-11-15 on a 10-file flat `cp`, 1-2 of 10 rows named and the rest
+  `actor_err=GONE`, because the arm's own per-event cost makes the later events of a
+  burst arrive after the copier is reaped. "N-1 clean chances" is false.
 - **`cmdline: ""` is two states**, process gone and argv genuinely empty. Emit
-  `actor_err` or `pid_alive`, or the row is readable two ways.
+  `actor_err` or `pid_alive`, or the row is readable two ways. `unit` has the same
+  defect and needs `unit_err` for the same reason — the cgroup read is pass 2, so it
+  loses its subject first.
 - **`[:160]` cuts the wrong 160 for a gateway `bash -c` wrapper** — the preamble
   (`source .../hermes-snap-<hash>.sh; export AI_AGENT=...`) discriminates nothing
   between gateway children and the distinguishing argv is at the tail. Read 1024.
@@ -248,6 +254,57 @@ Rules that follow:
   replacement process and an unarmed span between them (measured 70 s frodo / 83 s
   buzzy, 00:12:19/20 -> 00:13:43). With no SIGTERM trap there is no `stop` line, so a
   kill and a crash are indistinguishable in that log.
+
+
+## A shipped arm that names every row (measured 2026-11-15T02:24-02:35 -0500)
+
+The arm on both profiles now runs `--block-on-open`, i.e. `FAN_OPEN_PERM | CLOSE_WRITE`
+under `FAN_CLASS_PRE_CONTENT`: the opener is parked inside `open()` until the arm
+answers `FAN_ALLOW`, so the `/proc` reads happen against a process that cannot leave.
+Measured on the exact shape the instrument exists for — one 15 B `cp` plus ten 15 B
+files copied flat into an armed `references/`:
+
+| quantity | measured |
+|---|---|
+| rows emitted | 22 |
+| rows named (`cmdline` or `argv_seen`) | **22 / 22** |
+| rows with `cmdline: ""` and `actor_err: null` | 0 |
+| CLOSE_WRITE rows with a fully named OPEN_PERM row on `(file, actor_pid)` | 22 / 22 |
+| `actor_err` tally | 14 null, 7 `ARGV_TORN_DOWN`, 1 `GONE_RACE` |
+
+Field-level consequences, each one a distinct ambiguity that is now named on the row:
+
+- **`actor_err`** — `GONE` (no /proc entry), `GONE_RACE` (readings straddled the exit:
+  cmdline empty, comm gone, task not yet Z), `ZOMBIE` (state Z), `ARGV_TORN_DOWN`
+  (this task was already read with an argv while alive, so the empty read is
+  `exit_mm()`, not an argv-less process), `NO_PID`, `CMDLINE_UNREAD:<errno>`.
+  `cmdline` is emitted only when `actor_err` is null or `ARGV_TORN_DOWN`, so
+  `cmdline: null` has exactly one reading and `""` always means "read succeeded,
+  argv empty".
+- **`unit_err`** — the cgroup read is pass 2, so it loses its subject first:
+  `unit: null, unit_err: null` = no `.service` in the cgroup;
+  `unit: null, unit_err: ENOENT` = the task was gone by then. A close row may
+  legitimately carry `ENOENT` while its OPEN_PERM row carries the unit.
+- **`actor_state`** — the pass-1 task state, emitted so the Z boundary is visible
+  instead of inferred. `R` with an empty argv is the exit window, not a live task.
+- **`argv_seen` / `argv_seen_start`** — what this arm read from the SAME task while it
+  was alive, in its own field, never overwriting a measured value. Matched by
+  starttime when known; by pid alone only when the task is already gone, which is why
+  `argv_seen_start` rides along. Caveat, stated rather than hidden: the pid-only join
+  can mis-attribute on pid reuse inside the cache window (512 entries), and the unit
+  of a reaped close row is not recoverable — read the OPEN_PERM row for it.
+- **`[:1024]` not `[:160]`** for cmdline: a gateway `bash -c` wrapper's first 160
+  chars are the generic preamble and discriminate nothing.
+- **`{"signal": ...}` on the way down.** A SIGTERM/SIGINT/SIGHUP handler emits the
+  signal name plus the counters captured at that moment. Proven live at
+  `02:27:51 -0500`: `{"signal":"SIGTERM","ts":"2026-11-15T02:27:51-0500","closes":2,
+  "opens":685,"self":0,"emitted":687,"unresolved":0,"scan":0,"marks":1}` directly
+  followed by a fresh `start`. A handover is now read, not inferred; a crash still has
+  no `signal` line, which is exactly the distinction the log could not make before.
+
+Cost of the arm: every open in the marked directories is serialized through userspace
+(~100 us), and the group must run in LEGACY mode (see the script header). It is an
+identity instrument at that price; the non-permission arms are pid records.
 
 ## A pin is a field that cannot read stable while the bytes move (measured 2026-11-15)
 
