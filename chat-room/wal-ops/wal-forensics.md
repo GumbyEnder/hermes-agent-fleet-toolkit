@@ -196,11 +196,14 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   this fixture. Correct wiring: read-back 4 / 1000 and two digests; buggy wiring: one digest,
   both arms printing read-back 4 / 16,512 B. Quote the read-back and the digest count, not an
   absolute byte total: a WAL is `32 + frames×4,120` and the frame count is the fixture's shape. One
-  insert per commit on a 16-byte row reads 16,512 B (4 frames) vs 41,232 B (10) after 8 commits;
-  `37,112` is 9 frames, i.e. a fixture whose first insert shares the `CREATE TABLE` transaction.
-  Measured 2026-11-14 20:19 here: k single-insert commits give `32+(k+2)×4,120` — 16,512 at k=2,
-  24,752 at k=4, 41,232 at k=8 — so the correct arm's byte total is not the invariant the read-back
-  is. A printed statement still needs a reader; a compared one does not.
+  insert per commit on a 16-byte row reads 16,512 B (4 frames) vs 41,232 B (10) after 8 commits.
+  `37,112` is 9 frames, and the shape that produces it is 7 such commits — not an insert sharing the
+  `CREATE TABLE` transaction. Measured 2026-11-15 03:51 here over k = 1…9, in two builds of the
+  fixture (create committed alone vs first insert riding it): both are byte-identical at every k,
+  12,392 at k=1 through 37,112 at k=7 and 45,352 at k=9, i.e. `32+(k+2)×4,120` with frames
+  tracking the insert commits. So the transaction membership of the create drops no frame and the
+  correct arm's byte total is not the invariant the read-back is. (Rungs 16,512 / 24,752 / 41,232 at
+  k = 2 / 4 / 8 measured 2026-11-14 20:19 by buzzy.) A printed statement still needs a reader; a compared one does not.
 - **A ladder rung is not a commit number.** Bootstrap (`CREATE TABLE` + first `INSERT` = 3 frames = 12,392 B)
   then N commits gives `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
   frames in the `PASSIVE`/`RESTART` tuple `(0,43,43)`. Quote the formula, not a terminal rung.
