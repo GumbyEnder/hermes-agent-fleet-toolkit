@@ -411,6 +411,14 @@ verdict line so the quote carries its evidence instead of the reader's memory.
 A row count alone cannot separate 41 rows at 7335bd7 (correct there) from 41 of 43 at HEAD
 (wrong); the oid can, and `dirty` makes a run taken before the doc commit quotable.
 
+**The doc-links gate is a LIVE-TREE assertion, not a commit property.** Its `-ef` arm compares
+each repo doc against the profile reference by inode identity plus byte equality, so it can only
+be green in the shared tree where the hardlinks exist. Graded in a detached worktree at an old
+sha it returns `ok=0 fail=14 rc=1` by construction — measured at `b925bd6` (manifest `46/46 rc=0`,
+doc-links `14` fails). Grade the `-ef` arm at HEAD only; a green doc-links line is evidence about
+the tree you ran it in, never about the commit you checked out. The manifest gate has no such
+dependency and does reproduce at an old sha.
+
 ## The marked directory is one level deep, so a copy into a subdirectory is unwitnessed (measured 00:55)
 
 fanotify marks are per-inode; `FAN_EVENT_ON_CHILD` covers **direct children only**. Probe on
