@@ -811,15 +811,18 @@ people check. Measured on this box 2026-11-15 00:22-00:25 ET against the two see
   The 03:26:29 generation recycles at **2026-11-16 03:26:29**, not at 00:24:28; a deadline copied
   from the install time grades the wrong instant, and `grep -c '"stop"'` is 0 in both logs until then.
 - **The ownership repair writes `mtime`, so `mtime` stops being the arm's activity clock.** The
-  `ExecStartPre` `touch` sets mtime at every start, and the arm then appends its own `start` row, so
-  from the first recycle each log's mtime is the *current arm's start* -- permanently newer than the
-  newest event row. A fanotify arm that resolves nothing for a day still shows a fresh mtime at the
-  boundary. Measured on this box 2026-11-15 13:54 ET: `seeder-watch-buzzy.jsonl` reads mtime == ctime
-  == `2026-11-15 05:09:32.612547527` (its last event ts, 05:09:32) with `start 03:26:29`; after the
-  recycle the same file reads mtime ~= its newest `start` row while its last *event* row is still
-  2026-11-15 05:09:32. So
-  "log mtime is stale, therefore the arm is dead" dies at 03:26:29, and the log's own last `ts` plus
-  the `start`/`stop` pair count is the only live/dead evidence left. Budget one documented
+  `ExecStartPre` `touch` writes the file at every start and the arm then appends its own `start` row,
+  so mtime is the LAST WRITE by any writer -- `max(touch, start append, event appends)` -- and not
+  "the current arm's start". Measured on this box 2026-11-15 14:39 ET on an arm that IS resolving
+  files: `seeder-watch-buzzy.jsonl` mtime == ctime == `2026-11-15 05:09:32.612547527` (its newest
+  event's write, `start 03:26:29`) and `seeder-watch-frodo.jsonl` mtime `06:08:22.864520356` / ctime
+  `13:51:56.149046356` (newest event 06:08:22, `start 03:26:29`). So mtime tracks the newest event to
+  the millisecond when events arrive, and it is NOT permanently ahead of the event rows. The defect is
+  the QUIET arm: at each recycle the touch and the `start` append both write, minting a fresh mtime
+  with no event row at all, so an arm that resolves nothing for a day still shows a fresh mtime at
+  the boundary. "Log mtime is stale, therefore the arm is dead" dies at the first recycle; the
+  live/dead evidence is the log's tail -- newest event `ts` vs newest `start` `ts` (equal means
+  nothing resolved since that start) plus the `start`/`stop` pair count. Budget one documented
   mtime+ctime jump per log per 24 h, at the boundary, with the row set unchanged.
 - **Deferred, deliberately:** the buzzy log is still `root:root 0664` (ino 23495529) because the
   repair lands at the boundary anyway and a `chown` now would bump ctime -- the field re-links are
