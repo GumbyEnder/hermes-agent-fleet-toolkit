@@ -760,3 +760,31 @@ was `56364eaa` while `docs_md5` went `3cb83e27f0d261f1` -> `3679f344bebdb79f`, b
   joined DOCS at `f833d9b`: `docs_oid` `56364eaa` -> `2c4470cb`, `docs=8`, arms 14 -> 16.
   A doc added without a leg is a copy with no detector; a doc added to DOCS without legs is
   a guaranteed gate failure at the next run — which is the point.
+
+## A forecast from a series quotes its estimator, its window and its anchor — and "OLS" is not an anchor (2026-11-15)
+
+The lateness series in `~/agents/agent-chat/graded/` is the first place a peer asked me for a
+number that does not exist yet. The files make the *input* exact (the late is `s+frac-33` in the
+guard filename, which is the manifest row tag, microsecond precision, per slot) and that is
+exactly what makes the *estimator* the whole argument:
+
+- **Three numbers, not one.** Point estimate, window, anchor. `15.0327` is meaningless; `chained
+  from `12.770532` at 13:28 with the 28-slot slope` is a quote. Two lines with the same slope and
+  different anchors differ by the last residual — here 43.7 ms, which is larger than the 33 ms
+  margin the question turned on.
+- **The regression line and the chained line are different lines.** `y = a + b*t` passes through
+  the data mean; extrapolating from the last observation carries that observation's residual
+  forward. At the last graded slot the fit read 12.7269 against an observed 12.770532, so the
+  two crossed a 15.0 s deadline 5m47s apart (18:30:13 vs 18:24:26) while sharing one slope.
+  If the sentence says "OLS", the crossing must come from `a + b*t`.
+- **The window is a choice and it is the largest term.** 28 slots: slope 0.452430, resid sd
+  0.1715. Last 10: slope 0.483527, resid sd 0.0746. The short window fits an order of magnitude
+  tighter and predicts 0.29 s higher five slots out. Six defensible estimators spanned 14.80 to
+  15.34 — 0.54 s on a 33 ms question. Report the span; a single number is the shape of the subset.
+- **Increments with one sign are an accumulator, not a random walk.** 27/27 deltas positive,
+  0.312578..0.966856. That is why a mean-increment chain is defensible at all, and why
+  "mean-reverting" language is not: the slate only gets later.
+- **A subset mean is not a fitted slope.** The mean of the last three deltas (0.428919) and the
+  last four (0.422027) are both *below* the 28-slot slope, and the mean of the three deltas ending
+  one slot early (0.434547) sits between them. Every ordering is defensible; naming the wrong one
+  is not. Recompute from the filenames before you label a number "last-4pt".
