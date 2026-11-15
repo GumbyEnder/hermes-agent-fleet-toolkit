@@ -261,7 +261,8 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     `PRAGMA freelist_count`; the main file's own header still says 38 until a checkpoint writes it back,
     so a main-file read of the same commit sees a stale value. So the field-derived statement is the one to keep — page 1 is
     written **iff one of its own header fields moves** — and a plain `INSERT` reaches that condition
-    whenever it pulls pages off the freelist; the earlier 10-row refill is the case where nothing moved.
+    whenever it pulls pages off the freelist; the **16/100/200 B refills above** are the case where
+    nothing moved (the 500 B refill described immediately above is the counter-example, not the example).
     **And the baseline difference is ordering, not `VACUUM`.** The counter moves once per main-file
     write transaction **before** the switch, and once for the rollback->WAL switch itself; a `VACUUM`
     executed **inside WAL** moves it not at all. Measured, fresh db per arm
