@@ -324,6 +324,10 @@ def main():
     # which is how a --depth 2 arm fires and still reports file=null/UNLINKED for every row
     # (measured 2026-11-15).
     marked_dirs: list[str] = [a.dir]
+    # PASS-1 output. Discovery and marking are two passes on purpose: a SCAN row
+    # must be strictly pre-arm, and an interleaved walk cannot promise that.
+    discovered: list[str] = []
+    disc_fail = 0
 
     def _mark_dir(path: str) -> None:
         r = libc.syscall(ctypes.c_long(NR_fanotify_mark), ctypes.c_int(fd),
@@ -336,7 +340,11 @@ def main():
             marks["armed"] += 1
             marked_dirs.append(path)
 
-    def _walk(path: str, depth: int, seen: set) -> None:
+    def _discover(path: str, depth: int, seen: set) -> None:
+        """PASS 1: collect the directory list and emit nothing. A scandir failure
+        here is the only kind of failure that may carry scan:True, and the only
+        kind the census counts -- no mark is live yet, so no row can be lost."""
+        nonlocal disc_fail
         if depth <= 0:
             return
         try:
@@ -344,6 +352,7 @@ def main():
                 kids = [e.path for e in it
                         if e.is_dir(follow_symlinks=False)]
         except OSError as ex:
+            disc_fail += 1
             marks["failed"].append({"path": path, "errno": ex.errno, "scan": True})
             return
         for kid in sorted(kids):
@@ -355,15 +364,26 @@ def main():
             if key in seen:
                 continue
             seen.add(key)
-            _mark_dir(kid)
-            _walk(kid, depth - 1, seen)
+            discovered.append(kid)
+            _discover(kid, depth - 1, seen)
 
+    scan_count = None          # None: the discovery leg did not run (--depth 0)
     if a.depth > 0:
         try:
             root_st = os.stat(a.dir, follow_symlinks=False)
-            _walk(a.dir, a.depth, {(root_st.st_dev, root_st.st_ino)})
+            _discover(a.dir, a.depth, {(root_st.st_dev, root_st.st_ino)})
         except OSError as ex:
+            disc_fail += 1
             marks["failed"].append({"path": a.dir, "errno": ex.errno, "scan": True})
+        scan_count = disc_fail
+    # PASS 2 -- every directory takes its mark only after the discovery leg is
+    # closed. Until this split the arm was interleaved (--dir marked, then each
+    # subdir marked as the walk reached it), so a depth>0 scandir failure could
+    # happen with the top mark already live: "SCAN rows are pre-arm" was true
+    # only for depth 0. The list already existed as marked_dirs; this moves the
+    # mark syscall out of the walk, it does not add machinery.
+    for d in discovered:
+        _mark_dir(d)
     try:
         mount_fd = os.open(a.dir, os.O_RDONLY | os.O_DIRECTORY)
     except OSError as ex:
@@ -479,7 +499,7 @@ def main():
           "resolve": "ino-scan" + ("" if nr_obh else " (no open_by_handle_at fallback)")})
 
     deadline = time.time() + a.seconds
-    n_open = n_close = emissive = unresolved = self_n = gen = n_scan = 0
+    n_open = n_open_perm = n_close = emissive = unresolved = self_n = gen = n_named = 0
     while time.time() < deadline and stop_req["sig"] is None:
         r, _, _ = select.select([fd], [], [], DRAIN_S)
         if not r:
@@ -501,8 +521,16 @@ def main():
                 continue
             mtype = "OPEN" if mask & FAN_OPEN else ("OPEN_PERM" if mask & FAN_OPEN_PERM
                                                    else "CLOSE_WRITE")
-            if mtype in ("OPEN", "OPEN_PERM"):
+            # OPEN_PERM gets its own denominator, never folded into n_open. Under
+            # --block-on-open FAN_OPEN is not armed, so a folded counter reports
+            # the permission arm's rows as `opens` -- indistinguishable from a
+            # plain-OPEN arm and silently meaning two things in two modes. (In
+            # that mode `opens` was open_perm by construction: it becomes an
+            # explicit 0 next to an explicit open_perm, not an implicit alias.)
+            if mtype == "OPEN":
                 n_open += 1
+            elif mtype == "OPEN_PERM":
+                n_open_perm += 1
             else:
                 n_close += 1
             pid, handle, pidfd, fdinfo_pid = (epid if epid > 0 else None), None, None, None
@@ -699,6 +727,12 @@ def main():
                 # ARGV_TORN_DOWN arm names the exit window and it needs an
                 # earlier live read of the same task.
                 aerr = empty_argv_label(ev["pstate"], uerr, ev["kthread"])
+            # named counts EMITTED rows that carry a name, i.e. above nothing and
+            # below every filter. It is the coverage numerator; emitted is the
+            # denominator. unresolved is a different axis (file:null events, some
+            # of them filtered out by --only), so named + unresolved is not emitted.
+            if fname is not None:
+                n_named += 1
             emit({"ts": ev["ts"], "mono": ev["mono"],
                   "mask": ev["mtype"], "file": fname, "file_err": ferr,
                   "size": st.st_size if st else None,
@@ -723,8 +757,16 @@ def main():
                               and ev["cmd"] is not None else None),
                   "argv_seen": argv_seen, "argv_seen_start": argv_seen_start})
             emissive += 1
-    counts = {"closes": n_close, "opens": n_open, "self": self_n,
-              "emitted": emissive, "unresolved": unresolved, "scan": n_scan,
+    counts = {"closes": n_close, "opens": n_open, "open_perm": n_open_perm,
+              "self": self_n, "named": n_named,
+              "emitted": emissive, "unresolved": unresolved,
+              # null: the discovery leg did not run (--depth 0). 0: it ran and
+              # every scandir succeeded. N>0: N discovery surfaces failed, each
+              # listed in marks.failed with scan:True. A constant 0 and a crashed
+              # baseline are the same string -- only null separates them, and the
+              # count is what makes a partial failure visible without reading
+              # marks.failed.
+              "scan": scan_count,
               "marks": marks["armed"]}
     if stop_req["sig"]:
         emit(dict({"signal": stop_req["sig"],
