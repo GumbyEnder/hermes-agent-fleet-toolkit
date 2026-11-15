@@ -1,6 +1,6 @@
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 0ab0ac96b398029e1885af6d0df941fb  check-manifest.sh
-50cad920ae8661b9522999609ac8effd  check-wal-doc-links.sh
+a2e25caa9a224f3e8088ab5ccab33d5a  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
 6e0cbf95fad2405a3ac9759c7f6a8b40  fanotify-close-actor.py
@@ -14,6 +14,7 @@ d594d3ea4d58f04c1e797b2d73141935  qread.py
 2e612b3a13760cd02051d7d4f002a082  rehearse-per-slot-backup.py
 e36f7b06498986ae73a3e81275e3f332  rehearse-run-failure.sh
 42244df17ba82bb422519279a6bb2fb8  rehearse-verify-rolled-and-pruned.sh
+81cd467620e85398422f8095aaf2d005  relink-wal-docs.sh
 5fc43fd95e68382b8987b73e3d56abde  restart-dispatcher-when-no-turns.sh
 afaef597b3d62b29e2248bfcd800d0d6  ro-open-audit.py
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service

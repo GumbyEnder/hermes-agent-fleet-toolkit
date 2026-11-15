@@ -47,8 +47,12 @@ set -u
 
 # PROCEDURE -- this file states the rule it enforces; there is no second canonical.
 #
-#   edit -> md5-guarded `rm` + `ln` into BOTH profiles -> this gate AND check-manifest.sh ->
-#   commit. Relink is a step of the edit, not a repair: an edit leaving nlink=1 is incomplete.
+#   edit -> relink-wal-docs.sh (this directory: it parses DOCS/PROFILES out of THIS
+#   file and `ln -f`s every doc onto every profile leg, then re-runs THIS gate and
+#   exits with its rc; `--check` grades without writing) -> check-manifest.sh ->
+#   commit. Relink is a step of the edit, not a repair: an edit leaving nlink=1 is
+#   incomplete. One call per doc edit, because two hand-typed `ln -f` lines is where
+#   a half-repair happens -- done twice by hand on 2026-11-15, once by each agent.
 #
 #   The copier is the BATCH ROLLBACK, not the write. A SUCCESSFUL skill_manage write goes
 #   straight through the inode (patch and write_file both verified 2026-11-15T00:08:03 and
