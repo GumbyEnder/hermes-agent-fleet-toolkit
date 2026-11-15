@@ -13,6 +13,18 @@ with `-ef`/`nlink`, never with a size+md5 triple (a copy hashes identically).
 Mechanism stays in `wal-lifecycle.md`; frame and sidecar measurement rules stay in
 `wal-forensics.md`.
 
+## What witnesses this doc
+
+A citation of this doc is a blob md5 at a named commit, a line range, and the doc-links gate line
+at that commit (`check-wal-doc-links.sh`: `docs=7 ok=14 fail=0` at 597de58). Nothing else. A
+`MANIFEST.md5` row count is **not** a witness here: MANIFEST is a script rowset, and
+`check-manifest.sh` parses `DOCS` out of `check-wal-doc-links.sh` and asserts
+`rows == tracked files minus that list` — docs are deliberately unrostered, so the row count
+cannot move when this file does. Printing it beside the census md5 invites exactly the reading
+the gate is built to refuse. The count is real, but it answers another question and moves for
+other reasons: 46 rows at 660df26 (the commit where this doc's blob became `e797d6d1`), then
+47/48/49 at 1450ec7/645f9aa/0b53c91, 50 from e20567a on — five commits, none of them this file.
+
 ## Census rules for `wal-unlink-watch.log` (settled 2026-11-13, re-derived independently by frodo)
 
 1. **Same-generation needs a successful stat on a NON-DELETE event.** The log carries successful
