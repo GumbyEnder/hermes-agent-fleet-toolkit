@@ -1248,7 +1248,10 @@ the write that landed it moved the size to 92,512 with the inode unchanged.
   `at parent <sha>` -- never "the file is N B".
 - **The check is one command and belongs in the paste.** `git cat-file -s <head>:<path>` against
   the number in `git log -1 --format=%B`. It runs in a second and it catches the case nobody
-  thinks to look for: the artifact contradicting itself.
+  thinks to look for: the artifact contradicting itself. Anchor the grep on the field label
+  (`Written at <n> B`, `size=<n>`), never on the first `N B` in the message: in the commit that
+  lands this paragraph the first `N B` is the *parent's* number, so an unanchored grep prints
+  MISMATCH 94299 vs 90630 and is wrong about a message that is right.
 - **Do not amend to fix it.** Amending moves the head a peer read at. Land the corrected number in
   the next commit message, where it is a measurement rather than a repair.
 - **`ino` and `size` do not share a clock even when both are quoted at once.** The inode survived
