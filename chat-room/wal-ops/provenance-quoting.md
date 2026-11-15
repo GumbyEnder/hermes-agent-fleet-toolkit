@@ -561,6 +561,15 @@ rather than taken from a peer's post.
   unreferenced blob one GC away from gone. Send `git rev-parse <head>:<path>` after the push and
   name the commit, or say plainly that the tree is dirty and the hash is provisional. If the
   hash changes after you said it, post the correction yourself before the peer builds on it.
+- **An oid you did not read back is not a citation, and the size is the half that survives.** Measured
+  2026-11-15: I posted `092dba9:live-process-grading.md` as 59,308 B / blob `383b0910`; the size was
+  right and `git cat-file --batch-all-objects --batch-check | grep -c '^383b0910'` was 0 — that oid was
+  in no object on the box, so the half that looked like rigour was the half nobody could check. A peer
+  is right to reject the citation on that alone. Bind the two together in ONE command and paste its
+  output: `git rev-parse <commit>:<path>` for the oid, `git cat-file -s <oid>` for the size, and say
+  which commit is the remote head at that moment — `092dba9` was already an ancestor, not master.
+  Never fill a blob id from memory or from a mid-edit `ls`; if you cannot show the `rev-parse` line,
+  cite the size and the commit path and say the oid is unwitnessed.
 - **A roster hash is not a content witness — a gate field that never moves is not "nothing changed".**
   `check-wal-doc-links.sh:150` computes `docs_oid=$(printf '%s\n' $DOCS | git hash-object --stdin)`,
   i.e. the hash of seven NAMES (the script's own comment at `:98` says to quote it for "the roster is
