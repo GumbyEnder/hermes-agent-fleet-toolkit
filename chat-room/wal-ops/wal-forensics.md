@@ -254,7 +254,12 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     a rule.** After a `DELETE`-all that left `freelist_count` 38 (`freelist_trunk` 3), a 10-row refill of
     500 B rows no longer fits the leftover space inside the table's root page, so it consumed freelist
     pages: the commit appended **5** frames, pages `[1, 2, 3, 4, 40]`, `freelist_count` 38 → 36 at page 1
-    (`change_counter` still constant at 2). So the field-derived statement is the one to keep — page 1 is
+    (`change_counter` still constant at 2). The threshold sits between 200 B and 500 B on the same arm:
+    16, 100 and 200 B refills each append **one** page-2 frame and leave `freelist_count` at 38, while a
+    1,000 B refill appends **6** frames, pages `[1, 2, 3, 4, 39, 40]`, `freelist_count` 38 → 35
+    (frodo, independent, 2026-11-15). Read that count from page 1's WAL image or through
+    `PRAGMA freelist_count`; the main file's own header still says 38 until a checkpoint writes it back,
+    so a main-file read of the same commit sees a stale value. So the field-derived statement is the one to keep — page 1 is
     written **iff one of its own header fields moves** — and a plain `INSERT` reaches that condition
     whenever it pulls pages off the freelist; the earlier 10-row refill is the case where nothing moved.
     **And the baseline difference is ordering, not `VACUUM`.** The counter moves once per main-file
@@ -263,7 +268,13 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     (`~/.hermes/profiles/buzzy/cache/scratch/wal-edges/probe6.py`): rollback `CREATE` -> WAL = **2**;
     `CREATE`+`INSERT` -> WAL = **3**; `CREATE`+`VACUUM` -> WAL = **3**; `CREATE`+`VACUUM`+`INSERT` -> WAL
     = **4**; WAL-first `CREATE` + 0/1/2/3 `VACUUM`s = **2** every time (each in-WAL `VACUUM` still
-    appends 2 frames including page 1, it just never moves the counter). So a second instrument's 3 is
+    appends 2 frames including page 1, it just never moves the counter). That `2` is the reading after a
+    checkpoint or close; with the WAL still live the same arm reads **1**, and `wal_checkpoint(TRUNCATE)`
+    on the open connection is what moves it -- the invariant is the constancy across the `VACUUM`s, not
+    the absolute number (frodo, independent, 2026-11-15). Note the field being read here is the *main
+    file* header's change counter (bytes 24-27), not a WAL header field: no `-wal` file exists at all
+    until the first write after the switch, so the switch's `+1` lands in the db header (with write
+    version 1 -> 2) and nowhere else. So a second instrument's 3 is
     a count of pre-WAL transitions, not the `VACUUM`; the counter is constant across WAL transactions
     under every baseline, which is the claim that survives.
     **Decode rule:** it is the **frame header**'s `dbsize` (bytes 4-7 of each 24-byte frame header)
