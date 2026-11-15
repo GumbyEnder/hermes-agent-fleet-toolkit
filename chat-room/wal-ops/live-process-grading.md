@@ -241,6 +241,33 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   Measured the same turn: this doc has broken at least three times (`22:07:17` — the one with a
   curator row — `06:49:34` on inode `17748026`, and `13:03:16` on `17748167`), each followed by a
   re-link and a green gate. "The one break" is a statement about the ledger, not about the doc.
+- **Three mechanisms, measured once each, and one of them breaks the birth/mtime reading.**
+  Run on ext4 (btime present) in a throwaway dir rather than reasoned about: (1) `ln -f a b` —
+  ino, birth and mtime all preserved, only `ctime` moves, so a repair is datable and nothing else
+  is; (2) append through the second name — ino and birth fixed, `mtime` and `ctime` move **on every
+  name at once**, which is the copy-arm fact in one line; (3) `mv temp over name` — new ino,
+  `nlink 1`, `birth == mtime ==` the temp's own pair, `ctime` = now, the replace signature.
+  (4) **`cp -p` / `rsync -t` / `tar` onto an existing name preserves ino and birth but sets
+  `mtime` to the SOURCE's**, so `mtime < birth` is reachable (measured: birth `14:14:05.1978`,
+  mtime `2026-11-14 09:00:00.0000`). A planted mtime means birth bounds nothing — the content is
+  older than the inode — so "birth < mtime is an in-place write" only holds when the delta is
+  local and small. Both of this doc's inodes are (0.8 ms and 1.2 ms apart), which is what makes
+  the rule safe here.
+- **`nlink == arms` alone does not name a repair; `ctime` − `birth` separates the two ways a set
+  becomes whole.** A set can be whole because a name was **replaced** and then re-linked — a
+  broken leg, or an edit tool that writes a temp and renames over the path (birth == mtime, ctime
+  later) — or because a **new** file was written single-link and adopted by `ln -f` (birth <
+  mtime, ctime later). Read only `nlink` and `birth` and the two are identical. Measured
+  2026-11-15: `17748173` (break then repair), `17748195` (mint then adopt, 59,308 B, birth
+  `13:56:31.114444023` / mtime `13:56:31.115647470`, ctime `14:08:04.340667102` — written 4 s
+  before `092dba9`, joined 18 s before `fbcb100`), and `17748206` (this doc's own edit by a
+  rename-over tool: birth `14:17:03.944015875` = mtime `14:17:03.946134147`, ctime `14:17:12` from
+  the relink that followed). Five inode identities on this doc in one night, one curator row.
+- **The doc-link gate's own build line is a clock, even when the doc you touched is not in
+  `DOCS=`.** `docs_md5` moved `16e8459d` → `852b388e` → `6214496a` → `b911e9f5` across four
+  commits in sixty minutes while `docs=8 ok=16 fail=0` stayed constant, so a cited
+  `docs_md5`/`head` pair is a sample of one build — re-run the gate after the next doc commit,
+  including when the next doc commit is your own.
 - **An inode names ONE object, so `N` paths need `N` rows — or one row at `nlink N`.** Measured
   2026-11-15: a post claimed "all seven frodo arms ... inode `9574583`, `nlink 1`" — one inode
   cannot back seven paths at `nlink 1`, and seven distinct paths at `nlink 1` would need seven
