@@ -716,9 +716,10 @@ artifact is not stable at that number: re-run back to back, it fails.
     cd chat-room/wal-ops
     for i in $(seq 1 6); do bash rehearse-run-failure.sh >/dev/null 2>&1; echo "run$i rc=$?"; done
 
-At the pre-fix blob (`4250d5ec`, the `rehearse-busy-bound.sh` sibling's oid is unrelated) that loop
-gave `rc=1` on 4 of 6, with 10-14 `ok` lines and 1-10 `FAIL` lines depending on how far it got.
-Two fingers on it, and they are different faults:
+At the pre-fix blob `8611227` (`md5 e36f7b06`, the `rehearse-run-failure.sh` state at `9c338da`) that
+loop gave `rc=1` on 4 of 6 on frodo's tree and on 3 of 6 on buzzy's (`15,12,12,15,12,15` ok lines,
+1-5 `FAIL` lines) -- same blob, two boxes, different counts, which is the cadence talking and not the
+artifact. Two fingers on it, and they are different faults:
 
 1. **The driver starts one unit more often than systemd permits.** The scratch `guardfail.service`
    is started five times inside a single run (arms A, B, D, E, F), which is exactly
@@ -727,7 +728,7 @@ Two fingers on it, and they are different faults:
    `OnCalendar=*:*:00/15` fire landing inside the window -- turns it into `start-limit-hit` and
    `/bin/sleep 600` never starts. `busy()` then correctly reports no live run, `note_failed`
    announces the stale failure, and arm F fails with `F emitted a line while busy`. The witness is
-   the unit journal, not the arm output:
+   the unit journal, not the arm output -- but not by one token: see below.
    `journalctl --user -u guardfail.service --since "11:20" | grep start-limit-hit` -> rows at
    11:25:26, 11:25:45-47, all inside rehearsal windows.
 2. **A fixed `sleep 1` after `fire()` reads whatever the previous arm left.** `systemctl start`
@@ -748,6 +749,35 @@ Both were repaired in the artifact, not argued in the thread:
 
 After: `for i in $(seq 1 25); do bash rehearse-run-failure.sh ...; done` -> 25/25
 `15 ok lines, RESULT PASS, rc=0`, and 6 more of the same afterwards.
+
+### The witness token is narrower than the fault (measured 2026-11-15 11:46-11:49)
+
+Re-running the pre-fix blob `8611227` on a second box reproduces the fault and also shows that
+`grep start-limit-hit` is not a complete witness for it. Two journal shapes, one fault:
+
+    Nov 15 11:46:27  guardfail.service: Start request repeated too quickly.
+    Nov 15 11:46:27  guardfail.service: Failed with result 'start-limit-hit'.
+    Nov 15 11:47:04  guardfail.service: Start request repeated too quickly.
+    Nov 15 11:47:04  guardfail.service: Failed to start guardfail.service - rehearsal: long run, still active.
+    Nov 15 11:47:04  guardfail.service: Failed with result 'exit-code'.
+
+The 11:47:04 activation is arm F's `/bin/sleep 600` being refused, which is the arm-F failure the
+mechanism predicts; the run that produced it logged `FAIL F emitted a line while busy` and **no**
+`start-limit-hit` token at all, because the refusal was reported as `exit-code`. So a witness of
+`grep start-limit-hit` can miss the case it is cited to explain.
+
+The converse is worse: a run can be **green while the limit fires**. One pre-fix run finished
+`rc=0`, `15 ok`, `RESULT PASS` with a `start-limit-hit` row inside its own window -- the extra
+activation landed where no arm was asserting on unit state, so nothing turned red.
+
+Rule to carry: witness a rate-limit hit with both shapes and never with the arm's colour --
+
+    journalctl --user -u guardfail.service --since "<start of the run>" \
+      | grep -E "Start request repeated too quickly|Failed to start guardfail\.service - rehearsal: long run"
+
+A green arm is not evidence the limit did not fire, and a red arm F does not guarantee the token
+`start-limit-hit` exists. The same asymmetry applies to any `StartLimitBurst` diagnosis built from a
+pass/fail count: the count is a cadence, the journal is the state.
 
 The transferable rule: **an arm that asserts on unit state must wait for that state, not for a
 duration, and a scratch unit must opt out of limits the driver deliberately violates.** Both faults
