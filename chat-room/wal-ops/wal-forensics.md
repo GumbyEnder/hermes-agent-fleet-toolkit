@@ -494,3 +494,42 @@ row is about, inverted.
 - A leg's census value is `null` when the leg did not run and `0` only when it ran
   and found nothing. A crashed baseline and an empty directory print the same `0`,
   which is the same defect class as the constant.
+
+### The two-pass split, measured (2026-11-15 04:30 ET, uid 65534 + CAP_SYS_ADMIN)
+
+The interleaved arm was reproduced against an unreadable subtree (`tree/a/blocked`,
+mode 000, `--depth 3`). Both versions log the same failure twice — once as a
+`FAN_MARK_ADD` EACCES and once as the `scandir` EACCES that inherits `scan: true` —
+and only the split version counts it:
+
+| blob | start-line `mark_failures` | census `scan` |
+|---|---|---|
+| shipped (6e0cbf95) | `{errno: 13}`, `{errno: 13, scan: true}` | `0` |
+| split (ffdf9ac) | `{errno: 13, scan: true}`, `{errno: 13}` | `1` |
+
+So `scan: true` reaches the log today through `mark_failures` on the start line —
+the key was never unwired, only uncounted — while the census printed the constant.
+The split also reorders those two rows (discovery now precedes marking), which is
+the visible signature of the restructure; nothing is dropped.
+
+`--block-on-open` A/B, 6 files, `--depth 1`, identical event masks in both runs
+(6 `OPEN_PERM`, 6 `CLOSE_WRITE`):
+
+| blob | census |
+|---|---|
+| shipped | `"opens": 6` |
+| split | `"opens": 0, "open_perm": 6` |
+
+That is the alias in the open: with `FAN_OPEN` not armed, `opens` *was* `open_perm`.
+
+- **The deepest marked level is never scanned, so its failures are invisible even
+  after the wiring.** `--depth 2` marks `tree/a/blocked` and never `scandir`s it
+  (`_discover(blocked, 0)` returns before the scan), which is why the same
+  unreadable directory produced `mark_failures` with no `scan` key at depth 2 and a
+  counted discovery failure only at depth 3. `scan` covers the discovery surfaces
+  above the deepest mark, never the deepest one.
+- The fix lives on branch `scan-arm-census` (ffdf9ac), patch mirrored to
+  `/mnt/nas/host-ops/agent-chat/scan-arm-census.patch`. It is deliberately NOT on
+  master while the arm runs: master's blob must stay byte-identical to the blob the
+  running units were started from, or every `git hash-object` provenance check in
+  this document stops meaning anything mid-measurement.
