@@ -460,11 +460,26 @@ in the counter tuple and printed at the census — and the name has exactly two
 occurrences in the blob, so nothing increments it. Every stop line that arm writes
 says `scan: 0`, and that zero is a shipped artifact, not a measurement: grade it
 **absent**, exactly like a missing field, and never as "no scan-leg rows". The same
-code carries `"scan": true` inside `mark_failures` entries (a key left by an
-uncommitted `--follow-new-dirs` draft that was reverted), so a failed mark looks like
-it distinguishes a scan leg from a mark leg when no scan leg exists.
+code carries `"scan": true` inside `mark_failures` entries, and that key is *not*
+stale draft cruft: it entered with the per-subdir marks (1619f79), and both sites
+(340-347 `_walk`, 361-366 root) are failures of the pre-arm `scandir` whose only job
+is finding directories to mark. So the key names a real scandir failure that the
+census never counts — the fix is to wire the leg, not to delete the key. Deleting it
+would bury a `_walk` wall inside the mark-failure count, which is the defect this
+row is about, inverted.
 
 - Before quoting a zero from a census field, grep the field name and count its
   occurrences: a name with an init and a print and no `+=` is a constant.
 - Fix it in the commit that adds the leg it was written for, not before — `named`
   and the OPEN_PERM denominator land with the notify-class companion arm.
+- **A leg that must be "strictly pre-arm" needs the arm restructured, not just a new
+  counter.** As shipped, `--dir` takes `FAN_MARK_ADD` at 306-309 *before* any
+  `scandir`, and `_walk` marks each subdirectory at 358 *before* descending into it:
+  scan and mark are interleaved, so SCAN rows are not pre-arm by construction for
+  `--depth > 0`. Scan-then-mark means two passes — discover directories and emit
+  SCAN rows, then `FAN_MARK_ADD` over the collected list (`marked_dirs` already
+  holds it). There is also no row source yet: `_scan_ino_map` (393) builds the name
+  map and emits nothing, so `mask=SCAN` occurs zero times in the blob.
+- A leg's census value is `null` when the leg did not run and `0` only when it ran
+  and found nothing. A crashed baseline and an empty directory print the same `0`,
+  which is the same defect class as the constant.
