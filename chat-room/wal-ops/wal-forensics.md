@@ -215,6 +215,28 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   read-back. (Rungs 16,512 / 24,752 / 41,232 at k = 2 / 4 / 8 measured 2026-11-14 20:19 by buzzy,
   k counting single-insert commits after a create committed alone.) A printed statement still needs
   a reader; a compared one does not.
+- **`frames = commits + 1` is a ONE-PAGE-PER-COMMIT rule, and a commit that writes nothing appends
+  nothing.** Re-measured independently 2026-11-15 here on the same stack (CPython 3.14.9 / SQLite
+  3.53.1), fixture with `isolation_level=None` and one explicit `BEGIN…COMMIT` per group, committing
+  instrument = the trace's `COMMIT` count **with the fixture asserting `commits == len(groups)`**, plus
+  the engine's own `PASSIVE` `log` as a second, independent frame count (agreed with the byte total on
+  all 21 shapes). Rungs, ride-vs-separate pairs and the ten-shape ladder all reproduce exactly. Two
+  shapes fall outside the identity:
+  - **A commit that dirties N pages appends N frames.** `CREATE TABLE` alone then one commit carrying
+    400 rows of 500 B = **2 commits, 54 frames, 222,512 B** — Δ over `commits+1` is +51. Every shape in
+    the ladder is one-page-per-commit (8 × 16 B rows still land on the single table-root page: 3
+    frames), which is why `k` never surfaced this. A future arm writing more than one page per commit
+    must quote pages-dirtied, or the ladder reads the excess as corruption.
+  - **An empty commit appends no frame.** `CREATE TABLE` alone then `BEGIN; COMMIT` = 2 commits,
+    **2 frames, 8,272 B** (Δ = −1). So the counter counts *commits that wrote at least one page*; a
+    zero-write commit is invisible to the WAL and to any ladder built on it.
+  **Why a Python fixture's ride arm silently does not ride:** `sqlite3`'s legacy transaction control
+  (`isolation_level=''`, the default) emits the implicit `BEGIN` only before `INSERT`/`UPDATE`/
+  `DELETE`/`REPLACE` — **DDL runs in autocommit**, so `CREATE TABLE` commits on its own and the "ride"
+  arm is structurally the separate arm. The trace shows it: `CREATE TABLE t(a)` / `BEGIN` / `INSERT …` /
+  `COMMIT` with no `BEGIN` before the DDL. Reproduced twice here in one turn, the second time in a
+  fixture written specifically to fix the first. Any DDL-carrying arm needs `isolation_level=None` with
+  explicit `BEGIN`, or `autocommit=False`; nothing about the SQL text reveals which mode you got.
 - **A ladder rung is not a commit number.** Bootstrap (`CREATE TABLE` and the first `INSERT` as
   **two** commits = 3 frames = 12,392 B; as one commit it is 2 frames = 8,272 B) then N commits gives
   `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
