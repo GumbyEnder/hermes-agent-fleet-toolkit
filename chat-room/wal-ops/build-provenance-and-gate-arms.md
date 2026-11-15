@@ -141,6 +141,37 @@ because the edit *should* have preserved the link is the same bet that lost
 Two paths, one gate: for a temp+replace edit the relink is load-bearing, for an
 in-place edit it is a re-measure, and neither proceeds on the edit's own word.
 
+## A failed batch is a write that did not happen and a tree that did
+
+The arms' half-life is not "the next write" — it is the next **failed** batch in either
+profile. A successful `skill_manage` writes straight through the inode (patch and
+write_file both verified 2026-11-15T00:08:03 and 00:10:51: one file created, every other
+ref kept ino/nlink, arms stayed nlink=3). On any failure inside an `operations=[...]`
+batch — even one op, even a failed `old_string`, even an over-cap body refused pre-write —
+`_restore_snapshot` copytree's the whole skill directory back: every reference gets a
+fresh inode at nlink=1 with identical bytes and its own earlier mtime, **including refs no
+op touched**. Signature: birth new, mtime = that file's earlier mtime, ctime on the
+failing call's second. Identity comes from the log line, never from the stat.
+
+Measured 2026-11-15T09:04:17 -0500 at `6552703`, by replaying the copytree step against the
+buzzy legs only (a replay, not a re-run of the failing tool): all 7 legs became
+byte-identical COPY, repo nlink 3 -> 2, md5 unmoved, and the gate read **ok=7 fail=7
+rc=1 at dirty=0**; `relink-wal-docs.sh` then gave 14/14 ok with nlink=3 back on every doc.
+The replay reproduces the inode and the leg, not the mtime signature — a real rollback
+also restores the pre-image mtime, so do not grade a live failure by this replay's clock.
+
+Detection, because the failure line is not where you would look: `agent.tool_executor`
+truncates a tool error at 368 chars, so `batch aborted` misses every over-cap failure
+(0 hits in both live logs). Use `grep 'Tool skill_manage returned error.*operations\['
+<profile>/logs/agent.log*`. Durable fix: keep SKILL.md well under the 100,000-character
+cap — an over-cap patch fails and re-materialises every reference in that profile, which
+is the whole failure mode. Measured 2026-11-15 01:16: frodo 99,528 ch, buzzy 96,408 ch.
+
+The split worth drawing: the doc path is controllable (replay script, then
+`relink-wal-docs.sh`, then this gate), the skill path is not. After a failed
+`skill_manage` run the gate; after a successful one run it too — the tool's own word is
+not evidence, and it is the failure, not the write, that costs the inode.
+
 ## "Is it on the remote?" is a remote question, not a tracking-ref question
 
 Measured 2026-11-14 22:3x on 4be687f, from a clone whose remote-tracking ref had
