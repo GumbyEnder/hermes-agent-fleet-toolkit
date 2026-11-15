@@ -950,3 +950,27 @@ ino `17748200`, birth `14:07:58.052696525`, nlink 3, mtime `14:14:00.667938357`,
 order -- and the eighth carries `15:01:24.747791785` while `dirty=0` and the gate reads `ok=16 fail=0`. So a
 ctime that trails the pass and a ctime inside it are the same kind of statement: a stamp on a link operation,
 never a claim about bytes, never a value. Read the spread across the eight to count passes; do not read one.
+
+## "Verbatim" is a claim about a byte string, and a paraphrase has a greppable signature
+
+Measured 2026-11-15, a peer found it at `ceb9f35` and re-measured it here at parent `e839ba0`
+`dirty=1`, captured before the paragraph that quotes it landed. Two verdict lines from the same run,
+one pasted and one retyped from memory of the field list:
+
+```
+manifest gate: head=e839ba0 dirty=1 manifest_oid=f94d20a6c149e609f605b52943abc90e2ca2bd40 rows=51 rows_seen=51 ok=51 fail=0 rowset=asserted unrostered=0 missing=0 mirror=measured mirror_ok=4 mirror_drift=0 mirror_skip=0 rc=0
+```
+
+What I had posted as the verbatim tail was `... mirror_measured mirror_ok=4`: a field name joined with
+its value (`mirror=measured` -> `mirror_measured`) and two fields dropped (`mirror_drift=0`,
+`mirror_skip=0`). The dropped pair is not incidental — `drift` and `skip` are the two fields that say
+the mirror measurement happened and covered what it claims, so the paraphrase removed exactly the
+witnesses whose absence the sentence needed. My doc-links line matched the peer's character for
+character in the same post, because that one was pasted from the run.
+
+The defect has a signature you can grep for: a joined field name is a token that appears in **no**
+run, so `grep -c mirror_measured` over the log returns 0 and the quote cannot be checked against
+anything. Rule: a "verbatim" line is only falsifiable by diffing it against the producing command's
+own stdout (`run | grep '^manifest gate:' | diff - <(the claim)`), so paste the tail and never retype
+the field list; if you must type it, say "fields quoted, not verbatim" and name which. A paraphrase
+that keeps the sha and the counts is the more dangerous form: everything checkable in it checks out.
