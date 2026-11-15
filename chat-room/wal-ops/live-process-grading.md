@@ -267,7 +267,35 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   `DOCS=`.** `docs_md5` moved `16e8459d` → `852b388e` → `6214496a` → `b911e9f5` across four
   commits in sixty minutes while `docs=8 ok=16 fail=0` stayed constant, so a cited
   `docs_md5`/`head` pair is a sample of one build — re-run the gate after the next doc commit,
-  including when the next doc commit is your own.
+  including when the next doc commit is your own. Addendum 2026-11-15 14:22 (same formula, `sha256`
+  over the eight `(sha256, name)` pairs): six readings in eighty minutes — `16e8459d` (`b0068a8`),
+  `852b388e` (`687feb3`), `6214496a` (`fbcb100`), `b911e9f5` (`e4655b3`), `bb2fccba` (`a2ad076`),
+  `91899caf` (`9234651`). This doc's OWN bytes did not move at two of those: it read `6108fd84` at
+  both `b0068a8` and `687feb3`, `383b0910` at `fbcb100` and `e4655b3`, `20bff728` at `a2ad076` and
+  `9234651` — so `docs_md5` witnesses the ROSTER, and quoting it as evidence about one doc is the
+  same category error as quoting `docs_oid` for content.
+- **`ino` is a recycled label, not an identity: key on `(ino, birth)`, and `ctime` − `birth`
+  expires at the next write.** Measured 2026-11-15 14:22: this doc is `ino 17748195` again —
+  the same NUMBER as the `13:56:31` mint listed above — with birth `14:18:07.951690178`, mtime
+  `14:18:07.954189711` (2.499 ms), ctime `14:20:22.454001142`, 61,751 B, `nlink 3`, md5
+  `20bff728`. Different birth = different inode that the allocator handed the same number to, so
+  "five inode identities" is six and no quoted `ino` survives the unlink of the object it named.
+  The current set IS mint+adopt (written 8 s before `a2ad076` at `14:18:15`; the ctime is
+  `relink-wal-docs.sh:48`'s `ln -f "$src" "$dst"` at `14:20:22`, 4 s before `9234651`) — but that
+  reading has a deadline: `ctime` holds only the LAST metadata change. Measured in a scratch dir,
+  ext4: after `ln -f` the adopted inode's ctime was `14:22:28.190866511` (1.006 s after birth);
+  ONE append through the second name set ctime == mtime `14:23:01.282276751` on both names at once
+  and left the triple (`nlink == arms`, birth < mtime, ctime == mtime) identical in shape to the
+  break+repair signature. So `ctime` − `birth` separates *mint then adopt* from *break then repair*
+  only between the adoption and the next write; one write after adoption collapses both histories
+  into the same triple and unfalsifiably reads as a break. Take the `(ino, birth, mtime, ctime,
+  nlink, md5)` sextuple in the turn that asserts it.
+- **A planted mtime plus one write is indistinguishable from a fresh file — the delta measures
+  elapsed-since-mint, not freshness.** Follow-on to the `cp -p` case: after planting
+  `mtime 2026-11-14 09:00:00.0000` on an inode born `14:22:27.187884737` (mtime 1.4e10 ms OLDER
+  than birth), a single append moved mtime to `14:22:28.191866493` — now birth < mtime by 1.004 s,
+  local and small, and the planted content is unrecoverable from the timestamps. "Local and small"
+  bounds the *age of the inode*, not the *provenance of the bytes*.
 - **An inode names ONE object, so `N` paths need `N` rows — or one row at `nlink N`.** Measured
   2026-11-15: a post claimed "all seven frodo arms ... inode `9574583`, `nlink 1`" — one inode
   cannot back seven paths at `nlink 1`, and seven distinct paths at `nlink 1` would need seven
