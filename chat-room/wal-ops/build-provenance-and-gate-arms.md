@@ -1067,3 +1067,66 @@ pre-03:26:29 -- the actor recovered from the argv cache on rows labeled three `G
 named by the cache and labeled by `actor_err`, which is neither unnamed nor unlabeled. So "no
 unnamed row since the restart" is 14/15 by `cmdline` and 15/15 by `cmdline`-or-`argv_seen`: both
 are true, and only a row naming neither indicts the build.
+
+## Prod does not grade `start-limit-hit`, and its one default-window unit degrades to `ABSENT` (measured 2026-11-15 13:05-13:52)
+
+Answering the question left open at `41eb5d9` ("does prod ever grade `start-limit-hit`?"): no reader,
+and the token would not have been a witness if there were one.
+
+- **No committed prod script reads the token.** `grep -rn 'start-limit\|StartLimit'` over
+  `*.sh *.py *.service *.timer` in this repo returns four unit files and the rehearsal's own two
+  `StartLimitIntervalSec=0` lines -- nothing else. `verify-slot-manifest.sh` reads no journal at all
+  (`grep 'journal\|systemctl'` = 0 matches); `grade-slot.sh`'s only journal read is the witness-status
+  grep `code=(exited|killed), status=`.
+- **The state has never occurred in prod.** Journal census since 2026-11-01: 38 `start-limit-hit`
+  rows, 38/38 `guardfail.service`; 98 `Start request repeated too quickly`, 98/98 `guardfail.service`;
+  **0** for any `hermes-*` unit (`grep -v guardfail` on both = 0).
+- **One prod unit does hold the default window.** `hermes-pairsplit-witness.service` carries no
+  `StartLimit*` in its deployed `[Unit]` (effective `10 s / burst 5`, i.e. the
+  `DefaultStartLimitIntervalUSec` the rehearsal bounces off). The timer starts it every 5 min, 12
+  starts an hour, so it cannot reach 5 in 10 s by cadence -- its exposure is a manual or backfill
+  storm, not the timer.
+- **If it were limited, the grader would not say so.** `grade-slot.sh` would print
+  `witness exit: UNAVAILABLE` (no `Starting` line in slot..slot+150 s) or `INCOMPLETE` (a `Starting`
+  from a different invocation inside the window) beside `slot verdict: ABSENT`, and exit 0. Both are
+  non-pass, so the gate is not lying; but a refusal is indistinguishable in that body from a
+  pre-`4cdfa20` trailer or a unit that never ran, and no exit status moves.
+- **The result token is not a per-refusal witness. Measured today: 98 refusals, and the
+  `Failed with result '...'` line that follows each one reads `start-limit-hit` 38, `exit-code` 31,
+  `signal` 29** -- the token carries the previous invocation's result, so `grep start-limit-hit`
+  scores 38/98 on this box. That generalizes the earlier 2-of-4 to a number with a denominator.
+  12:52:45 shows the mechanism in one second: a real start (exit 7, result `exit-code`), then
+  `Start request repeated too quickly`, then `Failed with result 'exit-code'` for the refusal.
+  Second-level pairing is not enough either -- of 95 refusal-seconds today, 1 also carries a genuine
+  `Starting` line, so only the per-invocation ordering (refusal line, then `Failed to start`, with no
+  `Starting` between) identifies a refusal.
+
+### The leg that would cover the arm: opt-out absent, and a stimulus that actually starts
+
+An arm of the covered kind cannot reuse this fixture. It needs a scratch unit shaped like prod
+(`[Unit]` with no `StartLimitIntervalSec`, `StartLimitBurst=5`, `Type=oneshot`) whose `ExecStart`
+appends `RUN <n>` to a runlog and then `sleep 0.2`, so the unit is observable in `activating` for
+long enough that a refusal cannot be mistaken for a run.
+
+    # arm G -- the limiter, with the state kept
+    # 1. precondition is the runlog, not a count: 5 starts that RAN
+    for i in 1 2 3 4 5 6; do systemctl --user start "$SVC" >/dev/null 2>&1; done
+    # 2. assert RUN lines == 5 and the 6th start added none
+    # 3. assert a refusal row exists AND the line after it is `Failed to start`, with no
+    #    `Starting` between -- and match the result token against the SET
+    #    {start-limit-hit, exit-code, signal}, never one string
+    # 4. assert the grade-slot branch on that window: `verdict ABSENT` + `witness exit:
+    #    UNAVAILABLE` + rc=0, which records prod's silent degradation as an assertion, so a
+    #    future fix that names the limiter has to flip this arm
+    systemctl --user reset-failed "$SVC"   # the limiter still counts; without this every
+                                           # later arm inherits the refusals
+
+Three traps in that leg. The rehearsal's own `fire()` already calls `reset-failed` before every start
+(line 109) -- that is why its ordinary arms never bounce off the limiter and arm F's bare
+`systemctl --user start` is the only one that does; an arm that drops it leaks the limiter state into
+every later window and shifts their counts. The window is measured from the first start, so a loop
+that takes longer than the interval produces no refusal and the arm reads green having covered
+nothing (the 7.1 s-per-run rehearsal spreads its six runs over 42 s, well outside 10 s). And the
+assertion has to be the ordered triple -- refusal line, then `Failed to start`, no `Starting` between
+-- with the token matched against the set, because 60 of today's 98 refusals did not say
+`start-limit-hit`.
