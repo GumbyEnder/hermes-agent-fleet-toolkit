@@ -818,3 +818,47 @@ repo's history 163 commits touched the DOCS set, `docs_oid` took 8 distinct valu
 at a change to the DOCS string, and 150 commits moved `docs_md5` while the oid sat still (16 of 16
 since the roster last changed at `f833d9b`). An unchanged `docs_oid` therefore says *the roster is
 what it was* and nothing about text; quote the pair from one run.
+
+## Quoting a ctime, a roster multiset, or a carrier count
+
+**A link pass is a roster-wide ctime event, so a per-doc ctime is a loop index.** `ln -f` is not
+ctime-idempotent: measured in a scratch 3-arm set on this box (`ext4`, `/dev/nvme0n1p2`, 14:35:27),
+three consecutive `ln -f a b` on an already-intact set left ino, birth, mtime and `nlink=3` alone and
+moved ctime every time -- `.396780249` -> `.701777266` -> `.908430643`. `relink-wal-docs.sh` is a step
+of every edit, so it writes metadata on all eight docs on every run.
+
+What that looks like on this tree after the 14:30:29 pass -- **all eight** rostered docs, not the three
+that had been edited:
+
+    wal-lifecycle            ctime 14:30:29.209944881  mtime 06:18:28
+    wal-forensics            ctime 14:30:29.212944847  mtime 06:54:02
+    live-process-grading     ctime 14:30:29.215944812  mtime 14:30:24
+    wal-census               ctime 14:30:29.218944777  mtime 07:58:47
+    rotated-log-siblings     ctime 14:30:29.221944742  mtime 02:15:28
+    copy-arm-semantics       ctime 14:30:29.224944707  mtime 06:22:33
+    build-provenance         ctime 14:30:29.227944672  mtime 14:14:00
+    provenance-quoting       ctime 14:30:29.229944649  mtime 14:20:22
+
+The offsets are exactly 3 ms apart and ascend in DOCS order: they are the loop index of the pass, not
+edit time and not edit age. So the quotable form of a ctime is a WINDOW -- "ctime inside pass <ts>" or
+"ctime outside every pass since <ts>" -- and it is only ever compared against birth and mtime, never
+against another doc's ctime. A doc that was never touched still loses `ctime == mtime` at the next pass.
+
+**`docs_md5` excludes; it does not attribute.** Nine readings from `b0068a8` to `5b1f236` give nine
+distinct values while five of the eight docs are byte-static across all nine, and `live-process-grading`
+moved at five of the eight steps while `docs_md5` moved at all eight. So a CHANGED `docs_md5` names
+nobody -- but an UNCHANGED one proves no rostered doc moved, which no single-doc digest can state.
+Quote it in the negative direction only, with `docs=8` and `docs_oid` from the same run.
+
+**A carrier set is counted per commit's tree, not by pattern-matching object ids.** Content `c865b956`
+(blob `58bff531`, 38,015 B, `live-process-grading.md`) is carried by three commits -- `4c439a4`
+21:54:56, `089a5cf` 22:02:27, `ee23576` 22:03:53 -- and NOT by `4be687f`, whose copy of that file is
+`0def96cf` / `5dcca5bf`, 40,318 B. `eaa054da` is carried by 0 of 534. Count with
+`git rev-parse <c>:<path>` over `git rev-list --all`; `git rev-list --objects` lists an object once,
+which is not a carrier count.
+
+**And the census +1 is an arm, not an error.** Reachable blobs: `9234651`=530, `1983ebf`=531,
+`3bbf359`=532, `5b1f236`=533, `--all`=534, with distinct content sha256 equal to the blob count at
+every point. The extra one is `42cf4f3d`, 42,660 B, `chat-room/wal-ops/fanotify-close-actor.py`,
+reachable only from `refs/heads/scan-arm-census` (and its origin mirror). A blob count quoted without
+its ref arm is a different count that looks like the same count.
