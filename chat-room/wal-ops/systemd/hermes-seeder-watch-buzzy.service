@@ -6,7 +6,7 @@ Documentation=file:/home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit/c
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit/chat-room/wal-ops/fanotify-close-actor.py --dir /home/gumbyender/.hermes/profiles/buzzy/skills/agent-chat-bus/references --seconds 86400 --block-on-open --depth 1 --log /home/gumbyender/.hermes/profiles/buzzy/logs/seeder-watch-buzzy.jsonl
+ExecStart=/usr/bin/python3 /home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit/chat-room/wal-ops/fanotify-close-actor.py --dir /home/gumbyender/.hermes/profiles/buzzy/skills/agent-chat-bus/references --seconds 86400 --block-on-open --depth 1 --rescan 60 --log /home/gumbyender/.hermes/profiles/buzzy/logs/seeder-watch-buzzy.jsonl
 # The arm runs as root (fanotify), so systemd creates the log root:root 0664: the profile
 # owner can read it and cannot append or truncate it, and `: > log` fails EACCES -- which reads
 # exactly like a dead watcher. touch+chown, never install (install truncates an existing log).

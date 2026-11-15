@@ -269,9 +269,27 @@ def main():
                          "so the actor is alive by construction and is always named")
     ap.add_argument("--depth", type=int, default=1,
                     help="mark subdirectories of --dir down to this depth (default 1: the direct "
-                         "children). 0 = --dir only. FAN_MARK_MOUNT is never used: it would stall "
-                         "every open on the filesystem whenever the listener stops answering.")
+                         "children). 0 = --dir only. Capped at 8: recursion exists because a copy "
+                         "into a pre-existing subdirectory is the shape this arm is for, not "
+                         "because an arbitrary tree is free. FAN_MARK_MOUNT is never used: it "
+                         "would stall every open on the filesystem whenever the listener stops "
+                         "answering.")
+    ap.add_argument("--max-dirs", type=int, default=4096,
+                    help="refuse to arm if --depth would mark more directories than this. The "
+                         "walk is completed BEFORE the first mark is placed, so a ceiling "
+                         "breach exits loudly with zero marks rather than arming half a tree.")
+    ap.add_argument("--rescan", type=float, default=0.0,
+                    help="re-walk --dir every N seconds and mark directories that appeared "
+                         "since the last walk. Static marks are bound to inodes, and this event "
+                         "class cannot see CREATE/DELETE, so without a rescan an rm -rf'd and "
+                         "re-created subtree stays dark for the rest of the arm. 0 = arm-time "
+                         "walk only. A file written into the gap is not attributed."
+                    )
     a = ap.parse_args()
+    MAX_DEPTH = 8
+    if a.depth < 0 or a.depth > MAX_DEPTH:
+        print("--depth must be 0..%d (got %d)" % (MAX_DEPTH, a.depth), file=sys.stderr)
+        return 2
 
     out = open(a.log, "a", buffering=1) if a.log else sys.stdout
     emit = lambda d: (out.write(json.dumps(d) + "\n"), out.flush())
@@ -318,14 +336,25 @@ def main():
     # this listener stops answering (there is no CLOSE_PERM to bound it), which is an
     # availability failure, not a measurement cost. So: walk, mark each directory, dedupe by
     # (dev,ino) so a bind/loop cannot burn the mark budget, never follow a symlinked dir.
-    marks = {"armed": 1, "failed": []}
-    # Every directory that actually took a mark, in walk order. The resolver has to scan the
-    # SAME set: an ino map built from --dir alone can name nothing it marked below the top,
-    # which is how a --depth 2 arm fires and still reports file=null/UNLINKED for every row
-    # (measured 2026-11-15).
+    marks = {"armed": 1, "failed": [], "rescans": 0}
+    # LIVE marks: (st_dev, st_ino) -> path. A fanotify mark is held by the INODE,
+    # so when a marked directory is unlinked the kernel drops it; this dict is
+    # pruned at every rescan so `marks` in the start/stop line is the live count
+    # and a leak is visible from outside. (Placements would only grow.)
+    marked: dict[tuple, str] = {}
+    # Every directory that actually holds a mark, in walk order. The resolver has
+    # to scan the SAME set: an ino map built from --dir alone can name nothing it
+    # marked below the top, which is how a --depth 2 arm fires and still reports
+    # file=null/UNLINKED for every row (measured 2026-11-15).
     marked_dirs: list[str] = [a.dir]
+    try:
+        _root_key = (os.stat(a.dir, follow_symlinks=False).st_dev,
+                     os.stat(a.dir, follow_symlinks=False).st_ino)
+        marked[_root_key] = a.dir
+    except OSError:
+        pass
 
-    def _mark_dir(path: str) -> None:
+    def _mark_dir(path: str, key: tuple) -> None:
         r = libc.syscall(ctypes.c_long(NR_fanotify_mark), ctypes.c_int(fd),
                          ctypes.c_uint(FAN_MARK_ADD | FAN_MARK_ONLYDIR),
                          ctypes.c_uint(mark_mask),
@@ -334,9 +363,16 @@ def main():
             marks["failed"].append({"path": path, "errno": ctypes.get_errno()})
         else:
             marks["armed"] += 1
+            marked[key] = path
             marked_dirs.append(path)
 
-    def _walk(path: str, depth: int, seen: set) -> None:
+    def _stat_key(path: str) -> tuple:
+        st = os.stat(path, follow_symlinks=False)
+        return (st.st_dev, st.st_ino)
+
+    def _collect(path: str, depth: int, seen: set, out: list) -> None:
+        """Discover-only pass. Nothing is marked here: a ceiling breach has to
+        exit before the first mark, or the arm is left half-armed and silent."""
         if depth <= 0:
             return
         try:
@@ -355,15 +391,71 @@ def main():
             if key in seen:
                 continue
             seen.add(key)
-            _mark_dir(kid)
-            _walk(kid, depth - 1, seen)
+            out.append(kid)
+            _collect(kid, depth - 1, seen, out)
 
     if a.depth > 0:
+        discovered: list[str] = []
         try:
             root_st = os.stat(a.dir, follow_symlinks=False)
-            _walk(a.dir, a.depth, {(root_st.st_dev, root_st.st_ino)})
+            _collect(a.dir, a.depth, {(root_st.st_dev, root_st.st_ino)}, discovered)
         except OSError as ex:
             marks["failed"].append({"path": a.dir, "errno": ex.errno, "scan": True})
+        if len(discovered) > a.max_dirs:
+            # ABORT LOUDLY, and before a single mark of this walk is placed. An
+            # arm that marked the first N children and returned would look armed
+            # in its own start line while the rest of the tree is unobserved.
+            emit({"error": "directory ceiling exceeded; refusing to arm", "dir": a.dir,
+                  "dirs_discovered": len(discovered), "max_dirs": a.max_dirs,
+                  "depth": a.depth,
+                  "note": "raise --max-dirs or lower --depth; no subdirectory was marked"})
+            os.close(fd)
+            return 3
+        for kid in discovered:
+            try:
+                _mark_dir(kid, _stat_key(kid))
+            except OSError:
+                continue
+
+    def _rescan() -> None:
+        """Re-walk and mark what appeared. The kernel gives this class no
+        CREATE/DELETE event (measured on 7.0.0-38-generic: NOTIF|FAN_REPORT_FID
+        accepts CREATE|DELETE|MOVED_* rc=0, PRE_CONTENT|FAN_REPORT_FID is EINVAL
+        at init, and CREATE is EINVAL on the legacy permission group), so a
+        subtree rm -rf'd and re-created under --dir would go dark for the rest of
+        an 86400 s arm: the mark died with the old inode and no event can tell us
+        about the new one. Timer rescan is the only convergence available. It is
+        convergence within --rescan seconds, NOT event timing, and a file written
+        into the gap is never claimed as attributed."""
+        for key, path in list(marked.items()):
+            try:
+                if _stat_key(path) != key:
+                    raise OSError(0, "inode replaced")
+            except OSError:
+                del marked[key]
+        marked_dirs[:] = list(marked.values())
+        discovered: list[str] = []
+        try:
+            # Fresh dedupe set, seeded with the root only: reusing the live mark
+            # keys here would DELETE a re-created directory from the discovery
+            # pass whenever ext4 hands it back the old inode number (measured).
+            _collect(a.dir, a.depth, {_stat_key(a.dir)}, discovered)
+        except OSError:
+            pass
+        # Re-add EVERY discovered directory, not just the new ones: ext4 reuses
+        # inode numbers immediately, so an rm -rf'd and re-created directory can
+        # come back with the SAME (dev,ino) and be skipped as "already marked"
+        # while the kernel mark died with the old inode (measured 2026-11-15: a
+        # re-created `tree/` stayed dark across 13 rescans). FAN_MARK_ADD on a
+        # live inode is idempotent, so the unconditional re-add is the only form
+        # that cannot be fooled by inode reuse.
+        for kid in discovered:
+            try:
+                key = _stat_key(kid)
+            except OSError:
+                continue
+            _mark_dir(kid, key)
+        marks["rescans"] += 1
     try:
         mount_fd = os.open(a.dir, os.O_RDONLY | os.O_DIRECTORY)
     except OSError as ex:
@@ -473,14 +565,20 @@ def main():
 
     emit({"start": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "dir": a.dir, "seconds": a.seconds,
           "uid": os.getuid(), "filter": a.only, "drain_s": DRAIN_S,
-          "marks": marks["armed"], "mark_failures": marks["failed"][:8], "depth": a.depth,
+          "marks": len(marked), "mark_failures": marks["failed"][:8], "depth": a.depth,
+          "rescan": a.rescan,
           "masks": ("OPEN_PERM|CLOSE_WRITE" if a.block_on_open else
                     "CLOSE_WRITE" if a.no_open else "OPEN|CLOSE_WRITE"),
           "resolve": "ino-scan" + ("" if nr_obh else " (no open_by_handle_at fallback)")})
 
     deadline = time.time() + a.seconds
     n_open = n_close = emissive = unresolved = self_n = gen = n_scan = 0
+    n_open_perm = n_open_named = n_named = 0
+    next_rescan = (time.time() + a.rescan) if a.rescan > 0 else None
     while time.time() < deadline and stop_req["sig"] is None:
+        if next_rescan is not None and time.time() >= next_rescan:
+            _rescan()
+            next_rescan = time.time() + a.rescan
         r, _, _ = select.select([fd], [], [], DRAIN_S)
         if not r:
             continue
@@ -699,6 +797,18 @@ def main():
                 # ARGV_TORN_DOWN arm names the exit window and it needs an
                 # earlier live read of the same task.
                 aerr = empty_argv_label(ev["pstate"], uerr, ev["kthread"])
+            # Coverage counters, emitted in the stop/signal line. Coverage is
+            # graded on OPEN_PERM rows: FAN_OPEN_PERM parks the opener, there is
+            # no CLOSE_PERM mask, so a close row grades the writer's lifetime and
+            # not the arm (a `cp` reaped between its close and this drain leaves a
+            # GONE close row on a fully-working arm). `rows_named` is the honest
+            # whole-log number; `open_named` is the arm's coverage.
+            if ev["mtype"] == "OPEN_PERM":
+                n_open_perm += 1
+                if (ev["cmd"] or argv_seen):
+                    n_open_named += 1
+            if (ev["cmd"] or argv_seen):
+                n_named += 1
             emit({"ts": ev["ts"], "mono": ev["mono"],
                   "mask": ev["mtype"], "file": fname, "file_err": ferr,
                   "size": st.st_size if st else None,
@@ -725,7 +835,14 @@ def main():
             emissive += 1
     counts = {"closes": n_close, "opens": n_open, "self": self_n,
               "emitted": emissive, "unresolved": unresolved, "scan": n_scan,
-              "marks": marks["armed"]}
+              "marks": len(marked), "rescans": marks["rescans"],
+              # Coverage, not a verdict. `open_named` is the arm's number
+              # (OPEN_PERM rows named / OPEN_PERM rows); `rows_named` is the
+              # whole log including close rows, which grade the WRITER's
+              # lifetime -- a reaped copier's last close is GONE on a healthy
+              # arm, so do not read rows_named as coverage.
+              "open_named": "%d/%d" % (n_open_named, n_open_perm),
+              "rows_named": "%d/%d" % (n_named, emissive)}
     if stop_req["sig"]:
         emit(dict({"signal": stop_req["sig"],
                    "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, **counts))

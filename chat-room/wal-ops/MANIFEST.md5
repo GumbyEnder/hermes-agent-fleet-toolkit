@@ -3,7 +3,7 @@ a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 6c7a2d62846e8508ca2fbb90fc11444e  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
-6e0cbf95fad2405a3ac9759c7f6a8b40  fanotify-close-actor.py
+1b7d9a5b1c7058b4605cf7ce17248985  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 ca3ce404fc1cebac0f4dc48292365b4a  grade-slot.sh
 4c4baeba8236699799bc7d9434029055  install-mirror-legs.sh
@@ -29,8 +29,8 @@ e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
 c91142a41a33ad4b86e73c6a397cf4a0  systemd/hermes-agent-chat-walcheck.timer
 236c9216daf7b815db3a01406aa31c4b  systemd/hermes-pairsplit-witness.service
 0f44ed7b48f7ad5fc59ebd57f4b3781a  systemd/hermes-pairsplit-witness.timer
-f333e1ae0feb6b15aa371a417f545ee6  systemd/hermes-seeder-watch-buzzy.service
-72a7669ded067f892a3a892f08fb4d94  systemd/hermes-seeder-watch-frodo.service
+b82d9eea8be461ab2e17065914e89237  systemd/hermes-seeder-watch-buzzy.service
+e67047c0e8a5b30901a366f2c2613fd9  systemd/hermes-seeder-watch-frodo.service
 358f12819ef4a5c4120bfbe4870ad11e  systemd/hermes-wal-unlink-verdict.service
 b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 94daec2cc9a7d250acbf6097fbd58a9e  test-actor-err-labels.py
@@ -49,3 +49,4 @@ a11a0feba201c05f87751973edb361e6  wal-checkpoint.sh
 2bbd0c25562b8fd34221d664e6a7e902  wal-unlink-watch.py
 874af3df48729aa948159d9823bbd4cd  witness-janitor-phase.sh
 6c5438939e965d4158215195934ffdc5  witness-split-pair-v2.sh
+b3fd2ce1c781c9e15ee2eadd17740c5b  fan-mask-probe.py

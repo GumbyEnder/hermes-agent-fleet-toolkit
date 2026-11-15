@@ -1073,20 +1073,42 @@ actor), so this instrument belongs in a system unit, not beside the two inotify 
   0.2 ms apart (the wal, the `-shm` and the db of one transaction) all labelled `expect:
   room.db-wal`. The filter must run on the resolved basename; events it cannot name are emitted
   with `file: null` and counted in the `stop` line's `unresolved`.
-- **Coverage is per-DIRECTORY, and the permission arm cannot hook a directory that appears after arm
-  time.** `FAN_MARK_ONLYDIR` on `--dir` reports its DIRECT children only: measured 2026-11-15T01:03 with
-  `--block-on-open`, a file copied into a subdirectory that existed at arm time gave **0 rows at
-  `--depth 0`** and **2 rows at `--depth 1`** (1 named `OPEN_PERM`, 1 `CLOSE_WRITE` actor GONE), the
-  `marks` count going 1 -> 2. So the arm walks `--dir` at arm time and marks every directory
-  (`--depth N`, default 1, dedupe by (dev,ino), symlinked dirs never followed), and prints `marks` in
-  the `start`/`stop` lines with `mark_failures`, because a mark that failed silently is
-  indistinguishable from a quiet directory. `FAN_CREATE` is not available to close the gap: on
-  7.0.0-38-generic the kernel accepts `CREATE`/`DELETE`/`MOVED_*` only with `FAN_REPORT_FID` (mark
-  rc=0 with FID, errno 22 for every combination without it), and `FAN_REPORT_FID |
-  FAN_CLASS_PRE_CONTENT` is itself errno 22 at `fanotify_init`. A tree copied in AFTER arm time
-  therefore yields **0 rows, not a short window** (measured: `cp -a tree dir/`, `marks=1`, 0 events) —
-  that coverage needs a second, notify-class arm, and the permission arm must not be described as
-  covering it.
+- **Coverage is per-DIRECTORY, and a mark dies with its inode.** `FAN_MARK_ONLYDIR` on `--dir`
+  reports its DIRECT children only: measured 2026-11-15T01:03 with `--block-on-open`, a file copied
+  into a subdirectory that existed at arm time gave **0 rows at `--depth 0`** and **2 rows at
+  `--depth 1`** (1 named `OPEN_PERM`, 1 `CLOSE_WRITE` actor GONE), the `marks` count going 1 -> 2.
+  So the arm walks `--dir`, marks each directory (`--depth N`, default 1, symlinked dirs never
+  followed), and prints `marks` (the LIVE mark count, pruned each rescan) plus `mark_failures`; a
+  mark that failed silently is indistinguishable from a quiet directory. Depth is capped at 8 and
+  `--max-dirs` (default 4096) aborts **before the first subdirectory mark** — discovery is a
+  separate pass from marking, so a ceiling breach exits loudly instead of arming half a tree.
+- **`FAN_CREATE` cannot close the gap, and the probe is in the repo, not a citation.** On
+  7.0.0-38-generic: `NOTIF|FAN_REPORT_FID` + mark `CREATE|DELETE|MOVED_*` rc=0; `NOTIF` legacy +
+  mark `CREATE` errno 22; `PRE_CONTENT|FAN_REPORT_FID` at init errno 22; `PRE_CONTENT` legacy +
+  `OPEN_PERM` rc=0. So the only class that can name an opener can never see a directory created
+  after arm time, and no mask is removed on rmdir/rename either — the mark set only changes by
+  walking.
+- **Static marks are bound to inodes and ext4 reuses inode numbers, so re-mark on a timer.**
+  Measured 2026-11-15: `rm -rf` of a marked `tree/` + `mkdir` of the same name, then a copy in,
+  produced 0 rows and the arm reported `marks=2` with 13 rescans — the path stat'd to the old
+  (dev,ino) key so the "already marked" skip suppressed the re-add while the kernel mark had died
+  with the old inode. The arm now re-issues `FAN_MARK_ADD` for **every** discovered directory at
+  each `--rescan` tick (units: 60 s; `FAN_MARK_ADD` on a live inode is idempotent), and discovery
+  dedupes on a fresh set. That is convergence within `--rescan` seconds, NOT event timing: a file
+  written into the gap is not attributed, and the doc says so. Verified after the fix: same copy
+  fired `open_named 7/7`, `rows_named 14/14`, `marks` back to 2.
+- **Grade coverage on `OPEN_PERM` rows only; a close row grades the WRITER's lifetime.** There is
+  no `CLOSE_PERM`, so nothing parks a close. Two witnesses: `cp` of ONE file leaves the OPEN_PERM
+  row fully named and the CLOSE_WRITE row `actor_err=GONE` (reaped between close and drain); 5
+  sources in one `cp` then 5 separate `cp` invocations gave 8/10 close rows named, and both misses
+  were the process's LAST close. The stop line therefore carries `open_named` (OPEN_PERM named /
+  OPEN_PERM rows — the arm's coverage) and `rows_named` (whole log — readable as a whole-log
+  census, never as coverage). `unresolved=0` counts file-name resolution, not actor GONE: the line
+  prints `unresolved 0` with GONE rows behind it.
+- **A tree copied in AFTER arm time still needs the walk to reach it.** At `--depth 1` a
+  `cp -a` whose subdirectories are NEW marks the top directory on the next rescan and sees its
+  direct children only: measured 6/6 top-level files, 0/6 files one level deeper. Depth 2 is one
+  flag; no shape in use needs depth 3.
 - **The units are `hermes-seeder-watch-{frodo,buzzy}.service`; their logs live in
   `<profile>/logs/seeder-watch-<p>.jsonl`.** Not `seeder-watch-*` — a check of the short name gets
   "no such unit" and concludes the arm is gone — and never `cache/scratch/`: that dir is pruned at 24 h
