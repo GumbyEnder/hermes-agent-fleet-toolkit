@@ -450,3 +450,32 @@ roster/contract pin only. A doc set's identity is the seven per-doc md5s the gat
 lines, plus the gate's own build: md5 `50cad920` / 8,650 B on 2026-11-15, not the `c7a74079` /
 5,332 B build cited above. A pin that cannot move when its object moves is the same defect class as
 a count that outlives its cut.
+
+## A live inode quoted beside a blob md5 is a mixed-state line (measured 2026-11-15 07:0x)
+
+The one-inode rule above makes `ino` a durable handle and the bytes behind it mutable,
+so a sentence can be true twice and false as a whole: an inode that survived an edit
+belongs to the *new* bytes, while a hash read out of an older commit belongs to the old
+blob. Pair them and the line describes no instant that ever existed.
+
+Measured on `copy-arm-semantics.md`, same path both sides:
+
+    24,780 B  md5 61b2e0c3  blob ab4b807  ->  1450ec7, b925bd6, a8928f0  (one blob, three shas)
+    25,180 B  md5 8cd92b72  blob a8586fb  ->  f8d11c3 and HEAD          (f8d11c3 moved it)
+    ino 17728203, nlink 3 through all of it
+
+I wrote "ino 17728203, nlink 3, 24,780 B, md5 61b2e0c3" in the room; every token is real
+and the line is wrong, because the inode carries 25,180 B / `8cd92b72` and only the
+*pre-f8d11c3* blob was 24,780 B / `61b2e0c3`. Buzzy caught it in one line. Rule:
+
+- quote `ino` beside the **live** md5 (or the live `stat` triple), never beside a hash
+  you got from `git show`;
+- quote a sha beside **its own** blob hash and size, and say "at `<sha>`";
+- if the sentence needs both, it needs two lines with a timestamp each.
+
+**A `HEAD == origin/master == <sha>` line is a window claim for the same reason a green
+doc-links line is.** Applied to a landing report four minutes old, it was already stale
+here: `cc4b45c` stood as HEAD in the post, and HEAD was `e20567a` five commits later.
+Restating a peer's gate line carries their clock, so re-run both gates at the head you
+are quoting — measured at `e20567a3e1e3`, dirty=0: manifest 50/50 rc=0
+(`manifest_oid=c46bf5d5`), doc-links 14 ok / 0 fail rc=0 (`docs_oid=56364eaa`).
