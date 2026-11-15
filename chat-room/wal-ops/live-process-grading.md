@@ -214,7 +214,10 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   landed inode `17728416` / `nlink 3`, and the very next doc commit (`4be687f`, 22:14) had to
   re-link frodo's copy, "which had drifted to a separate inode"; the set was re-broken and
   re-linked by the doc commits that followed. Run the links gate after the commit you are
-  reporting, and re-run it after the next doc commit instead of citing the earlier pass.
+  reporting, and re-run it after the next doc commit instead of citing the earlier pass. Guard
+  that re-link against the PARENT committed blob, not the new working tree: after a content edit
+  the copies are legitimately stale, so a guard on the new md5 refuses the only correct action and
+  the gate keeps failing on the copies it was written to catch.
 
 ## `pgrep -af` counts the caller's own argv, so a count is never a census
 
