@@ -1,0 +1,17 @@
+[Unit]
+Description=Name the writer that closes files in the frodo agent-chat-bus references dir (fanotify CLOSE_WRITE actor)
+Documentation=file:/home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit/chat-room/wal-ops/fanotify-close-actor.py
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit/chat-room/wal-ops/fanotify-close-actor.py --dir /home/gumbyender/.hermes/profiles/frodo/skills/agent-chat-bus/references --seconds 86400 --log /home/gumbyender/.hermes/profiles/frodo/cache/scratch/seeder-watch-frodo.jsonl
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+# No PrivateTmp / ProtectHome games: the whole point is to observe the real profile directory.
+# --seconds 86400 is a daily recycle, NOT a lifetime: Restart=always re-arms 5 s later and
+# appends a fresh `start` line. Under Restart=on-failure the script's own clean exit (status 0)
+# is Result=success, which systemd does not restart -- the arm dies silently at the deadline.
+
+[Install]
+WantedBy=multi-user.target

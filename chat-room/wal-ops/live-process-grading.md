@@ -564,3 +564,33 @@ clock (11:31:30 + 27,796 = 19:14:46). The bus's own figure at that instant was 3
 differ by 7,377 s, exactly the units' start delta (09:28:33 vs 11:31:30). The durable fix is to add
 `port` (and `start_ts`) to the dispatcher's health payload, but that needs a restart of a live
 graded unit -- until it rides one, the port-attachment rule is the guard.
+
+## A live unit is not a durable unit: transient, and `Restart=on-failure` after a clean exit
+
+Two arms that outlive the turn can still be dead by tomorrow, and both holes read clean in the field
+people check. Measured on this box 2026-11-15 00:22-00:25 ET against the two seeder arms.
+
+- **Transient is not durable.** `systemd-run --unit=...` writes `FragmentPath=/run/systemd/transient/<name>.service`,
+  `/run` is tmpfs, the file has no `[Install]` section and `systemctl is-enabled` answers `transient`.
+  The process survives the shell (`PPID 1`, `ActiveState=active`) and does **not** survive a reboot:
+  nothing puts it in a boot transaction. Read `FragmentPath` and `is-enabled` together with
+  `ActiveState` -- `active` and `enabled` are two different properties and only the second one is
+  durability.
+- **`Restart=on-failure` does not re-arm a clean exit.** `--seconds 86400` is the script's own
+  deadline; it writes its `stop` line and exits status 0, which systemd records as `Result=success`.
+  Probed rather than argued: a throwaway transient unit with the identical
+  `Restart=on-failure`/`RestartSec=5s` running `sleep 3; exit 0` read `ActiveState=inactive`,
+  `SubState=dead`, `Result=success`, `NRestarts=0` twelve seconds later. The same signature was
+  scheduled for both seeder arms at 2026-11-16 00:13:43 EST. For a self-expiring watcher
+  `Restart=on-failure` is a dead-man switch that fires once, and it fires quietly.
+- **Rule:** a self-expiring watcher wants `Restart=always`, and then `--seconds` is a recycle, not a
+  lifetime -- 5 s of gap and a fresh `start` line per cycle, which is also how the log stays bounded.
+- **Rule:** a run that stops *with* its `stop` line expired; a run that stops without one was killed.
+  The script writes `stop` on its own deadline, so the absence is the witness. The 00:12:20 arm in
+  `seeder-watch-buzzy.jsonl` has a `start` and no `stop` -- it was a session-bound child, not a
+  watcher that finished.
+- **The durable form is the one this repo already ships.** `systemd/*.service` + a MANIFEST row +
+  `systemctl enable`. The seeder arms now live there as `hermes-seeder-watch-{frodo,buzzy}.service`
+  (`Restart=always`, `WantedBy=multi-user.target`, installed and enabled 00:24:28), and the transient
+  pair was stopped at 00:24:3x so that one observer watches each `references/` dir. Two observers on
+  one log do not double the evidence, they double `closes`.
