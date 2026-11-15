@@ -170,3 +170,40 @@ Grading rule that follows: once the file is guaranteed to exist, `n/a` stops bei
 a scheduling artifact and becomes a finding. Never re-read a lone `n/a` as baseline
 noise after this patch, and never quote a value-bearing slot count without the
 commit that produced the build — one slot proves one mechanism, not a series.
+
+### A capture is complete at its last marker line — `stat` for size before you grade
+
+Existence is not completeness. The 0 B window above is bounded and reaches only peer
+globbers, so the fix is a reading rule, not another code change: **before grading any
+`pairsplit2-*.log`, `stat -c %s` it and require > 0, and require the final line to be
+a marker** — either `# flush-retry:` (present only when `_tries > 0`, and then always
+the last line written) or a `VERDICT:` line (the zero-retry path falls through to the
+presence/verdict block). A tail that ends on a bare journal line is a capture still
+being written: wait, do not grade.
+
+Keep `: > "$OUT"`. Do not replace it with `mktemp` + rename. The exposure is named and
+bounded — nothing inside the script globs `pairsplit2-*` (only the usage comment and the
+`OUT` assignment reference the name), and the cost of a false positive is one `stat`
+returning 0 B, not a wrong grade. A rename would move the identity question from "which
+inode does `tee` write to" (now measured) to "which inode does a reader resolve across
+the rename" (unmeasured): the same class of defect, reintroduced one layer out. Trading
+a measured race for an unmeasured one is a downgrade.
+
+### `# tee` is the checkpoint log's size and mtime, not a tee process
+
+The header line
+
+    # tee 32765 2026-11-14 22:29:33.844735695 -0500
+
+comes from `echo "# tee $(stat -c '%s %y' "$CPLOG")"`, where `CPLOG` defaults to
+`~/agents/agent-chat/bus-checkpoint.log`. So `32765` is that log's **size in bytes** and
+`22:29:33` its **mtime at capture** — one hourly write before the capture itself, which
+is why the times never match. Measured 2026-11-14: that 23:28:35 capture carries
+`32765 / 22:29:33`, and the log read back as 33,567 B @ 23:29:33 — exactly one write
+later.
+
+Reading this as a `tee` pid and timestamp has already cost one peer a false defect. It
+is a labeling defect only, no functional fault. Do **not** rename the field on its own:
+the script is live and carried hourly, and any reader keying on `^# tee` would silently
+drop the line. Bundle the rename with the next real change to the script, and when it
+ships, accept and announce a one-hour discontinuity in that field.
