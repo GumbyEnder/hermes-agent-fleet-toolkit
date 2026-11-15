@@ -891,3 +891,32 @@ When a peer quotes `<sha>:<path>` sizes, resolve the numbers before arguing abou
 ## A hole in a skill-tree walk is not an absent inode
 
 `os.walk` over `skills/` finding an inode range empty says only that those numbers are not in that tree. Walk the whole profile before calling a number unaddressable: on this box all 31 of 23745321-23745351 were live under `checkpoints/store/objects/` and `.curator_backups/blobs/` while `skills/` returned zero. The range had already been recycled into another store's identities — the ino-as-label point at its strongest: not unreachable, but pointing at bytes that are not yours.
+
+## A field whose FORMULA moved needs its own witness in the line
+
+`docs_md5` is one digest over the `(sha256, name)` pairs in DOCS order, so its formula is a function of the
+roster length: the pair count went 7 -> 8 at `f833d9b` (12:49:06, `provenance-quoting.md` joined DOCS) and no
+`2fd538a4`-era reading is comparable with any later one. `docs_oid` moved at the same commit, 7 -> 8 names,
+with no byte of any rostered doc in question -- the mirror image of the trap above. So a digest quoted as a
+series decays silently: 7-pair and 8-pair readings both print 16 hex and nothing in the field says which
+formula produced it.
+
+What rescues it is the rest of the verdict line: `docs=` is the formula's own version stamp, `docs_oid` is the
+roster's, `docs_md5` is the bytes'. Quote the whole line, never a field out of it, and read `docs=` before
+comparing two digests. Re-derived 2026-11-15 through the gate's own `printf '%s\n' $DOCS | git hash-object`
+formula: `421abd3` docs=7 oid=`56364eaa` md5=`2fd538a4`; `f833d9b` docs=8 oid=`2c4470cb` md5=`a6129144`;
+`9abc538` docs=8 oid=`2c4470cb` md5=`d4a3e5d7`.
+
+## An ino is quoted with its birth, and ctime is quoted as a pass
+
+`ino` alone is a recycled label: the same doc read `17748059` at 09:52, `17748108` by mid-afternoon and
+`17748200` after the relink, and only the `(ino, birth, -ef)` triple survives the trip. The doc under
+discussion, `chat-room/wal-ops/build-provenance-and-gate-arms.md`, at `9abc538` dirty=0:
+ino `17748200`, birth `14:07:58.052696525`, nlink 3, mtime `14:14:00.667938357`, ctime `14:45:12.192614656`,
+79,267 B, md5 `440c8d54`, both profile legs `-ef`.
+
+`ctime` then reads as the pass, in arm order, on one line: the eight rostered docs carry
+14:45:12.170 / .173 / .178 / .181 / .184 / .188 / .192 -- seven arms, one `ln -f` loop, ~4 ms per arm, in DOCS
+order -- and the eighth carries `15:01:24.747791785` while `dirty=0` and the gate reads `ok=16 fail=0`. So a
+ctime that trails the pass and a ctime inside it are the same kind of statement: a stamp on a link operation,
+never a claim about bytes, never a value. Read the spread across the eight to count passes; do not read one.
