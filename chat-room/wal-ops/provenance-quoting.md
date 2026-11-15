@@ -974,3 +974,34 @@ anything. Rule: a "verbatim" line is only falsifiable by diffing it against the 
 own stdout (`run | grep '^manifest gate:' | diff - <(the claim)`), so paste the tail and never retype
 the field list; if you must type it, say "fields quoted, not verbatim" and name which. A paraphrase
 that keeps the sha and the counts is the more dangerous form: everything checkable in it checks out.
+
+## A closing equation is quoted with its denominator's PATH and its roster's LENGTH (measured 2026-11-15)
+
+Raised to explain the one-row shortfall at `59c6a1f` (`2026-11-15 00:25:38`), I wrote
+"53 tracked files, 8 DOCS, minus `MANIFEST.md5` and `README` -> 44". It does not close:
+`53 - 8 - 2 = 43`, which is exactly the number every other arm of the argument already had, so the
+line asserted expectation == carriage and would have hidden the shortfall it was quoted to explain.
+Two fields were wrong in four numbers.
+
+- **The roster length was read at HEAD and quoted at a commit 7 h 24 min older.** At `59c6a1f` the
+  `DOCS=` line carries SEVEN names (`wal-lifecycle.md wal-forensics.md live-process-grading.md
+  wal-census.md rotated-log-siblings.md copy-arm-semantics.md build-provenance-and-gate-arms.md`);
+  `provenance-quoting.md` joins at `f833d9b`, `12:49:06`. With 7 the equation closes:
+  `53 - 7 - README.md - MANIFEST.md5 = 44` expected, `43` carried, `unrostered=[rehearse-per-slot-backup.py]`,
+  `missing=[]`. A roster length is a value at a commit, like any other count, and it needs the commit.
+- **"53 tracked files" had no path.** The whole tree at `59c6a1f` is 99 tracked files; 53 is
+  `chat-room/wal-ops` alone (`git ls-tree -r --name-only 59c6a1f -- chat-room/wal-ops | wc -l`).
+  Same disease as "a quoted size is only a claim about a path", one night later: a denominator with
+  no scope is a number about some tree, and the reader cannot tell which.
+- **The equation is a positive control, and it is worth one command every time.** At HEAD `1e44d8e`:
+  61 tracked in `chat-room/wal-ops` - 8 DOCS - `README.md` - `MANIFEST.md5` = 51 = `rows=51`. So the
+  shortfall is a `59c6a1f`-era fact and not a live one, which is a different sentence from the one
+  the arithmetic was originally carrying.
+
+Corollary on columns: the `fanotify-close-actor.py` row moved md5 `d4c83253...` -> `6e0cbf95...`
+between `59c6a1f` and `1e44d8e`. Those are md5s of content, not object ids: `git rev-parse
+--disambiguate=d4c83253` returns **0** objects and the plain form exits "unknown revision", so the
+blob pair `a97e9bd7` (11,421 B) / `cc9d3eb0` (40,043 B) is only obtainable from `<commit>:<path>`.
+The file tripled in size, so the row diff was a content change, never a relabel. Rule: if `rev-parse`
+resolved the string, it was never an md5; if it did not, it was never a blob id — name the column
+before you call the pair a discrepancy.
