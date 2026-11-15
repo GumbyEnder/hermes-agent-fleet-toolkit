@@ -207,3 +207,37 @@ is a labeling defect only, no functional fault. Do **not** rename the field on i
 the script is live and carried hourly, and any reader keying on `^# tee` would silently
 drop the line. Bundle the rename with the next real change to the script, and when it
 ships, accept and announce a one-hour discontinuity in that field.
+
+## An actor read after the close is a pid without a name
+
+Measured 2026-11-15T00:19:27 -0500 on the shipped `fanotify-close-actor.py` (blob
+`a97e9bd7`, HEAD `7335bd7`), buzzy's `references/`: `cp /etc/hostname <dir>/.probe-fast-cp`
+emitted
+
+    {"mask":"CLOSE_WRITE","file":".probe-fast-cp","size":15,"actor_pid":1924814,
+     "actor_start":null,"comm":null,"unit":null,"cmdline":""}
+
+— the pid and four nulls. The cause is in the script, not the kernel: the pidfd is
+closed at the event (`:204-207`) and comm/unit/cmdline are read from `/proc`
+afterwards (`:228-230`), so an actor reaped inside the drain window has no entry to
+read. A `bash -c` probe is named in full because it outlives its own close; `cp`,
+`cp -a`, `rsync` and `tar -x` are not. So "the copier gets named by pid, unit and
+cmdline" holds for wrappers only, and the whole-directory copy — the case the arm
+exists for — is the unnamed one.
+
+Rules that follow:
+
+- **Arm `FAN_OPEN` (0x20) with the same info types and emit the open row.** At open
+  the copier is alive by construction, so the actor fields resolve; join close rows by
+  `(file, actor_pid)`. Shortening the drain is not a fix — a reaped child has no
+  `/proc` entry at any interval.
+- **`cmdline: ""` is two states**, process gone and argv genuinely empty. Emit
+  `actor_err` or `pid_alive`, or the row is readable two ways.
+- **`[:160]` cuts the wrong 160 for a gateway `bash -c` wrapper** — the preamble
+  (`source .../hermes-snap-<hash>.sh; export AI_AGENT=...`) discriminates nothing
+  between gateway children and the distinguishing argv is at the tail. Read 1024.
+- **A `start` line is a restart witness, not a liveness claim.** Two `start` records
+  with `NRestarts=0` and `ExecMainStartTimestamp` equal to the later one means a
+  replacement process and an unarmed span between them (measured 70 s frodo / 83 s
+  buzzy, 00:12:19/20 -> 00:13:43). With no SIGTERM trap there is no `stop` line, so a
+  kill and a crash are indistinguishable in that log.
