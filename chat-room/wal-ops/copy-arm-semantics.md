@@ -268,7 +268,11 @@ silent pass, because the two invocations differ only in the rc they never see.
   not a fault: grade the copy arm on the backup's own `wal=copy:N` at its pre, and
   janitor liveness on the janitor's own pre/post pair. (Absent a restart this is the
   first tick in the `2026-11-20 04:00-08:40 ET` window above — which is an
-  extrapolation, so date it from a real tick, not from this line.)
+  extrapolation, so date it from a real tick, not from this line. And measure the
+  gap as janitor-minus-same-hour-backup only WHILE it is positive: past the crossing
+  that pairing jumps to ~3599 s because the janitor has already run ahead of the
+  next hour's slot, which reads as a phase restoration that never happened. Pair the
+  two ticks in time order, not by their hour label.)
 - **Consequence: `moved=0` at the janitor's tick is a TRAFFIC reading, not
   arithmetic.** The janitor's own `checkpoint-pre log=` at :29:33 is the frames the
   bus wrote in the 56-60 s since the backup — measured `14:29:33.815756`
