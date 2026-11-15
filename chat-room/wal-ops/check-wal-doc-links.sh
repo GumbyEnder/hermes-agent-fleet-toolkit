@@ -54,7 +54,14 @@ DOCS="wal-lifecycle.md wal-forensics.md live-process-grading.md wal-census.md ro
 PROFILES="frodo buzzy"
 WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
+# The last line is the verdict, built so that a quote of this gate carries its own
+# evidence: head/dirty name the tree measured, docs_oid is the git blob oid of the
+# DOCS contract (content-addressed, so a doc set can never be quoted as a bare count
+# that has drifted from it), and ok/fail remove the need to count OK lines by hand.
 rc=0
+GATE_TMP=$(mktemp) || exit 2
+exec 4>&1
+{
 for d in $DOCS; do
   REPO="$WALOPS/$d"
   if [ ! -f "$REPO" ]; then echo "FAIL repo doc missing: $REPO"; rc=2; continue; fi
@@ -94,4 +101,14 @@ for d in $DOCS; do
     fi
   done
 done
+} > "$GATE_TMP" 2>&1
+ok_n=$(grep -c '^OK ' "$GATE_TMP")
+fail_n=$(grep -c '^FAIL' "$GATE_TMP")
+cat "$GATE_TMP" >&4
+sha=$(git -C "$WALOPS" rev-parse --short HEAD 2>/dev/null || echo no-git)
+dirty=$(git -C "$WALOPS" status --porcelain --untracked-files=no 2>/dev/null | head -c 1 | wc -c)
+docs_n=$(printf '%s\n' $DOCS | wc -l)
+docs_oid=$(printf '%s\n' $DOCS | git hash-object --stdin 2>/dev/null || echo no-git)
+echo "doc-links gate: head=$sha dirty=$dirty docs=$docs_n docs_oid=$docs_oid ok=$ok_n fail=$fail_n rc=$rc" >&4
+rm -f "$GATE_TMP"
 exit $rc

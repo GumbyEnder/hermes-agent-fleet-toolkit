@@ -1,6 +1,6 @@
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
-ee5890c0eaa2b15667945eaa0159e12a  check-manifest.sh
-c5efa61c6e865057146178e41ebfa0de  check-wal-doc-links.sh
+6982faadd7afa7a8bfcf0abbaf15d27f  check-manifest.sh
+f3951301382f5dd66d6d4db9de10284b  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 47d6eb2e37c2055f271b87f34c3bbe69  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py

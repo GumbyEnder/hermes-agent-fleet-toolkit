@@ -241,3 +241,62 @@ Rules that follow:
   replacement process and an unarmed span between them (measured 70 s frodo / 83 s
   buzzy, 00:12:19/20 -> 00:13:43). With no SIGTERM trap there is no `stop` line, so a
   kill and a crash are indistinguishable in that log.
+
+## A pin is a field that cannot read stable while the bytes move (measured 2026-11-15)
+
+One doc, four observations of it, five candidate fields — `wal-ops/live-process-grading.md`:
+
+    commit      size    md5 (from the object)  inode (worktree)  nlink
+    4be687f    40318   ad86f878a7cd…         17728680           3
+    dcba462    40318   ad86f878a7cd…         17728680           3
+    5e3a32f    40318   ad86f878a7cd…         17728680           3
+    59c6a1f    42750   edf857842b7a…         17728680           3
+    HEAD      42750   edf857842b7a…         17728680           3
+
+The inode is constant across an in-place append of 2,432 B. So "quote the commit and the
+inode together" is not a pin: it pairs a field that moves with the one an append cannot
+move, and the tuple reads *stable* while the bytes change. That is the tracking-ref error
+one layer in — a local view quoted as if it were the object.
+
+The field that holds is the content-addressed one, and it costs one command:
+
+    git cat-file -s <commit>:<path>
+    git show <commit>:<path> | md5sum
+    git rev-parse <commit>:<path>        # blob oid: 0def96cf… x3, then af731cc9… x2
+
+Two states cannot share a blob oid and one state cannot have two. Quote the commit (where
+you looked) and the blob oid (what was there). inode is a **replace detector** — it moves
+on unlink+create and cannot move on an append — so it grades a different question than
+"are these bytes the ones I pinned". Size and md5 are derived from the oid and are safe to
+repeat; mtime and inode are not.
+
+Gate consequence, landed in the same commit as this section: both gates now print their own
+verdict line so the quote carries its evidence instead of the reader's memory.
+
+    manifest gate: head=<sha> dirty=<0|1> manifest_oid=<blob oid of MANIFEST.md5> rows=N rows_seen=N ok=N fail=N rc=N
+    doc-links gate: head=<sha> dirty=<0|1> docs=N docs_oid=<blob oid of the DOCS list> ok=N fail=N rc=N
+
+A row count alone cannot separate 41 rows at 7335bd7 (correct there) from 41 of 43 at HEAD
+(wrong); the oid can, and `dirty` makes a run taken before the doc commit quotable.
+
+## The marked directory is one level deep, so a copy into a subdirectory is unwitnessed (measured 00:55)
+
+fanotify marks are per-inode; `FAN_EVENT_ON_CHILD` covers **direct children only**. Probe on
+a throwaway tree, both arm shapes (`--no-open`, and `--block-on-open` as the live units run):
+
+    dir/top.txt                        1/1 logged   (both arms)
+    dir/sub/nested.txt                 0/1 logged
+    dir/sub/deeper/nested2.txt         0/1 logged
+    dir/fresh/born/after_create.txt    0/1 logged   (subdir created AFTER the mark)
+
+`--block-on-open` is unaffected: a write that opens a fresh file inside a subdirectory emits
+no `FAN_OPEN_PERM` either, so the copier is not parked and not named. The arm is blind there
+in both masks, not just quiet.
+
+Arming recursion from the existing instance is not available: measured on 7.0.0-38-generic,
+`FAN_CLASS_PRE_CONTENT` accepts `CLOSE_WRITE|FAN_OPEN_PERM|FAN_EVENT_ON_CHILD` (rc=0) and
+rejects the same mask plus `FAN_CREATE` (errno 22, EINVAL) or plus `FAN_MOVED_TO` (errno 22).
+`FAN_CLASS_NOTIF` accepts both (`CLOSE_WRITE|FAN_OPEN|FAN_EVENT_ON_CHILD|FAN_CREATE|FAN_MOVED_TO|FAN_ONDIR`,
+rc=0). So the shape is a **second, NOTIF-class instance** whose only job is to see directories
+appear and add a mark to each on the pre-content instance — not a mask change to the arm that
+is currently the only durable witness.
