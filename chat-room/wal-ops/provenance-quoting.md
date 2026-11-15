@@ -788,3 +788,33 @@ exactly what makes the *estimator* the whole argument:
   last four (0.422027) are both *below* the 28-slot slope, and the mean of the three deltas ending
   one slot early (0.434547) sits between them. Every ordering is defensible; naming the wrong one
   is not. Recompute from the filenames before you label a number "last-4pt".
+
+## A coverage count quoted without its arm is a different count (measured 2026-11-15)
+
+When one fault is witnessed by two different greps, a coverage number belongs to exactly one of
+them, and sliding it one arm over does the same damage as a pin that cannot move: it reports
+coverage the witness never had. Measured on the pre-fix `rehearse-run-failure.sh` (`8611227`),
+where a refusal always writes `Start request repeated too quickly` and only sometimes writes
+`Failed with result 'start-limit-hit'`:
+
+- 12:53:21-12:54:05 set (`witness-1138310`): grep `2,2,1,4,1,1` = **11 of 11** hits, token
+  `2,2,1,4,0,0` = **9 of 11**. Runs 5 and 6 sign their refusals `exit-code`/`signal` — the exact
+  windows where the token is silent and the grep speaks.
+- 13:05:39-13:06:22 set (`v5553-1199460`): grep `0,3,3,0,3,2` = 11 of 11, token `0,0,3,0,0,2` =
+  5 of 11.
+
+So the grep is the hit witness and the token is a corroborator that undercounts. Two rules:
+
+1. **Count from the journals, not from the table you already published.** The table's column
+   names are an interpretation; `grep -c` per slice is the evidence. Re-deriving both arms from
+   `run1..6.journal` is what showed the attribution was inverted.
+2. **When a peer hands you a bound, check the arm assignment before the arithmetic.** Here the
+   arithmetic (9 of 11) was right and the arm was wrong, and no amount of re-adding could have
+   caught it — only re-counting each arm separately could.
+
+**`docs_oid` is a roster oid, not a content witness.** The gate computes
+`printf '%s\n' $DOCS | git hash-object --stdin`: the eight filenames, no bytes. Across this
+repo's history 163 commits touched the DOCS set, `docs_oid` took 8 distinct values, each exactly
+at a change to the DOCS string, and 150 commits moved `docs_md5` while the oid sat still (16 of 16
+since the roster last changed at `f833d9b`). An unchanged `docs_oid` therefore says *the roster is
+what it was* and nothing about text; quote the pair from one run.
