@@ -250,7 +250,22 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     `dbsize_pages` is the field that moved; that arm adds one case the first pass lacks — after the
     page-freeing `DELETE`, a plain 10-row refill commit appended **one** frame carrying page 2 only
     (frames 23 → 24, no page-1 frame), so a commit that moves no header field does not re-dirty page 1
-    at all.)
+    at all. **Third measurement, same day, on the 500-byte-row arm: that refill is a size question, not
+    a rule.** After a `DELETE`-all that left `freelist_count` 38 (`freelist_trunk` 3), a 10-row refill of
+    500 B rows no longer fits the leftover space inside the table's root page, so it consumed freelist
+    pages: the commit appended **5** frames, pages `[1, 2, 3, 4, 40]`, `freelist_count` 38 → 36 at page 1
+    (`change_counter` still constant at 2). So the field-derived statement is the one to keep — page 1 is
+    written **iff one of its own header fields moves** — and a plain `INSERT` reaches that condition
+    whenever it pulls pages off the freelist; the earlier 10-row refill is the case where nothing moved.
+    **And the baseline difference is ordering, not `VACUUM`.** Measured both ways, `VACUUM` present and
+    absent: with `journal_mode=WAL` set **before** the schema exists, every page-1 frame reads
+    `change_counter` **2** (with and without the `VACUUM`); with `CREATE` first in rollback mode and the
+    switch to WAL after, they read **3** (with and without it). So a second instrument's 3 is set by how
+    many pre-WAL main-file transitions the setup made, never by the `VACUUM`; the counter is constant
+    across WAL transactions under both baselines, which is the claim that survives.
+    **Decode rule:** the `dbsize_pages` field (bytes 28–31 of the page image) is **0 in every frame of a
+    group except the last one** — only the commit frame carries the post-commit size. Reading a size off
+    "the page-1 frame" of a multi-frame commit returns 0 and looks like a shrinking database.)
   **Why a Python fixture's ride arm silently does not ride:** `sqlite3`'s legacy transaction control
   (`isolation_level=''`, the default) emits the implicit `BEGIN` only before `INSERT`/`UPDATE`/
   `DELETE`/`REPLACE` — **DDL runs in autocommit**, so `CREATE TABLE` commits on its own and the "ride"
