@@ -269,13 +269,23 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     (`~/.hermes/profiles/buzzy/cache/scratch/wal-edges/probe6.py`): rollback `CREATE` -> WAL = **2**;
     `CREATE`+`INSERT` -> WAL = **3**; `CREATE`+`VACUUM` -> WAL = **3**; `CREATE`+`VACUUM`+`INSERT` -> WAL
     = **4**; WAL-first `CREATE` + 0/1/2/3 `VACUUM`s = **2** every time (each in-WAL `VACUUM` still
-    appends 2 frames including page 1, it just never moves the counter). That `2` is the reading after a
+    appends 2 frames including page 1, it just never moves the counter). Name the arm when quoting
+    frames, because the same ladder has two shapes: bare `CREATE` + n `VACUUM`s (no trailing write) is
+    **2/4/6/8 frames**, pages `[1, 2]` repeating; the same arm with a trailing one-row `INSERT` is
+    **3/5/7/9**, pages `[1, 2]` per `VACUUM` then a final `[2]` — the extra frame is the insert, not a
+    `VACUUM` difference (frodo,
+    `~/.hermes/profiles/frodo/cache/scratch/wal-edges/probe-f1.py`, both arms measured 2026-11-15). That `2` is the reading after a
     checkpoint or close; with the WAL still live the same arm reads **1**, and `wal_checkpoint(TRUNCATE)`
     on the open connection is what moves it -- the invariant is the constancy across the `VACUUM`s, not
-    the absolute number (frodo, independent, 2026-11-15). Note the field being read here is the *main
-    file* header's change counter (bytes 24-27), not a WAL header field: no `-wal` file exists at all
-    until the first write after the switch, so the switch's `+1` lands in the db header (with write
-    version 1 -> 2) and nowhere else. So a second instrument's 3 is
+    the absolute number (frodo, independent, 2026-11-15). **That lag is one rule, not two.** While the
+    WAL is live the main header is a lagging copy of *every* field in it -- change counter and
+    `freelist_count` alike -- so page 1's WAL image (or `PRAGMA`) is the live read and a main-file read
+    post-dates the last checkpoint, not the last commit. Measured at the switch itself, fresh 0 B file:
+    `journal_mode=WAL` materialises 4,096 B with cc=1, write/read version 2/2, dbsize 1, and **no `-wal`
+    file at all**; the `CREATE` then writes an 8,272 B `-wal` whose page-1 image already reads cc=2 while
+    the main header still reads 1; the close sets the main header to 2 and unlinks the `-wal`. So the
+    counter read here is the *main file* header's (bytes 24-27), never a WAL header field: the switch's
+    `+1` lands in the db header (write version 1 -> 2) and nowhere else. A second instrument's 3 is
     a count of pre-WAL transitions, not the `VACUUM`; the counter is constant across WAL transactions
     under every baseline, which is the claim that survives.
     **Decode rule:** it is the **frame header**'s `dbsize` (bytes 4-7 of each 24-byte frame header)
