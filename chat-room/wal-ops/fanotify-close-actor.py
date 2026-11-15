@@ -36,8 +36,59 @@ system unit / sudo, not from user@1000.service like the two inotify watchers.
 Usage:  sudo python3 fanotify-close-actor.py [--dir DIR] [--seconds N] [--log FILE]
                                                  [--only BASENAME]
 
-Emit one JSON line per close event: ts, mono, mask, file, file_err, size, mtime,
-actor_pid, actor_start, comm, unit, cmdline.
+Emit one JSON line per event: ts, mono, mask, file, file_err, size, mtime,
+actor_pid, actor_start, actor_err, comm, unit, cmdline.
+
+THREE ARMS, AND ONLY ONE OF THEM ALWAYS NAMES THE ACTOR (all measured
+2026-11-15 on 7.0.0-38-generic):
+
+  default (NOTIF, closed)  CLOSE_WRITE + FAN_OPEN. A plain `cp` of one 15 B file
+                           is reaped before the row can read /proc: the failing
+                           row carried pid plus four nulls. FAN_OPEN helps -- the
+                           opener provably exists at open time -- but it does NOT
+                           guarantee the read: the arm wakes, drains and reads
+                           /proc in ~12-350 us, a 10-file `cp` lives ~130 us to
+                           1 ms, and the arm's own per-event cost makes the later
+                           events of a burst arrive after the copier is reaped.
+                           Measured on the exact shape this instrument exists for
+                           (10-file flat copy): 1-2 of 10 rows named, the rest
+                           actor_err=GONE. Never claim N-1 clean chances.
+                           Also: FAN_OPEN fires on READS, so a read of a file in
+                           the marked dir produces rows (join an OPEN row to its
+                           CLOSE_WRITE row on (file, actor_pid)).
+
+  --no-open                CLOSE_WRITE only. No actor at open time at all.
+
+  --block-on-open          FAN_OPEN_PERM under FAN_CLASS_PRE_CONTENT: the kernel
+                           PARKS the opener inside open() until this process
+                           writes FAN_ALLOW. The /proc reads then happen against a
+                           process that cannot go anywhere -- measured 23/23 rows
+                           fully named (pid, comm, unit, cmdline) on the same
+                           10-file `cp` plus three readers, where the default arm
+                           named 1-2. This is the only arm that is an identity
+                           instrument. Costs: every open in the dir is serialized
+                           through userspace (~100 us here), and the group must
+                           run in LEGACY mode (see below).
+
+LEGACY MODE IS FORCED, not chosen: FAN_CLASS_PRE_CONTENT | FAN_REPORT_PIDFD is
+EINVAL (errno 22), and FAN_CLASS_PRE_CONTENT | FAN_REPORT_FID carries no actor at
+all (header pid/fd are FAN_NOFD). Only "no FAN_REPORT_* flags" hands back both a
+real fd on the opened object and the opener's pid, which is also why the file name
+under --block-on-open comes from that fd and not from a FID handle.
+
+Losing the listener does NOT wedge the directory: with the arm SIGSTOPped and then
+SIGKILLed mid-block, the parked opener was released and its read succeeded (rc=0),
+and the next open behaved normally. A listener that stays alive but stops
+responding would hold opens indefinitely -- that is inherent to permission events.
+
+`actor_err` disambiguates what `cmdline: null` and `cmdline: ""` cannot:
+  null            -> /proc/<pid>/comm read succeeded; cmdline is genuinely empty
+                     (kernel thread, or exec with no argv)
+  "GONE"          -> no /proc entry: the actor was reaped before the read
+  "ZOMBIE"        -> /proc entry in state Z: exited, not yet reaped, empty cmdline
+  "NO_PID"        -> the event carried no PIDFD handle at all
+  "CMDLINE_UNREAD"-> comm readable, cmdline read failed (transient)
+Only actor_err=null makes an empty cmdline a fact about the process.
 With --only, events whose file could not be named are still emitted (file=null)
 and counted in the closing `stop` line's `unresolved` field -- a name filter
 must never silently drop the events it cannot classify.
@@ -54,7 +105,7 @@ never a count of rows the filter removed. Measured 2026-11-14 on a scratch dir,
 `closes=359 emitted=240 unresolved=120`, 120/120 file=null rows present with
 file_err=ESTALE, other.txt rows emitted=0.
 """
-import argparse, ctypes, ctypes.util, errno, json, os, platform, select, struct, sys, time
+import argparse, ctypes, ctypes.util, errno, json, os, platform, select, signal, struct, sys, time
 
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 libc.syscall.restype = ctypes.c_long
@@ -62,36 +113,52 @@ NR_fanotify_init, NR_fanotify_mark = 300, 301
 _OPEN_BY_HANDLE = {"x86_64": 304, "aarch64": 265}
 FAN_CLOEXEC, FAN_NONBLOCK = 0x1, 0x2
 FAN_CLASS_NOTIF = 0x0
+FAN_CLASS_PRE_CONTENT = 0x8
 FAN_REPORT_PIDFD = 0x80
 FAN_REPORT_FID = 0x200
 FAN_MARK_ADD, FAN_MARK_ONLYDIR = 0x1, 0x4
-FAN_CLOSE_WRITE = 0x8
+FAN_CLOSE_WRITE, FAN_OPEN = 0x8, 0x20
+FAN_OPEN_PERM, FAN_ALLOW = 0x10000, 0x01
 FAN_EVENT_ON_CHILD = 0x08000000
 AT_FDCWD = -100
 INFO_TYPE_FID, INFO_TYPE_PIDFD = 1, 4
 DRAIN_S = 0.05
 
 
-def _pid_start(pid):
-    """Field 22 of /proc/<pid>/stat: starttime in clock ticks. A pid reused across
-    a merge would otherwise look like the same actor across two lifetimes."""
+def _pid_stat(pid):
+    """ONE open of /proc/<pid>/stat -> (state, starttime). Field 3 is the state:
+    'Z' separates "exited, cmdline empty because nothing is left of it" from "has
+    an empty argv", the two readings a bare empty string cannot tell apart.
+    Field 22 is starttime in clock ticks: a pid reused across a merge would
+    otherwise look like one actor across two lifetimes.
+
+    One open and not two on purpose -- every extra open is another chance for the
+    task to be released between the event and the read."""
     try:
         with open("/proc/%d/stat" % pid, "rb") as f:
             raw = f.read()
-        return int(raw[raw.rindex(b")") + 2:].split()[19])
+        rest = raw[raw.rindex(b")") + 2:].split()
+        return rest[0].decode("ascii", "replace"), int(rest[19])
     except (OSError, ValueError, IndexError):
-        return None
+        return None, None
+
+
+def _pid_start(pid):
+    return _pid_stat(pid)[1]
 
 
 def _name(pid, field):
+    """-> (value|None, errname|None). None means the read FAILED; "" means the
+    read succeeded and the file is empty. The errname is carried into actor_err
+    so a failed read names its own errno instead of hiding behind a null."""
     try:
         with open("/proc/%d/%s" % (pid, field), "rb") as f:
             raw = f.read()
         if field == "cmdline":
-            return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
-        return raw.decode("utf-8", "replace").strip()
-    except OSError:
-        return None
+            return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip(), None
+        return raw.decode("utf-8", "replace").strip(), None
+    except OSError as ex:
+        return None, errno.errorcode.get(ex.errno or 0, "E?")
 
 
 def _unit(pid):
@@ -119,6 +186,11 @@ def main():
     ap.add_argument("--log", default=None, help="append JSON lines here instead of stdout")
     ap.add_argument("--only", default=None,
                     help="emit only this basename (unresolvable events are still reported)")
+    ap.add_argument("--no-open", action="store_true",
+                    help="arm CLOSE_WRITE only (no actor at open time; for read-heavy dirs)")
+    ap.add_argument("--block-on-open", action="store_true",
+                    help="FAN_OPEN_PERM: park each opener until this process allows it, "
+                         "so the actor is alive by construction and is always named")
     a = ap.parse_args()
 
     out = open(a.log, "a", buffering=1) if a.log else sys.stdout
@@ -126,18 +198,29 @@ def main():
 
     nr_obh = _OPEN_BY_HANDLE.get(platform.machine())
     ctypes.set_errno(0)
+    # MEASURED 2026-11-15 on 7.0.0-38-generic: FAN_CLASS_PRE_CONTENT |
+    # FAN_REPORT_PIDFD is EINVAL (errno 22), and FAN_CLASS_PRE_CONTENT |
+    # FAN_REPORT_FID carries NO actor (the header pid/fd are FAN_NOFD). So the
+    # permission arm has to run in LEGACY mode: no FAN_REPORT_* at all, which is
+    # the only form that hands us both a real event fd and the opener's pid.
+    legacy = a.block_on_open
+    fclass = FAN_CLASS_PRE_CONTENT if legacy else FAN_CLASS_NOTIF
+    rflags = 0 if legacy else (FAN_REPORT_PIDFD | FAN_REPORT_FID)
     fd = libc.syscall(ctypes.c_long(NR_fanotify_init),
-                      ctypes.c_uint(FAN_CLASS_NOTIF | FAN_REPORT_PIDFD | FAN_REPORT_FID
-                                    | FAN_CLOEXEC | FAN_NONBLOCK),
+                      ctypes.c_uint(fclass | rflags | FAN_CLOEXEC | FAN_NONBLOCK),
                       ctypes.c_uint(0))
     if fd < 0:
         e = ctypes.get_errno()
         emit({"error": "fanotify_init(FAN_REPORT_PIDFD|FAN_REPORT_FID) failed", "errno": e,
               "uid": os.getuid(), "note": "EPERM for uid!=0 on this kernel"})
         return 2
+    if a.block_on_open:
+        mark_mask = FAN_CLOSE_WRITE | FAN_OPEN_PERM | FAN_EVENT_ON_CHILD
+    else:
+        mark_mask = FAN_CLOSE_WRITE | FAN_EVENT_ON_CHILD | (0 if a.no_open else FAN_OPEN)
     rc = libc.syscall(ctypes.c_long(NR_fanotify_mark), ctypes.c_int(fd),
                       ctypes.c_uint(FAN_MARK_ADD | FAN_MARK_ONLYDIR),
-                      ctypes.c_uint(FAN_CLOSE_WRITE | FAN_EVENT_ON_CHILD),
+                      ctypes.c_uint(mark_mask),
                       ctypes.c_int(AT_FDCWD), ctypes.c_char_p(a.dir.encode()))
     if rc < 0:
         emit({"error": "fanotify_mark failed", "errno": ctypes.get_errno(), "dir": a.dir})
@@ -148,8 +231,62 @@ def main():
         emit({"error": "open(dir) failed", "errno": ex.errno, "dir": a.dir})
         return 2
 
-    def resolve(handle):
-        """-> (basename|None, errname|None, st|None) on the closed inode."""
+    ino_map = {}          # st_ino -> (name, st) for ONE scandir of the marked dir
+    ino_gen = [None]      # which batch ino_map was built for
+
+    def _ino_from_handle(handle):
+        """file_handle{handle_bytes(u32), handle_type(i32), f_handle[]}.
+        FILEID_INO32_GEN(1) carries a u32 inode, FILEID_INO64_GEN(2) a u64."""
+        try:
+            hb, ht = struct.unpack_from("<Ii", handle, 0)
+            fh = handle[8:8 + hb]
+            if ht == 1 and len(fh) >= 4:
+                return int.from_bytes(fh[:4], "little")
+            if ht == 2 and len(fh) >= 8:
+                return int.from_bytes(fh[:8], "little")
+        except struct.error:
+            pass
+        return None
+
+    def _scan_ino_map(gen):
+        ino_map.clear()
+        try:
+            with os.scandir(a.dir) as it:
+                for e in it:
+                    try:
+                        st = e.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    ino_map[st.st_ino] = (e.name, st)
+        except OSError:
+            pass
+        ino_gen[0] = gen
+
+    def resolve(handle, gen):
+        """-> (basename|None, errname|None, st|None) for the event's inode.
+
+        NAMED BY INODE, NOT BY open_by_handle_at. The handle already carries the
+        inode; matching it against one scandir of the marked directory costs stat
+        calls and NO opens, which matters twice over:
+          - open_by_handle_at OPENS the watched file, and with FAN_OPEN armed that
+            open is itself an event: the arm doubles its own queue and falls
+            behind the copier it is trying to name (measured 2026-11-15: 8/10
+            rows GONE on a 10-file burst with the open path, 2/10 without);
+          - on the WAL path the open was a race against unlink (ESTALE). Inode
+            matching has the same semantics for a deleted file -- it simply is
+            not in the listing -- without the syscall.
+        A miss is reported as UNLINKED, which is the ESTALE case by another name.
+        """
+        ino = _ino_from_handle(handle)
+        if ino is not None:
+            if ino_gen[0] != gen:
+                _scan_ino_map(gen)
+            hit = ino_map.get(ino)
+            if hit is not None:
+                return hit[0], None, hit[1]
+            return None, "UNLINKED", None
+        # Unknown handle type: fall back to the open path. Rare, and the self-skip
+        # above keeps it from re-entering the queue unbounded.
         if nr_obh is None:
             return None, "NO_OPEN_BY_HANDLE", None
         buf = ctypes.create_string_buffer(handle, len(handle))
@@ -167,75 +304,207 @@ def main():
         finally:
             os.close(h)
 
+    stop_req = {"sig": None}
+
+    def _on_sig(signum, _frame):
+        # A kill and a crash are indistinguishable in this log without this line:
+        # both leave a `start` with no matching record, and the next `start` is
+        # inferred rather than read. Counts are captured HERE so the record says
+        # how much the arm had delivered before it went down.
+        stop_req["sig"] = signal.Signals(signum).name
+
+    for _s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(_s, _on_sig)
+
     emit({"start": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "dir": a.dir, "seconds": a.seconds,
           "uid": os.getuid(), "filter": a.only, "drain_s": DRAIN_S,
-          "resolve": "open_by_handle_at" if nr_obh else "unavailable"})
+          "masks": ("OPEN_PERM|CLOSE_WRITE" if a.block_on_open else
+                    "CLOSE_WRITE" if a.no_open else "OPEN|CLOSE_WRITE"),
+          "resolve": "ino-scan" + ("" if nr_obh else " (no open_by_handle_at fallback)")})
 
     deadline = time.time() + a.seconds
-    n = emissive = unresolved = 0
-    while time.time() < deadline:
+    n_open = n_close = emissive = unresolved = self_n = gen = 0
+    while time.time() < deadline and stop_req["sig"] is None:
         r, _, _ = select.select([fd], [], [], DRAIN_S)
         if not r:
             continue
         buf = os.read(fd, 65536)
+        gen += 1
         off, total = 0, len(buf)
+        batch = []
+        # Stamped at PARSE time, not at emit time: pass 2 can run milliseconds
+        # later on a large burst, and the row's ts must not carry that delay.
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        mono = round(time.monotonic(), 6)
         while off + 24 <= total:
             elen, vers, _res, mlen, mask, efd, epid = struct.unpack_from("<IBBHQii", buf, off)
             if elen <= 0:
                 break
-            if mask == FAN_CLOSE_WRITE:
-                n += 1
-                pid, handle = epid, None
-                io = off + (mlen or 24)
-                while io + 4 <= off + elen:
-                    itype, ilen = struct.unpack_from("<HH", buf, io)
-                    if ilen == 0:
-                        break
-                    if itype == INFO_TYPE_PIDFD:
-                        pidfd = struct.unpack_from("<i", buf, io + 4)[0]
-                        if pidfd >= 0:
-                            try:
-                                with open("/proc/self/fdinfo/%d" % pidfd) as fh:
-                                    for ln in fh:
-                                        if ln.startswith("Pid:"):
-                                            pid = int(ln.split()[1])
-                            except OSError:
-                                pass
-                            try:
-                                os.close(pidfd)
-                            except OSError:
-                                pass
-                    elif itype == INFO_TYPE_FID:
-                        handle = buf[io + 12:io + ilen]  # hdr(4) + fsid(8)
-                    io += ilen
-                fname, ferr, st = (None, "NO_FID", None)
-                if handle:
-                    fname, ferr, st = resolve(handle)
-                if fname is None:
-                    # Counted HERE, above the filter, on purpose: the filter below
-                    # only skips NAMED rows, so every unnamed event is emitted too.
-                    # unresolved is the count of file:null rows in this log, not a
-                    # count of rows removed. Moving this below the filter would
-                    # undercount it -- and would need a filter that drops unnamed
-                    # events, which is the thing this instrument refuses to do.
-                    unresolved += 1
-                rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                       "mono": round(time.monotonic(), 6),
-                       "mask": "CLOSE_WRITE", "file": fname, "file_err": ferr,
-                       "size": st.st_size if st else None,
-                       "mtime": time.strftime("%Y-%m-%dT%H:%M:%S",
-                                              time.localtime(st.st_mtime)) if st else None,
-                       "actor_pid": pid, "actor_start": _pid_start(pid),
-                       "comm": _name(pid, "comm"), "unit": _unit(pid),
-                       "cmdline": (_name(pid, "cmdline") or "")[:160]}
-                if a.only and fname is not None and fname != a.only:
-                    off += elen
-                    continue
-                emit(rec)
-                emissive += 1
+            if not mask & (FAN_OPEN | FAN_OPEN_PERM | FAN_CLOSE_WRITE):
+                off += elen
+                continue
+            mtype = "OPEN" if mask & FAN_OPEN else ("OPEN_PERM" if mask & FAN_OPEN_PERM
+                                                   else "CLOSE_WRITE")
+            if mtype in ("OPEN", "OPEN_PERM"):
+                n_open += 1
+            else:
+                n_close += 1
+            pid, handle, pidfd, fdinfo_pid = (epid if epid > 0 else None), None, None, None
+            ev_fd = None
+            if legacy:
+                # header pid/fd are real: fd is an O_PATH fd on the opened file,
+                # valid until we close it, and pid is the opener.
+                ev_fd = efd if efd >= 0 else None
+                fdinfo_pid = pid
+            io = off + elen if legacy else off + (mlen or 24)
+            while io + 4 <= off + elen:
+                itype, ilen = struct.unpack_from("<HH", buf, io)
+                if ilen == 0:
+                    break
+                if itype == INFO_TYPE_PIDFD:
+                    pidfd = struct.unpack_from("<i", buf, io + 4)[0]
+                    if pidfd >= 0:
+                        try:
+                            with open("/proc/self/fdinfo/%d" % pidfd) as fh:
+                                for ln in fh:
+                                    if ln.startswith("Pid:"):
+                                        fdinfo_pid = int(ln.split()[1])
+                        except OSError:
+                            pass
+                    else:
+                        pidfd = None
+                elif itype == INFO_TYPE_FID:
+                    handle = buf[io + 12:io + ilen]  # hdr(4) + fsid(8)
+                io += ilen
+            # A pidfd whose task is fully released reads back `Pid: -1`. That is a
+            # LIVENESS answer, not a pid: the pid is unrecoverable at that point.
+            # Keep the raw value in actor_pidfd so "we were told -1" is on the row.
+            if fdinfo_pid is not None and fdinfo_pid > 0:
+                pid = fdinfo_pid
+            elif fdinfo_pid is not None:
+                pid = None
+            # SELF-SKIP, and it must happen BEFORE resolve(): open_by_handle_at
+            # opens the watched file, and with FAN_OPEN armed that open raises a
+            # new OPEN event attributed to this process -- an unbounded feedback
+            # loop. Measured 2026-11-15 without this guard: 270,723 OPEN events in
+            # 12 s from 4 file opens. The arm's own reads are not evidence about
+            # the copier; count them in `self` and drop them.
+            if pid is not None and pid == os.getpid():
+                self_n += 1
+                if pidfd is not None:
+                    try:
+                        os.close(pidfd)
+                    except OSError:
+                        pass
+                off += elen
+                continue
+            # ACTOR FIRST, and the pidfd is closed only after these reads. The
+            # pidfd is not the source of these fields, but ordering is the entire
+            # margin on a copier that lives milliseconds: resolve() below is a
+            # syscall against a possibly-unlinked inode, and nothing that costs
+            # time may sit between the event and the /proc reads.
+            # cmdline FIRST: on a copier that lives milliseconds, the field that
+            # costs the most to lose is the argv, and every read after the event
+            # is a race against reap. Measured, in this order, at 00:36: cp's comm
+            # survived on both OPEN rows while the argv of the very same task did
+            # not. Read the expensive fact before the cheap one.
+            try:
+                cmd, cmd_err = _name(pid, "cmdline") if pid else (None, "NO_PID")
+                comm, _comm_err = _name(pid, "comm") if pid else (None, "NO_PID")
+                pstate, astart = _pid_stat(pid) if pid else (None, None)
+            finally:
+                # RELEASE THE OPENER, always, even if a read raised. Under
+                # --block-on-open the copier is parked inside open() until this
+                # write lands; that is what makes the /proc reads above a fact
+                # rather than a race. It is also the only thing that can wedge
+                # the watched directory, so it goes in a finally.
+                if mtype == "OPEN_PERM":
+                    try:
+                        os.write(fd, struct.pack("<iI", efd, FAN_ALLOW))
+                    except OSError:
+                        pass
+            # cgroup is the most expensive read here (multi-line) and the least
+            # time-critical: it survives into zombie-hood. Read it in pass 2.
+            if pid is None:
+                aerr = "GONE" if pidfd is not None else "NO_PID"
+            elif comm is None:
+                aerr = "GONE"
+            elif pstate == "Z":
+                aerr = "ZOMBIE"
+            elif cmd is None:
+                aerr = "CMDLINE_UNREAD:" + (cmd_err or "E?")
+            else:
+                aerr = None
+            if pidfd is not None:
+                try:
+                    os.close(pidfd)
+                except OSError:
+                    pass
+            batch.append({"mtype": mtype, "ts": ts, "mono": mono,
+                          "pid": pid, "pidfd_pid": fdinfo_pid, "handle": handle,
+                          "ev_fd": ev_fd,
+                          "cmd": cmd, "comm": comm, "astart": astart,
+                          "pstate": pstate, "aerr": aerr})
             off += elen
-    emit({"stop": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "closes": n,
-          "emitted": emissive, "unresolved": unresolved})
+
+        # PASS 2 -- name the files, and only now. resolve() is the expensive,
+        # NON-time-critical half: a file's name is recoverable from the FID after
+        # the actor is long gone, an actor's name is not recoverable at all. Doing
+        # it inline in pass 1 makes the arm fall behind its own event stream and
+        # lose the actor on every file after the first -- measured 2026-11-15 on a
+        # 10-file burst: 9/10 OPEN rows came back actor_err=GONE, one named.
+        for ev in batch:
+            fname, ferr, st = (None, "NO_FID", None)
+            if ev.get("ev_fd") is not None:
+                try:
+                    st = os.fstat(ev["ev_fd"])
+                    try:
+                        fname = os.path.basename(os.readlink("/proc/self/fd/%d" % ev["ev_fd"]))
+                    except OSError:
+                        fname = "inode:%d" % st.st_ino
+                    ferr = None      # named from the event's own fd
+                except OSError as ex:
+                    ferr = errno.errorcode.get(ex.errno or 0, "E?")
+                finally:
+                    try:
+                        os.close(ev["ev_fd"])
+                    except OSError:
+                        pass
+            elif ev["handle"]:
+                fname, ferr, st = resolve(ev["handle"], gen)
+            if fname is None:
+                # Counted HERE, above the filter, on purpose: the filter below
+                # only skips NAMED rows, so every unnamed event is emitted too.
+                # unresolved is the count of file:null rows in this log, not a
+                # count of rows removed. Moving this below the filter would
+                # undercount it -- and would need a filter that drops unnamed
+                # events, which is the thing this instrument refuses to do.
+                unresolved += 1
+            if a.only and fname is not None and fname != a.only:
+                continue
+            aerr = ev["aerr"]
+            emit({"ts": ev["ts"], "mono": ev["mono"],
+                  "mask": ev["mtype"], "file": fname, "file_err": ferr,
+                  "size": st.st_size if st else None,
+                  "mtime": time.strftime("%Y-%m-%dT%H:%M:%S",
+                                         time.localtime(st.st_mtime)) if st else None,
+                  "actor_pid": ev["pid"], "actor_pidfd": ev["pidfd_pid"],
+                  "actor_start": ev["astart"], "actor_err": aerr,
+                  "comm": ev["comm"],
+                  "unit": _unit(ev["pid"]) if ev["pid"] else None,
+                  # 1024, not 160: a hermes gateway wrapper's first 160 chars are
+                  # the generic preamble (hermes-snap-<hash>.sh + AI_AGENT=...),
+                  # which discriminates nothing between gateway children; the
+                  # distinguishing argv is at the tail. The /proc read is free.
+                  "cmdline": (None if aerr else (ev["cmd"] or "")[:1024])})
+            emissive += 1
+    counts = {"closes": n_close, "opens": n_open, "self": self_n,
+              "emitted": emissive, "unresolved": unresolved}
+    if stop_req["sig"]:
+        emit(dict({"signal": stop_req["sig"],
+                   "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, **counts))
+    else:
+        emit(dict({"stop": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, **counts))
     os.close(mount_fd)
     os.close(fd)
     return 0
