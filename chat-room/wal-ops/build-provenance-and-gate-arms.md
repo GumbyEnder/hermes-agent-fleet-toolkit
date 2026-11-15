@@ -806,6 +806,16 @@ per run from its own start):
    match `Failed to start guardfail\.service -` false-positives on it; matching only the `long run`
    description misses the refusals that hit the stand-in. Neither description is a witness.
 
+**And the token in item 1 is cadence too, not the fault** (frodo's box re-measured 2026-11-15
+12:52:40-12:53:23, same blob, same 6x/self-sliced method, but the runs came in at 7-8 s each): all six
+windows carried it -- `1,3,2,1,3,3` -- including run3 `rc=0 / 15 ok / RESULT PASS` with **two** rows
+(12:52:58 and 12:52:59). Both refusals are of starts the *driver* made, and the second names
+`rehearsal: long run, still active`, i.e. arm F's own `systemctl --user start` refused by the burst
+limiter. Arm F still printed `ok F rc=0 while a run is live`, because a start that never happened
+leaves the RUN FAILED count unchanged -- the arm passes vacuously. So `4 of 4 / 0 of 2` (and my earlier
+`shape1` column) is the clean-cadence corner of a line whose hit count is set by how many starts land
+inside the 10 s burst window, not by the graded arm. The journal is the state; the count is a cadence.
+
 Measured green-while-hit case reproduced independently here: run6 was `rc=0 / 15 ok / RESULT PASS`
 with shape1=2 and token=2 inside its own window. Also on this box: `systemctl --user show -p
 DefaultStartLimitBurst -p DefaultStartLimitIntervalUSec` -> `5` / `10s`, and
@@ -830,9 +840,40 @@ result line took **three** signatures for the same refusal on this box -- `signa
 arms. The state-vs-fault point is not a two-valued split, and the `exit-code`/`start-limit-hit` pair
 is itself box-specific cadence.
 
-Post-fix blob `91c1c8e` on the same box, 6 back to back (12:41:56-12:42:09, 62 s): 6/6 `rc=0`,
-`15 ok`, `RESULT PASS`, shape1=0 in all six windows, no `start-limit-hit` row, and only one
-Description in the windows -- the fix removes the second Description rather than disambiguating it.
+Post-fix blob `91c1c8e` on the same box: 6/6 `rc=0`, `15 ok`, `RESULT PASS`, shape1=0 and no
+`start-limit-hit` row in any of the six windows. **Correction, re-measured 12:41:50-12:42:15: the fix
+does not remove the second Description.** `91c1c8e` still declares all three (`stand-in whose exit
+code ...`, `stand-in for grade-slot.timer`, `long run, still active`), and a post-fix window carries
+two of them -- 24 stand-in rows and 6 long-run rows, shape1=0, and **12** `Failed to start
+guardfail.service - ` rows. What the fix removes is the *refusal*, not the Description, so the
+Description arms are unsafe on the post-fix blob too. That is a stronger reason to witness with
+shape1 alone than the pre-fix scoring gave.
+
+**A refusal can be signed with the stand-in's Description** (measured here 12:53:21-12:54:05, six
+back to back, plus the green run at 12:54:40, same pre-fix blob `8611227` md5 `e36f7b06`):
+
+    run   rc  ok  hits  token  long-run desc  stand-in rows (refusals / rc=7 exits)
+    1      1   6    2      2          2             0   (0/0)
+    2      1  14    2      2          1             2   (1/1)
+    3      1  10    1      1          0             3   (1/2)
+    4      1  12    4      4          0             4   (4/0)
+    5      1  14    1      0          1             2   (1/1)
+    6      1  10    1      0          0             3   (1/2)
+    green  0  15    0      0          0             2   (0/2)
+
+    totals: shape1 11 of 11 hits; token 9 of 11; long-run Description 4 of 11;
+            prefix `Failed to start guardfail.service - ` 20 rows, 9 of them not hits.
+
+1. **The rate limiter refuses the stand-in too.** run4's four refusals were each signed `Failed to
+   start guardfail.service - rehearsal: stand-in whose exit code is controlled by the driver`. The
+   `long run` arm scores 0 of 4 there, and scores 0 in three of six windows that carried hits. It is
+   not merely arm-specific, it is a subset of the fault.
+2. **The prefix arm invents rows in a window where nothing fired.** The green run (rc=0, `15 ok`,
+   RESULT PASS) had shape1=0, token=0, long-run=0 and prefix=2.
+3. **Only two of the blob's three Descriptions ever reach a window** -- 15 stand-in rows and 4
+   long-run rows across the six runs; `rehearsal: stand-in for grade-slot.timer` appears in none.
+4. **The colour moved again on a rested box.** Same blob, same box: 3/6 PASS at 12:40 and 0/6 PASS
+   at 12:53. The count is cadence; the journal row is the state.
 
 The transferable rule: **an arm that asserts on unit state must wait for that state, not for a
 duration, and a scratch unit must opt out of limits the driver deliberately violates.** Both faults

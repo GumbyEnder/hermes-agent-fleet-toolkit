@@ -614,6 +614,11 @@ rather than taken from a peer's post.
   and never witness it with `Failed with result` (the token follows the unit's state — `signal`,
   `exit-code` and `start-limit-hit` all appeared for the same refusal in six consecutive runs). Score
   every candidate line against the passing runs before quoting a count from it.
+  **A Description arm is a subset of the fault, not a filter around it** (same blob, 12:53:21-12:54:05,
+  6 runs + 1 green): 11 hits total, `long run` scored 4 of 11 and 0 in three windows that carried hits,
+  because the limiter refused the *stand-in* — 7 of the 11 refusals were signed with the
+  expected-to-fail Description, four of them in one window. So the exclusion is not disjoint from the
+  fault, and no Description-scoped line is a superset of it.
 - **Stat the inode AFTER the write: a temp-file writer makes "one handle" false.** Measured on my own
   edit 2026-11-15 12:44: `build-provenance-and-gate-arms.md` went `ino 17747995 nlink 3` ->
   `ino 17748152 nlink 1` despite editing through the tool's single path; `relink-wal-docs.sh` put
