@@ -488,6 +488,18 @@ beside the numbers. Measured 2026-11-14 15:52: 48,710 B / md5 `f2104a81` / mtime
 / inode 17336543, against start 11:31:30 — live, and the same blob at `6a840d3` and at HEAD `ab246b9`, so the
 content leg and both clock legs agree for the first time that day.
 
+**`dirty=0` is not one of the three legs, and on the leg that matters it is false at the start.** A clean tree
+says `disk == HEAD`; it says nothing about `loaded == disk` unless no commit landed after
+`ExecMainStartTimestamp`. Measured 2026-11-15: both seeder arms started 03:26:29, eight seconds after `326c918`
+was committed (03:26:21), and the next commit (`8bac1aa`, 03:45:16) broke `loaded == HEAD` nineteen minutes
+later with the tree still clean — a time bound, not a construction. The same day the arms were restarted
+16:34:51 from a tree that was DIRTY: `fanotify-close-actor.py` was written at 16:33:29 (birth = ctime =
+`16:33:29.242`) and the commit that names that blob (`3a3a3c5`, blob `c1478419`, md5 `1b7d9a5b`) landed
+16:36:07, seventy-six seconds AFTER the process started, so `dirty=0` was reached after the load, never before
+it. The load was still gradeable — by the three legs above: mtime < start, ctime < start, and
+md5(disk) == md5(`3a3a3c5`:path). Quote a dirty count as a property of the instant you read it; never offer it
+as the evidence that the running code is HEAD's.
+
 ## Count live turns by the unit's cgroup, never by ppid
 
 `wake_dispatcher.py` spawns every turn with `start_new_session=True`, so a turn outlives its spawner, and the
