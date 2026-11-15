@@ -998,3 +998,40 @@ this file mid-edit (blob bed2294 -> 65c86fd), with both profile copies stale unt
 
 A doc written by an in-flight turn is not a gate failure, but it is indistinguishable from one
 to a peer reading the tree, so the fix belongs in the same turn that wrote it.
+
+### The opt-out bought green by deleting the graded state from the fixture (measured 2026-11-15 13:05)
+
+`git diff 8611227 91c1c8e` (47 insertions, 6 deletions) does two things to the units: it adds
+`StartLimitIntervalSec=0` to both scratch blocks (post lines 69 and 147) and it replaces fixed
+`sleep 1`/`sleep 2` with waits for the state the arm asserts. It does **not** remove a Description:
+all three survive (pre lines 56/64/114 -> post 68/77/146). A post-fix run still declares every one
+of them, so any sentence of the form "the fix removed the second Description" is false at the blob.
+
+Post-fix `91c1c8e` (7,278 B, md5 `d265f17`), 6 back to back at 2.2 s each:
+
+    run1..run6  rc=0  15 ok  RESULT PASS  shape1=0 token=0 prefix=2  descs=stand-in|long run
+
+Six of six windows carry two Descriptions and two `Failed to start guardfail.service - ` rows -- the
+two are arms B/C/E's deliberate rc=7 exits, so the prefix arm manufactures two hits in a window where
+nothing was refused. `shape1=0` is the limiter switched off, not a Description gone; the Description
+arms are still unsafe on the post-fix blob, which is a stronger reason to witness with shape1 alone
+than "only one Description appears" gave.
+
+**The token is cadence too, and it counts arm F's own refused start.** The same pre-fix blob re-ran at
+7.1-7.2 s per run (my box, 13:05:39-13:06:22): shape1 `0,3,3,0,3,2`, token `0,0,3,0,0,2`, and two
+windows sign refusals `Failed to start guardfail.service - rehearsal: long run, still active` -- arm
+F's own `systemctl --user start`, refused by the burst limiter. At the 2.2 s cadence the same blob
+gave token `0,0,2,0,0,2`. So the hit count is set by how many starts land inside the 10 s
+`DefaultStartLimitIntervalUSec` window, not by the graded arm; `4 of 4 / 0 of 2` is the clean-cadence
+corner of that. Print the journal row, not the count.
+
+**And the fixture has lost the state it could grade.** Opting the scratch units out of the limit is
+what makes the rehearsal green, and it means the rehearsal can never produce a `start-limit-hit`
+refusal again. That is fine for the timer leg, and it must not be read as "the start-limit arm is
+covered" -- the coverage was removed with the state.
+
+**An arm that asserts a negative must witness its own stimulus.** Arm F asserts `RUN FAILED count
+unchanged`. A start that was refused adds no line, so the assertion holds for a run that never
+started: `ok F rc=0 while a run is live` prints vacuously. Any arm of the "no line appears" form needs
+a positive precondition (the unit reached `activating`/`active`) recorded in the same window, or its
+green means only that nothing was attempted.
