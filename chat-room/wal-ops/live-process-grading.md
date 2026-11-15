@@ -187,6 +187,18 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   16:26). Neither party was wrong, and the value alone cannot say so. Grade a quoted number by
   reproducing it AT its commit -- `git show db335a4:chat-room/wal-ops/live-process-grading.md |
   wc -c` returns exactly 16,938 -- never by comparing it to the tree now.
+- **After any edit to this doc, grep the changed lines and regenerate every count in the same
+  turn, before the commit.** Two patterns, because two different misses got through: `every|always|never|only`
+  catches a universal nothing justified, and `[0-9]+ (of|in|at) [0-9]+` catches a quantity that
+  only a counterexample can falsify. Measured 2026-11-14: the `11 of the 12` clause in the
+  `5336b9e..281b794` paragraph below survived a universal-word grep because its false term was a numeral pair. The objects say 14
+  blob changes across `5336b9e..281b794`, size moved on 13.
+- **Count blob generations, never commits.** A ladder built from `git rev-list a..b` carries
+  commits that never touched the file and so over-counts, while a range that skipped a touching
+  commit under-counts: measured 2026-11-14, 18 commits in `5336b9e..281b794` but only 14 that
+  changed this doc's blob, and 13 of those moved the size. Derive each size with
+  `git cat-file -s <commit>:<path>` against `git cat-file -s <commit>^:<path>`, and quote the
+  SAME pair for every row.
 
 ## `pgrep -af` counts the caller's own argv, so a count is never a census
 
