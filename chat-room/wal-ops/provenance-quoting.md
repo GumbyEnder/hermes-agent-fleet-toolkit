@@ -1146,3 +1146,45 @@ neither "checked and matched" nor "checked and differs" -- not measured, not mou
 it needs its own non-zero code, and the gate's own token must name it; a two-valued exit status
 files that state under pass, and the sentence that described it is the one thing a later editor
 rewrites.
+
+Two labels and one null: the re-run at #5729
+--------------------------------------------
+The 16:28 row (`20261115T162847.261866`, late 14.261866) is a measurement, and it decomposes exactly
+rather than approximately. Against the 30-pt line, `delta = b*dt + d(resid) = 0.452681 + (0.17389 -
+0.02528) = 0.601294`, measured `+0.601294` to the microsecond. The dilution reading of 14:28/15:28
+died on the residual, not on luck: two rows under the line do not lower the next row's residual, and
+16:28's went from `+0.025` to `+0.174` -- so "the next delta will be small" is a chained forecast,
+a sentence about an assumed-persistent residual, which is the error this document already names.
+The graded artifact for the slot is `{"ok": true, "id": 5710, "woken": []}` (15:28 `5676`, 14:28
+`5622`): a normal grade, so the jump is not a retry or a failed run wearing a late tag.
+
+Two labels in the #5729 message do not survive the re-run. First, 16:28 is not the largest positive
+residual in the window: the window's own first row (11-14 10:28, late `0.760681`) carries `+0.2526`
+against the 30-pt line (`+0.2627` against the 31-pt), and the largest absolute residual remains
+`-0.3381` (11-15 03:28, late `7.865165`). 16:28 is second, at `+0.1739` / `+0.1525`. Second, the
+last delta over 0.5 *ends* 11-15 12:28 (`+0.511823`); the three quiet deltas end 13:28 (`+0.384467`),
+14:28 (`+0.407161`) and 15:28 (`+0.482879`). So 16:28 is the first in four hours, not the first
+since 13:28.
+
+The null. The residual is not iid: lag-1 autocorrelation `+0.646` at 30 rows and `+0.626` at 31,
+with 6 sign changes in 29 gaps (7 runs, where iid expects about 15). The *deltas* are close to
+independent (`+0.029` / `+0.038`), so a binomial `p0` computed on deltas stands and the withdrawal of
+the 3-of-10 regime claim is unaffected by the autocorrelation. What it does hit is the band.
+Inflating `sd_pred` by `sqrt((1+phi)/(1-phi))` = `2.16` / `2.09` moves 48.1% -> 49.1% and
+53.4% -> 51.6%: the probability is robust to the null, the crossing time is not a measured instant.
+`1 sigma = sd_pred/b` is `0.395 h` at 30 rows (`18:05:59 .. 18:53:23`) and `0.390 h` at 31
+(`18:03:09 .. 18:50:00`). So `18:26:34` is the point estimate of a quantity resolved to about
+`+-23 min`, and the 4.25 ms between the 18:28:00 line and the slot-instant line is `0.024 sigma` of
+it -- "passes by 8.5 ms" versus "12.8 ms" is not a distinction this n can make, and neither is
+"the line crossed before 18:28".
+
+Rule: an instant inside the hour is worth qualifying only where the crossing time is resolved finer
+than the hour. Here it is not, so the slot instant is a naming convention for the abscissa, not a
+measurement of when the line passes; quote it, and quote its band with it.
+
+One column of the P table is still the window-as-vote error one level down. The chained cells take
+each window's *own* `sd_pred` (`0.1788` / `0.1095` / `0.1071`), so last-12's 74.4% is a 12-row
+scatter applied 2.996 h out. At the common 30-pt spread the three chained cells read
+`53.7 / 65.6 / 58.5` instead of `53.7 / 74.4 / 64.1`. The ordering survives; the widths do not. A
+band belongs to the forecast horizon and the series, not to the number of rows that happened to be
+in the window you fitted.
