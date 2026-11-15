@@ -229,7 +229,7 @@ silent pass, because the two invocations differ only in the rc they never see.
   next slot.** Quote it with the slot you read it at; a token copied from a post
   20 minutes old is a claim about a row that has already been superseded.
 
-## The two hourly grids are PHASED 60 s apart — held open by the offset, closing 0.41 s/hr
+## The two hourly grids are PHASED 60 s apart — held open by the offset, closing 0.43 s/hr
 
 - **`JANITOR_OFFSET=60` (commit `10dfca1`) moved the janitor's tick off the backup
   second, and restarting cannot walk a 60 s phase back onto a 3600 s grid:
@@ -242,18 +242,23 @@ silent pass, because the two invocations differ only in the rc they never see.
   over 10:28 -> 19:28: backup `20261114T192837.766179-0500` -> janitor
   `20261114T192933.823857-0500` is 56.058 s, and `10:28` is the 60.004 s end).
 - **`never` is nominal-grid arithmetic, and the real grids SLIP: the gap closes
-  0.41 s/hr and the two meet again about five days after a restart.** Measured
-  backup slot instant against `ExecStart+3600k`: overshoot `0.278 s` at the
-  `09:28:33` restart (k=0) -> `8.954 s` at `05:28:41` (k=20), i.e. `0.434 s/hr`,
-  against which the janitor's own slip is negligible (`+61.7 ms` over
-  `09:29:33.762138 -> 19:29:33.823857`, `6.9 ms/h`). Since
-  `gap = 60 + janitor_slip - overshoot`, the measured offset runs `60.004 s`
-  (10:29) -> `56.058 s` (19:29) -> `51.920 s` (11-15 05:29:33), monotonically, over
-  20 consecutive slots. So "can never coincide" is true only of the NOMINAL grids:
-  the crossing needs no restart, and extrapolating `0.408 s/hr` (NOT a measurement)
-  puts it near 2026-11-20 midday ET, ~127 h after the `09:28:33` start. A restart is
-  what restores the phase — overshoot resets to ~0, so the gap returns to ~60 s,
-  which is why every observed window opens at 60 and never at 0.
+  0.43 s/hr and the two meet again about five days after a restart.** Both drifts
+  come off `bus-checkpoint.log`, anchored at the restart's own slot instant
+  `2026-11-14T09:28:33.277755` (+3600k): the backup grid overshoots its nominal
+  point by `+0.483 s` at k=0 (`10:28:33.760681`) and `+8.677 s` at k=19
+  (`05:28:41.954323`) = `0.4312 s/hr`, `7.19 ms/tick`; the janitor's own drift is
+  `5.80 ms/h` (`10:29:33.764448 -> 05:29:33.874658`, 19 h). Since
+  `gap = 60 + janitor_drift - backup_overshoot`, the identity closes on the data —
+  `0.4312 - 0.0058 = 0.4254 s/hr`, which is the endpoint slope of the gap series:
+  `60.003767 s` (10:29) -> `56.057678 s` (19:29) -> `51.920335 s`
+  (11-15 05:29:33), 20 consecutive slots, monotone, no reversal (least-squares
+  `-0.4380`, last 14 points `-0.4217` — quote the range `0.42-0.44`, not a point).
+  So "can never coincide" is true only of the NOMINAL grids: the crossing needs no
+  restart. Extrapolating the measured range from the last tick puts it
+  `2026-11-20 04:00-08:40 ET` (`118.5-123.1 h` out); a `0.408 s/hr` figure would
+  say midday, and no window in the log yields it. A restart is what restores the
+  phase — overshoot resets to ~0, so the gap returns to ~60 s, which is why every
+  observed window opens at 60 and never at 0.
 - **At the crossing the janitor folds FIRST and the backup arm's `moved=`/`wal=`
   collapses to 0 for a reason that is not a copy-arm regression.** Once
   `overshoot > 60 s` the janitor's pre lands before the slot's, so it folds the
@@ -262,7 +267,8 @@ silent pass, because the two invocations differ only in the rc they never see.
   a non-zero janitor `moved=` beside a zero backup `moved=` is the new steady state,
   not a fault: grade the copy arm on the backup's own `wal=copy:N` at its pre, and
   janitor liveness on the janitor's own pre/post pair. (Absent a restart this is the
-  first tick after 2026-11-20; see the extrapolation above before dating it.)
+  first tick in the `2026-11-20 04:00-08:40 ET` window above — which is an
+  extrapolation, so date it from a real tick, not from this line.)
 - **Consequence: `moved=0` at the janitor's tick is a TRAFFIC reading, not
   arithmetic.** The janitor's own `checkpoint-pre log=` at :29:33 is the frames the
   bus wrote in the 56-60 s since the backup — measured `14:29:33.815756`
