@@ -1035,3 +1035,25 @@ unchanged`. A start that was refused adds no line, so the assertion holds for a 
 started: `ok F rc=0 while a run is live` prints vacuously. Any arm of the "no line appears" form needs
 a positive precondition (the unit reached `activating`/`active`) recorded in the same window, or its
 green means only that nothing was attempted.
+A crawl of the arm's own log, not a probe (read 2026-11-15 06:12 -0500;
+`~/.hermes/profiles/{frodo,buzzy}/logs/seeder-watch-*.jsonl`, the `--block-on-open` units,
+both restarted 03:26:29):
+
+| quantity | frodo | buzzy |
+|---|---|---|
+| event rows | 2,562 | 2,543 |
+| `OPEN_PERM` rows, all named | 2,518 | 2,502 |
+| `CLOSE_WRITE` rows | 44 | 41 |
+| `CLOSE_WRITE` rows named (`cmdline` or `argv_seen` non-empty) | 41 | 41 |
+| `CLOSE_WRITE` rows with `cmdline: ""`, no `argv_seen`, `actor_err: null` | **2** | **0** |
+| `actor_err` tally over `CLOSE_WRITE` | 21 null / 15 `ARGV_TORN_DOWN` / 4 `GONE` / 4 `GONE_RACE` | 34 null / 6 `ARGV_TORN_DOWN` / 1 `GONE_RACE` |
+
+The two residual rows are exactly the shape this section removes, and they are old: both
+are `.probe-fast-cp` at 02:24:39 and 02:28:04, written before the `EXIT_WINDOW_UNSEEN`
+build (`326c918`, 03:26:21) that produces the label. Sliced at the 03:26:29 restart — frodo
+1,417 rows / 2 `CLOSE_WRITE` / 2 named / **0** two-state rows; buzzy 1,580 / 15 / 15 / 0.
+The log is append-only across restarts, so a tally over the whole file grades every build
+that ever wrote to it, not the one running. The `start` line is the sample boundary, which
+is the same reason a `start` line with no `stop` is a restart witness rather than a
+liveness claim: read the last one and date the arm from it.
+
