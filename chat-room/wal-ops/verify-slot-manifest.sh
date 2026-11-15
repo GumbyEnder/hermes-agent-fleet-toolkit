@@ -6,6 +6,14 @@
 #   bytes, sha256 of each copied artifact      [the row's own `path`]
 #   src_ino in the row == st_ino of the live source (newest row only)
 #   wal=copy:N  ==  the copied sidecar's size on disk   [the row's own `path`]
+#   skip row names no path -- a `skip*` state whose files.<base> ALSO carries a
+#       path is self-contradictory: an artifact that was not made has no name.
+#       bus.py writes exactly {"bytes": None, "state": "absent"} (no path) for a
+#       skipped copy, so the legitimate row keeps passing; the arm only catches
+#       a row the bus never wrote (torn append, hand repair, foreign restore).
+#       Found by buzzy 2026-11-14: the skip arm asserted `state` and returned
+#       without ever reading meta['path'], so a row that said absent AND named a
+#       file that was not on disk produced PASS (0 failed legs), rc=0.
 #
 # PER-SLOT ARTIFACTS (#4268 point 2). Rows written from 2026-11-14 carry
 # files.<base>.path = <base>.<slot>, a name nothing else writes, so bytes and
@@ -134,6 +142,12 @@ def check_artifact(base, state, meta):
     if state.startswith('skip'):
         leg('%s skipped-as-absent' % base, meta.get('state') == 'absent',
             'row says %s' % meta.get('state'))
+        # A skip leg must assert the whole row shape it is handed: an absent
+        # artifact has no path, so a path here is a claim nobody can read.
+        if meta.get('path'):
+            leg('%s skip row names no path' % base, False,
+                'row says %s but names %s -- an absent artifact has no path'
+                % (meta.get('state'), meta.get('path')))
         return
     path = meta.get('path')
     if path:
