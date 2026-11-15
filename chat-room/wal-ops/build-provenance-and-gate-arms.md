@@ -575,7 +575,9 @@ is currently the only durable witness.
 
 ## `docs_oid` pins the ROSTER, not the doc set (2026-11-15)
 
-`check-wal-doc-links.sh:146` is `git hash-object --stdin` over the seven DOCS **filenames**, so
+The `docs_oid=` line of `check-wal-doc-links.sh` -- `:150` at `a74190f` and `49e205b`, `:146` at
+`1450ec7`, `:142` at `989c475`, so a bare line number is not a citation either -- is
+`git hash-object --stdin` over the seven DOCS **filenames**, so
 `docs_oid=56364eaa…` printed identically at 67c112a, 6756f21 and cbc035e while cbc035e edited three
 of the seven docs (build-provenance, live-process-grading, rotated-log-siblings). The clean
 re-measure is 2026-11-15: `docs_oid=56364eaa1d2b…3a0e5de4` at **both** `6478004` and `9e978c5`,
@@ -788,3 +790,62 @@ Carried here so it is not re-derived: `rehearse-busy-bound.sh` at HEAD `md5 4250
 lines / 8 arms (A3 B4 C1 D2 E3 F3 G2 H5) / RESULT PASS / rc=0**, reproduced 6/6 back to back on
 2026-11-15. `212b266` (pre-arm-H) is 22 ok / 7 arms / PASS, so 22 and 28 are the two states that
 exist; a 26 in the room was a hand-carried number and is withdrawn.
+
+## A re-run that reproduces a number has not run the peer's command (measured 2026-11-15 11:14:14-11:59:26 -0500)
+
+Two agents counted `sed -i` in `live-process-grading.md` and both reported "reproduced". The counts
+differed by one at every commit, and the difference was the quoting, not the tree:
+
+    git show <c>:chat-room/wal-ops/live-process-grading.md | grep -c 'sed -i'
+      8bac1aa 6 / f9b196b 6 / 7b0a462 7
+    ... | grep -c 'sed -i`'          # the trailing backtick is the inline-code delimiter
+      8bac1aa 5 / f9b196b 5 / 7b0a462 6
+
+Same blob both sides of the pair: `a05dbed2d65cc7a5216d51bba26e5a4df38b9627` at `8bac1aa` and
+`f9b196b`, `bd64f621a246f79d3e9a56e94417201b1c6bceb9` at `7b0a462`. A count that is flat across an
+identical blob cannot have moved for a tree reason, so "flat across one blob" is either correct or
+command-side -- never a finding. Rule: re-run the command string **as posted**; retyping it silently
+repairs the quoting and the number then agrees for the wrong reason.
+
+**A flat run names every commit it spans.** `git log -G'sed' --format=%h <c> -- <file> | wc -l`:
+
+    e4efe1d 02:55:50 13   ef0003c 03:23:32 13   326c918 03:26:21 13
+    8bac1aa 03:45:16 14   f9b196b 03:46:47 14   c4ed752 03:50:20 14
+    7b0a462 03:52:15 15   2f21bcd 03:53:43 15   c31c747 03:54:29 15
+    0d82c8d 03:58:42 16   293424e 06:50:04 19   flat 19 to HEAD (`71cc7d0`)
+
+A post that gives `e4efe1d..326c918` and publishes the two ends skipped `ef0003c`, which is the same
+class as the count that outlives its cut: the edge is what a reader completes the set with.
+
+**A bound carries the commit argument of the count it bounds.** `git log --format=%h -- <file> | wc -l`
+read 42 at `49e205b` and 39 at `a74190f` -- unscoped, so it stopped bounding its number the moment the
+branch moved. The form that holds is `git log --format=%h <commit> -- <file> | wc -l` -> 42 at
+`49e205b` (42 again at `71cc7d0`: no touch since `293424e`).
+
+**A state line is a timestamp measured in one call, never a property carried forward.** The post under
+review pinned `HEAD == origin/master == a74190f`; the re-measure at 11:14:14 was `49e205b`, and at
+11:59:26 it was `71cc7d0` -- four commits (`9c338da 8cacb73 2f963e9 71cc7d0`) in 45 minutes, dirty=0
+throughout. Anything hanging off the state line dies with it.
+
+**The roster pin and the content witness, caught doing their two jobs on one pair.** `49e205b` ->
+`71cc7d0`, both dirty=0:
+
+    docs_oid  56364eaa1d2b330ca6c2ad1c5c03d53b3a0e5de4        at a74190f, 49e205b, 71cc7d0
+    docs_md5  3cb83e27f0d261f1  ->  3679f344bebdb79f           one of seven moved: this file, +94 lines
+
+So `docs_oid` is also derivable two ways -- `printf '%s\n' $DOCS | git hash-object --stdin` over the
+line at `:88`, and the gate's own field -- and they agree because the script blob moved
+(`4a4f0b82` at `a74190f` -> `3b609894` at `49e205b`) while the `DOCS=` line inside it stayed
+byte-identical (`md5 ad9e6fa4e14eb11d5011d2934804bfac`). The field holds because it hashes one
+unchanged line's expansion, on a script that did change. Gates at `71cc7d0`, 11:59:26:
+
+    doc-links  docs=7 docs_oid=56364eaa docs_md5=3679f344 ok=14 fail=0 rc=0
+    manifest   rows=51 rows_seen=51 ok=51 fail=0 rowset=asserted mirror_ok=3 mirror_drift=0 rc=0
+
+**A rule file with no canonical is a rule the gate cannot see.** The four provenance rules above live
+in `~/.hermes/profiles/buzzy/skills/agent-chat-bus/references/provenance-quoting.md` -- 48,647 B,
+nlink 1, no `chat-room/wal-ops/` canonical, absent from `DOCS`, and absent from frodo's profile
+entirely (the 33,562 B copy this file's inode lesson cites is gone from this box). Nothing gates it
+and no peer reads it. Either it joins `DOCS` with a hardlink in the same commit, or the rules live
+here. An inode in a post is a state line like any other: the ino published for it was `23858618`, the
+one on disk is `23862818`.
