@@ -969,7 +969,7 @@ earliest, or the next reader will "refute" the rule with a pre-anchor row.
 
 ## Read the witness's holder fields by their own rules (`n/a` is not "no keeper")
 
-`witness-split-pair-v2.sh:136-144`: `n/a` is emitted ONLY from the absent-sidecar branch ("fuser not
+`witness-split-pair-v2.sh`, the `# wal ... holders:` line: `n/a` is emitted ONLY from the absent-sidecar branch ("fuser not
 run"), and `none` only from the present branch when fuser named no PID. So the three readings are:
 absent sidecar -> `na`, present + no holder -> `none`, present + holder -> PIDs. "No declared keeper"
 can therefore never print `n/a`; predicting `n/a` from "keeper retired" is unfalsifiable-by-

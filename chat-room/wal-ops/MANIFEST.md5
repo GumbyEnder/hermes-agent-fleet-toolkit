@@ -5,7 +5,7 @@
 bd4df5ea7f9741be0b5f54a02c54a0a0  test-witness-wal-line.sh
 6053951e1ed0091e00757c342f23f127  test-wal-class.sh
 a11a0feba201c05f87751973edb361e6  wal-checkpoint.sh
-17a40c5310efe0ae4f1f806711b23f7e  witness-split-pair-v2.sh
+a33ea3e685450575bf867fcd9f8ad579  witness-split-pair-v2.sh
 5271966c1a06f1aa591d3f598fefd9d8  wal-keeper.py
 e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
 982a76227209b04166e31f7b9c16de7e  systemd/hermes-agent-chat-walcheck.service

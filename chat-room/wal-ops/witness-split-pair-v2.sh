@@ -127,6 +127,9 @@ SINCE="@$FROM"
 REPO="$HOME/Agents/Projects/hermes-agent-fleet-toolkit"
 {
   echo "# captured $(date -Is); slot $(date -d @$SLOT -Is); journal since $SINCE"
+  # log identity: resolve the label a reader will stat, and print the inode -- the one
+  # field that proves a copy is not the original (two inodes, one md5, 2026-11-14).
+  echo "# log $(readlink -f "$OUT") ino $(stat -c %i "$OUT" 2>/dev/null || echo n/a) cwd $PWD"
   echo "# MainPID $(show MainPID) start $START_TXT NRestarts $(show NRestarts)"
   echo "# HEAD $(git -C "$REPO" rev-parse --short HEAD) bus.py $(md5sum "$REPO/chat-room/bus.py" | cut -d' ' -f1) tree: $(git -C "$REPO" status --porcelain | wc -l) modified"
   # --- witness identity: the instrument's OWN bytes, never the repo tip. `# HEAD` is a
