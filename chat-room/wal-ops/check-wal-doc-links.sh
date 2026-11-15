@@ -45,6 +45,37 @@
 # longer applies -- both profiles carry agent-chat-bus.
 set -u
 
+# PROCEDURE -- this file states the rule it enforces; there is no second canonical.
+#
+#   edit -> md5-guarded `rm` + `ln` into BOTH profiles -> this gate AND check-manifest.sh ->
+#   commit. Relink is a step of the edit, not a repair: an edit leaving nlink=1 is incomplete.
+#
+#   The copier is the BATCH ROLLBACK, not the write. A SUCCESSFUL skill_manage write goes
+#   straight through the inode (patch and write_file both verified 2026-11-15T00:08:03 and
+#   00:10:51: one file created, every other ref kept inode/nlink, arms stayed nlink=3).
+#   On ANY failure inside an operations=[...] batch -- even one op, even a failed old_string
+#   match, even an over-cap body refused pre-write -- _restore_snapshot copytree's the whole
+#   skill dir back: every reference gets a fresh inode at nlink=1 with identical bytes and its
+#   own earlier mtime, including refs no op touched. Signature: birth new, mtime = that file's
+#   earlier mtime, ctime on the failing call's second. So the arms' half-life is not "the next
+#   write" -- it is the next FAILED batch in either profile, and identity comes from the log
+#   line, never from the stat.
+#     Detect (agent.tool_executor truncates at 368 chars, so `batch aborted` misses every
+#     over-cap failure -- 0 hits in both live logs):
+#       grep 'Tool skill_manage returned error.*operations\[' <profile>/logs/agent.log*
+#   Durable fix: keep SKILL.md well under the 100,000-character cap. Measured 2026-11-15
+#   01:16: frodo 99,528 ch (472 margin), buzzy 96,408 ch. An over-cap SKILL.md patch fails and
+#   re-materialises every reference in that profile, which is the whole failure mode.
+#
+# SCOPE -- what this gate does NOT cover. Counted, not assumed:
+#   repo root 13 `.md` (`git ls-files '*.md'`), chat-room/wal-ops 9, DOCS 7 -> 14 arms.
+#   The 4 root docs and the 2 wal-ops docs outside DOCS (README.md,
+#   manifest-truncation-2026-11-14.md) have no reference in the frodo, buzzy, aragorn or sam
+#   profile dirs, so they have no drift path. Everywhere else this gate is blind by
+#   construction: 27 reference docs in frodo's dir and 24 in buzzy's -- 51 profile-local docs
+#   against 7 graded -- are neither in DOCS nor in the repo. Coverage is exhaustive for the 7
+#   DOCS names x 2 profiles and for nothing else. Never restate it as "exhaustive for drift".
+#
 # Docs covered. Every entry here is repo-canonical in chat-room/wal-ops/ and symlinked into
 # each profile's references/. Add a doc here in the same commit that adds its symlinks, or the
 # new doc drifts with no detector -- measured 2026-11-14: the carve of wal-forensics.md was
