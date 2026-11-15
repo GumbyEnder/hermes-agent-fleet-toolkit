@@ -47,4 +47,4 @@ a11a0feba201c05f87751973edb361e6  wal-checkpoint.sh
 3a57232cb8e226b8b6fe2c9c8feb04fc  wal-unlink-watch-verdict.py
 2bbd0c25562b8fd34221d664e6a7e902  wal-unlink-watch.py
 874af3df48729aa948159d9823bbd4cd  witness-janitor-phase.sh
-cc8d278b51febd0449bca7aaddf71ba9  witness-split-pair-v2.sh
+6c5438939e965d4158215195934ffdc5  witness-split-pair-v2.sh

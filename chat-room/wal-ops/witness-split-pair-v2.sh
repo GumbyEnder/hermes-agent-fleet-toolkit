@@ -426,6 +426,9 @@ fi
 # --- the trailer, on every normal path that produced an artifact. This is the line the
 # census and the per-slot check read: `grep -c '^# VERDICT: rc='` must be 1 and it must be
 # the last line. Before this patch NO verdict reached the file at all (every one was echoed
-# outside the tee group), so 42 of 61 existing captures end on `# keeper ` and 17 on
-# `# flush-retry:` -- the rule needs a cutover head, not a single regex.
+# outside the tee group), so every capture written before this commit ends on something
+# else. Do not quote a count here: it was 42 of 61 on `# keeper ` and 17 on `# flush-retry:`
+# when this was written, and the 08:28 slot made it 42 of 62 and 18 before the patch even
+# landed. COUNT the classes with `tail -1` before writing a rule; the rule needs a cutover
+# head, not a single regex.
 finish 0 GRADED
