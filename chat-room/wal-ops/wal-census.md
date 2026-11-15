@@ -306,9 +306,11 @@ produce one (measured 309 vs 155 in one minute).
 - **A group census is pinned to (cut, key, completeness rule), never to a line count.** In
   `bus-checkpoint.log` the pre-slot prose/header block is **106 rows and constant**, so
   slot rows = lines − 106 — and that offset is itself a line-count artifact, so carry it with any
-  line-indexed census or the next reader recounts a different denominator. Counted on
-  `(full db path, slot token)` with consecutive-row grouping, one file gives **18 / 24 / 30 / 32 / 34
-  groups at cuts 153 / 168 / 183 / 188 / 193**, and `3·triples + 2·pairs` equals the slot-row count at
+  line-indexed census or the next reader recounts a different denominator. The completeness rule
+  has a **value**, not just a name: groups are counted **over slot-bearing runs only, header block
+  excluded**. Counted on `(full db path, slot token)` with consecutive-row grouping over
+  slot-bearing runs, one file gives **18 / 24 / 30 / 32 / 34 groups at cuts 153 / 168 / 183 / 188 /
+  193**, and `3·triples + 2·pairs` equals the slot-row count at
   every cut (193: 87 slot rows = 19 triples + 15 pairs; cuts 188 and 193 are 26,406 B / `2a39958b…`
   and 27,199 B / `9ca03b2c…`). Two artifact modes and one naming rule:
   - **Basename key is latently wrong.** Grouping on `room.db` instead of the full path merges
@@ -316,6 +318,10 @@ produce one (measured 309 vs 155 in one minute).
     because the file carries two `db=` values and no slot token is shared between them (measured
     2026-11-14: 84 rows main path, 3 rows a scratch `busline2.QFp2` path) — "same answer today" is not
     "equivalent key".
+  - **The header block, counted as one group, yields N+1.** Grouping *every* row and letting the
+    106 slot-less rows close as one run gives **19 / 25 / 31 / 33 / 35** — same file, same cuts, one
+    group more. A reader who takes the rule name without its value gets N+1, concludes the cut moved,
+    and reopens a closed thread; 18/18-consistency comes from the slot-bearing clause alone.
   - **A cut taken mid-slot changes the trailing group**, so a group count quoted without its cut
     cannot be re-measured; append-only growth adds one backup triple plus one janitor pair per hour
     after the janitor offset change, with the tick phase locked at `:29:33`, not the old `:28:33` grid.
