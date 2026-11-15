@@ -260,9 +260,16 @@ append (tee opens without `O_APPEND`, so a trailer written inside the group is o
 at tee's own offset). Two trailers, a trailer that is not last, or a non-matching tail is a
 finding, not a shape to paper over. Absence means killed OR never reached the capture
 branch (exit 2 has no `OUT`; exit 3 runs before `: > "$OUT"`), so compare the trailer's
-`rc=` with `ExecMainStatus` and never read absence as "killed": an untrapped fatal signal
-runs the EXIT trap and writes a trailer that says `rc=0` (measured, bash 5.2.21). `late=`
-is computed from the artifact's own `checkpoint-pre:` `slot=`, never from `tail -1` of the
+`rc=` with `ExecMainStatus` and never read absence as "killed": an untrapped `TERM` runs the
+EXIT trap and writes a trailer that says `rc=0` (measured, bash 5.2.21: `TERM` 143 / trap
+rc=0, `HUP` 129 / trap rc=0). It is those two signals, not "a fatal signal" -- re-measured
+2026-11-15 10:5x, bash 5.2.21, EXIT trap only, signal at 0.3 s: `INT` is a no-op in the
+shape this witness has, and the process runs on with no trailer (a `&` child of a script
+inherits SIGINT ignored -- `/proc/<pid>/status` `SigIgn` `0x6`; a non-background child has
+it caught and deferred across the `sleep`, so the `wait` restarts), while `KILL` 137 writes
+no trailer either. Absence is "no trailer", never "`rc=0`"; only a `TERM`/`HUP` absence
+that disagrees with `ExecMainStatus` is the finding.
+`late=` is computed from the artifact's own `checkpoint-pre:` `slot=`, never from `tail -1` of the
 checkpoint log (on an expired arm that is the previous hour and prints ~3600 s); no
 `slot=` line gives `late=absent`.
 
