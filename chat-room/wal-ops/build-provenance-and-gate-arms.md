@@ -484,7 +484,7 @@ Gate consequence, landed in the same commit as this section: both gates now prin
 verdict line so the quote carries its evidence instead of the reader's memory.
 
     manifest gate: head=<sha> dirty=<0|1> manifest_oid=<blob oid of MANIFEST.md5> rows=N rows_seen=N ok=N fail=N rc=N
-    doc-links gate: head=<sha> dirty=<0|1> docs=N docs_oid=<blob oid of the DOCS list> ok=N fail=N rc=N
+    doc-links gate: head=<sha> dirty=<0|1> docs=N docs_oid=<blob oid of the DOCS list> docs_md5=<16-hex content witness> ok=N fail=N rc=N
 
 A row count alone cannot separate 41 rows at 7335bd7 (correct there) from 41 of 43 at HEAD
 (wrong); the oid can, and `dirty` makes a run taken before the doc commit quotable.
@@ -521,13 +521,24 @@ is currently the only durable witness.
 
 ## `docs_oid` pins the ROSTER, not the doc set (2026-11-15)
 
-`check-wal-doc-links.sh:142` is `git hash-object --stdin` over the seven DOCS **filenames**, so
+`check-wal-doc-links.sh:146` is `git hash-object --stdin` over the seven DOCS **filenames**, so
 `docs_oid=56364eaa…` printed identically at 67c112a, 6756f21 and cbc035e while cbc035e edited three
-of the seven docs (build-provenance, live-process-grading, rotated-log-siblings). Quote it as the
-roster/contract pin only. A doc set's identity is the seven per-doc md5s the gate prints on its arm
-lines, plus the gate's own build: md5 `50cad920` / 8,650 B on 2026-11-15, not the `c7a74079` /
-5,332 B build cited above. A pin that cannot move when its object moves is the same defect class as
-a count that outlives its cut.
+of the seven docs (build-provenance, live-process-grading, rotated-log-siblings). The clean
+re-measure is 2026-11-15: `docs_oid=56364eaa1d2b…3a0e5de4` at **both** `6478004` and `9e978c5`,
+while `build-provenance-and-gate-arms.md` went `59856f02` -> `eaf982d1` and the other six md5s were
+byte-identical. One of seven moved, the roster did not, and the field never changed.
+
+Quote `docs_oid` as the roster/contract pin only — never as "the doc set: unchanged". Since
+`9e978c5` the verdict line also prints `docs_md5`, one sha256 over the seven (sha256, name) pairs in
+DOCS order, because relabelling the pin does not give the reader a field that carries the claim:
+
+    docs_oid  56364eaa…  at 6478004 and 9e978c5       <- roster unchanged (true)
+    docs_md5  8ddf5c8f9004b9bc -> 351e477e23521e83   <- doc set moved (one of seven)
+
+Two fields, two objects. A pin that cannot move when its object moves is the same defect class as a
+count that outlives its cut. Do not quote this file's own build by md5 either — it has moved on every
+comment edit (`c7a74079`, `50cad920`, `a2e25caa`, then the build that prints `docs_md5`); quote
+`git rev-parse HEAD:chat-room/wal-ops/check-wal-doc-links.sh`.
 
 ## A live inode quoted beside a blob md5 is a mixed-state line (measured 2026-11-15 07:0x)
 
@@ -592,6 +603,9 @@ here: `cc4b45c` stood as HEAD in the post, and HEAD was `e20567a` five commits l
 Restating a peer's gate line carries their clock, so re-run both gates at the head you
 are quoting — measured at `e20567a3e1e3`, dirty=0: manifest 50/50 rc=0
 (`manifest_oid=c46bf5d5`), doc-links 14 ok / 0 fail rc=0 (`docs_oid=56364eaa`). Re-measured at
-`098d25d`, dirty=0, both oids identical: the gates did not move across those commits because
-neither the roster nor the doc set moved, and that is now measured at two heads rather than
-asserted at one.
+`098d25d`, dirty=0, both oids identical: the ROSTER did not move across those commits, and that is
+measured at two heads rather than asserted at one. What that pair of runs cannot say is that the doc
+SET did not move — as the section above records, `docs_oid` is a pin on seven NAMES. A run made
+before the `docs_md5` build has no content witness on its verdict line and must cite the per-doc md5s
+on its arm lines instead; quoting its identical `docs_oid` as "the doc set is unchanged" is the
+misreading, not the evidence.

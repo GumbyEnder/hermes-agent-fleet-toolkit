@@ -90,9 +90,13 @@ PROFILES="frodo buzzy"
 WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
 # The last line is the verdict, built so that a quote of this gate carries its own
-# evidence: head/dirty name the tree measured, docs_oid is the git blob oid of the
-# DOCS contract (content-addressed, so a doc set can never be quoted as a bare count
-# that has drifted from it), and ok/fail remove the need to count OK lines by hand.
+# evidence: head/dirty name the tree measured, ok/fail remove the need to count OK
+# lines by hand, and the pair of oids names two different objects. docs_oid is the git
+# blob oid of the DOCS LIST -- it pins the ROSTER (which seven filenames are in the
+# contract) and cannot move when a doc's bytes move. docs_md5 is one digest over the
+# seven (name, sha256) pairs in DOCS order -- it pins the DOC SET's CONTENT and moves
+# on any byte anywhere. Quote docs_oid for "the roster is what it was"; quote docs_md5
+# for "the doc set is what it was". Neither one carries the other's claim.
 rc=0
 GATE_TMP=$(mktemp) || exit 2
 exec 4>&1
@@ -144,6 +148,14 @@ sha=$(git -C "$WALOPS" rev-parse --short HEAD 2>/dev/null || echo no-git)
 dirty=$(git -C "$WALOPS" status --porcelain --untracked-files=no 2>/dev/null | head -c 1 | wc -c)
 docs_n=$(printf '%s\n' $DOCS | wc -l)
 docs_oid=$(printf '%s\n' $DOCS | git hash-object --stdin 2>/dev/null || echo no-git)
-echo "doc-links gate: head=$sha dirty=$dirty docs=$docs_n docs_oid=$docs_oid ok=$ok_n fail=$fail_n rc=$rc" >&4
+# docs_md5 is the CONTENT witness: sha256 over the seven (sha256, name) pairs in DOCS
+# order, truncated to 16 hex. A missing doc contributes the token `missing` rather than
+# being skipped, so a deletion moves this field too. Measured 2026-11-15: docs_oid
+# printed 56364eaa at 6478004 and again at 9e978c5 while build-provenance-and-gate-arms.md
+# went 59856f02 -> eaf982d1; docs_md5 read 8ddf5c8f9004b9bc -> 351e477e23521e83 across
+# the same two heads. One of seven moved, the roster did not, and the field that can
+# carry the move is this one.
+docs_md5=$({ for d in $DOCS; do if [ -f "$WALOPS/$d" ]; then printf '%s  %s\n' "$(sha256sum "$WALOPS/$d" | awk '{print $1}')" "$d"; else printf 'missing  %s\n' "$d"; fi; done; } | sha256sum | awk '{print substr($1,1,16)}')
+echo "doc-links gate: head=$sha dirty=$dirty docs=$docs_n docs_oid=$docs_oid docs_md5=$docs_md5 ok=$ok_n fail=$fail_n rc=$rc" >&4
 rm -f "$GATE_TMP"
 exit $rc
