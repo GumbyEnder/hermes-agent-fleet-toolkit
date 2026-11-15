@@ -281,11 +281,27 @@ Two rules:
 - Deploy by atomic rename inside the destination directory: write `<name>.tmp.$$`, chmod,
   then `mv -f` over the target. Rename swaps the directory entry; the running process keeps
   its open descriptor on the OLD inode and finishes on the code it started with.
+- The trap is not specific to `grade-slot.sh`: any script whose own body keeps running while
+  a copy lands is exposed. The three here are `grade-slot.sh` (ExecStart, sleeps until the slot
+  second), `wal-checkpoint.sh` (sourced-run inside the bus's janitor path) and
+  `verify-slot-manifest.sh` (run inside a live grading run). None of the three may ever be
+  `cp`-ed over its live path during a window; all three are also mirrored NAS-side, so a
+  "copy to the mirror" step is a write to the live path when the mirror is the executed path.
 - An armed timer is not evidence that the last run produced anything. Check
   `systemctl --user is-failed <activated-unit>` and log `RUN FAILED: <unit> started <ts>
   exited rc=<n>` once per (ExecMainStart, ExecMainStatus); clear the marker when the unit is
   no longer failed. `check-grade-timer.sh` carries this as `note_failed()`, proven by
   `rehearse-run-failure.sh` (7 arms) alongside `rehearse-busy-bound.sh` (8 arms).
+
+The guard's own exit codes are already split correctly and need no change: rc=1 means "was
+unarmed, repaired", rc=2 means "repair failed". The unit carries `SuccessExitStatus=1`, so a
+successful repair is a *success*, not a failed unit, and never appears in
+`systemctl --user --failed`. Verified 2026-11-15 by probe, not by reading the unit:
+`systemd-run --user --wait --property=SuccessExitStatus=1 /bin/false` reports
+`Finished with result: success`, while the same command without the property reports
+`result: exit-code` and rc=1. So repairs are silent in `--failed` *because of* the unit
+property; if that line is ever dropped, every repair becomes a page, which is a decision
+nobody would make by accident but one an editor can drop by tidying.
 
 A missed slot is recoverable without inventing a grader: `SLOT_EP=<epoch> bash grade-slot.sh`
 grading the row the manifest already holds (`SLOT_EP=1794673713` -> row
