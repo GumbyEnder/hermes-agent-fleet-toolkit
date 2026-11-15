@@ -274,6 +274,51 @@ inode does `tee` write to" (now measured) to "which inode does a reader resolve 
 the rename" (unmeasured): the same class of defect, reintroduced one layer out. Trading
 a measured race for an unmeasured one is a downgrade.
 
+### The trailer's reason field is a closed vocabulary — underscore, never a space
+
+`^# VERDICT: rc=N <TOKEN> late=<secs|absent> deadline=<N>s$` has four fields after the colon,
+so `<TOKEN>` may not contain whitespace. Written as two words, `DEADLINE EXPIRED` makes the line
+five fields: any reader that splits on whitespace takes `EXPIRED` as the token, shifts every
+field one right, and loses `late=` — which is the only number in the line. Every multi-word
+reason therefore ships with an underscore. This constrains the TRAILER only; the journal prose
+(`VERDICT: DEADLINE EXPIRED -- no checkpoint-pre:/checkpoint: line by slot+Ns`) stays a human
+sentence, because nothing parses it and the abbreviation would read worse.
+
+The vocabulary is closed at `61e21f2` — seven tokens, the three kill tokens identical but for
+the signal:
+
+| token | rc | means |
+|---|---|---|
+| `GRADED` | 0 | both arms folded, this slot graded |
+| `VACUOUS` | 0 | `log=0` on every line; an idle WAL, not evidence |
+| `VACUOUS_STRUCTURAL` | 0 | no sidecar and no persistent holder; no frame supply to grade |
+| `NO_LINE` | 4 | no checkpoint line and no failure line in the window |
+| `PAIR_FAILED` | 5 | an arm failed before any checkpoint; the window grades nothing |
+| `DEADLINE_EXPIRED` | 6 | no checkpoint by slot+`DEADLINE`; past the deadline, not a restart |
+| `KILLED_TERM` / `_INT` / `_HUP` | 143 / 130 / 129 | `128+sig`, named by trap |
+
+`rc` is not decoration: it is the only field the trailer and systemd can be compared on. That is
+why TERM/INT/HUP are TRAPPED rather than left to an EXIT trap — measured on bash 5.2.21, an
+untrapped TERM still runs the EXIT trap and `$?` inside it is `0`, so an EXIT-only instrument
+writes `rc=0` on a killed run and says nothing. SIGKILL is the single case with no trailer at
+all; its witness is `ExecMainStatus=137` in the journal. Absence therefore never means "killed",
+and `rc=0` never means "not killed" without that comparison.
+
+`late=` is the arm token's offset from the slot **named in the artifact's own header**
+(`slot=` / `checkpoint-pre: slot=`), in seconds to three places — never from the clock. In
+`--grade` mode `SLOT` is the *next* slot derived from `ExecMainStartTimestamp`, so measuring a
+stored token against it prints a negative hole in hours: the 01:28 capture graded at 09:5x
+returns `late=7.195`, against the clock slot it would be ~`-29,000`. No header `slot=` gives
+`late=absent`, and that is also what every expired and killed path carries — the number is only
+ever a measurement of a token that actually reached the file, which is why the expired and
+signal rehearsals both print `late=absent` rather than `0`.
+
+**A grade run must not mutate the file it graded.** `--grade` reads the stored capture, and a
+trailer appended there is the instrument destroying its own evidence: the re-grade would then
+count two trailers and fail its own rule. Measured on `pairsplit2-20261115T012835.log`, md5
+`e7c6a702` before and after, `grep -c '^# VERDICT: rc='` still `0`. Verify both on any future
+edit to `finish` — the guard is `GRADE_FILE`-non-empty, not a mode flag a caller can forget.
+
 ### `# tee` is the checkpoint log's size and mtime, not a tee process
 
 The header line
