@@ -94,7 +94,7 @@ WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 # lines by hand, and the pair of oids names two different objects. docs_oid is the git
 # blob oid of the DOCS LIST -- it pins the ROSTER (which seven filenames are in the
 # contract) and cannot move when a doc's bytes move. docs_md5 is one digest over the
-# seven (name, sha256) pairs in DOCS order -- it pins the DOC SET's CONTENT and moves
+# seven (sha256, name) pairs in DOCS order  [order matters: the digest is printed that way] -- it pins the DOC SET's CONTENT and moves
 # on any byte anywhere. Quote docs_oid for "the roster is what it was"; quote docs_md5
 # for "the doc set is what it was". Neither one carries the other's claim.
 rc=0
