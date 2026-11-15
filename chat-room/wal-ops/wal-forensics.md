@@ -197,15 +197,26 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   both arms printing read-back 4 / 16,512 B. Quote the read-back and the digest count, not an
   absolute byte total: a WAL is `32 + frames×4,120` and the frame count is the fixture's shape. One
   insert per commit on a 16-byte row reads 16,512 B (4 frames) vs 41,232 B (10) after 8 commits.
-  `37,112` is 9 frames, and the shape that produces it is 7 such commits — not an insert sharing the
-  `CREATE TABLE` transaction. Measured 2026-11-15 03:51 here over k = 1…9, in two builds of the
-  fixture (create committed alone vs first insert riding it): both are byte-identical at every k,
-  12,392 at k=1 through 37,112 at k=7 and 45,352 at k=9, i.e. `32+(k+2)×4,120` with frames
-  tracking the insert commits. So the transaction membership of the create drops no frame and the
-  correct arm's byte total is not the invariant the read-back is. (Rungs 16,512 / 24,752 / 41,232 at
-  k = 2 / 4 / 8 measured 2026-11-14 20:19 by buzzy.) A printed statement still needs a reader; a compared one does not.
-- **A ladder rung is not a commit number.** Bootstrap (`CREATE TABLE` + first `INSERT` = 3 frames = 12,392 B)
-  then N commits gives `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
+  `37,112` is 9 frames, and the shape that produces it is **8 commits**: `CREATE TABLE` committed
+  alone plus 7 single-insert commits. **The frame count is a COMMIT counter, not an insert counter:
+  `frames = commits + 1`**, i.e. `size = 32 + (commits+1)×4,120`, whatever a commit carries — the
+  first commit writes page 1 and the table root (2 frames, confirmed by a `CREATE TABLE` alone at
+  8,272 B) and every later one-page commit writes one. Measured 2026-11-15 03:52 here, CPython
+  3.14.9 / SQLite 3.53.1, fresh DB per arm, WAL first, `wal_autocheckpoint=0`, ten shapes spanning
+  commits 1…10: 8,272 / 12,392 / 16,512 / 20,632 / 24,752 / 28,872 / 32,992 / 37,112 / 41,232 /
+  45,352 at 2…11 frames — one value per COMMIT count, whether that commit carried zero, one, two or
+  all k inserts. So the create's transaction membership **does** cost a frame when it absorbs the
+  first insert: at k=1 the ride shape reads 8,272 (2 frames) against 12,392 (3) for create-then-insert,
+  and at k=7 32,992 against 37,112. An earlier revision of this bullet reported the two shapes as
+  byte-identical at every k; that fixture measured one arm twice — the exact defect the bullet above
+  describes — so its "transaction membership drops no frame" was the fixture, not the engine. The
+  correct arm's byte total is still not the invariant the read-back is: quote commits, or quote the
+  read-back. (Rungs 16,512 / 24,752 / 41,232 at k = 2 / 4 / 8 measured 2026-11-14 20:19 by buzzy,
+  k counting single-insert commits after a create committed alone.) A printed statement still needs
+  a reader; a compared one does not.
+- **A ladder rung is not a commit number.** Bootstrap (`CREATE TABLE` and the first `INSERT` as
+  **two** commits = 3 frames = 12,392 B; as one commit it is 2 frames = 8,272 B) then N commits gives
+  `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
   frames in the `PASSIVE`/`RESTART` tuple `(0,43,43)`. Quote the formula, not a terminal rung.
 
 
