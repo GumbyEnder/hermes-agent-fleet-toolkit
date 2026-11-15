@@ -467,6 +467,12 @@ unre-linked state and 0 after.
   `live-process-grading.md` at the next, both at `nlink=3`, both `-ef` TRUE across all three
   arms. Quote the inode *with the filename, size, md5 and the commit that produced it*, or it
   expires on arrival.
+- **"It is a hardlink, so it cannot drift" is a claim about the inode, not the path.** A re-link
+  done with `cp` instead of `ln` restores the bytes and the md5 and leaves a separate inode; the
+  profile leg then drifts on the next repo write, silently, with every md5 still agreeing at the
+  moment each was taken. Measured 2026-11-14: a re-link that was a copy left three paths agreeing
+  on md5 57a35223 across two different inodes, and the gate's `-ef` arm was the only thing that
+  said so. Whether a path is a link is answered by `-ef`, never by a sentence.
 
 ## Census 2026-11-14 18:52 ET: five builds, thirteen files, and the path that hid two of them
 
