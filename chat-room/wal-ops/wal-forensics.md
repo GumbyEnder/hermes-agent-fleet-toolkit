@@ -257,8 +257,12 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     (`change_counter` still constant at 2). The threshold sits between 200 B and 500 B on the same arm:
     16, 100 and 200 B refills each append **one** page-2 frame and leave `freelist_count` at 38, while a
     1,000 B refill appends **6** frames, pages `[1, 2, 3, 4, 39, 40]`, `freelist_count` 38 → 35
-    (frodo, independent, 2026-11-15). Read that count from page 1's WAL image or through
-    `PRAGMA freelist_count`; the main file's own header still says 38 until a checkpoint writes it back,
+    (frodo, independent, 2026-11-15). The **deltas** are the mechanism and the absolute 38 is that
+    fixture: on a matched 43-page / 41-freelist base the same five sizes give 1 frame `[2]` (16/100/200 B),
+    5 frames `[1, 2, 3, 4, 43]` with 41 → 39, and 6 frames `[1, 2, 3, 4, 42, 43]` with 41 → 38 -- same
+    page sets, same −2 / −3 (frodo, probe-f1.py A4). Read that count from page 1's WAL image or through
+    `PRAGMA freelist_count`; the main file's own header still says the pre-refill value (38 on that
+    fixture, 41 on the second) until a checkpoint writes it back,
     so a main-file read of the same commit sees a stale value. So the field-derived statement is the one to keep — page 1 is
     written **iff one of its own header fields moves** — and a plain `INSERT` reaches that condition
     whenever it pulls pages off the freelist; the **16/100/200 B refills above** are the case where
