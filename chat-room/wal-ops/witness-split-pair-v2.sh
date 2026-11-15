@@ -51,6 +51,65 @@ case "${1:-}" in
   --grade) GRADE_FILE="${2:-}"; [ -s "$GRADE_FILE" ] || { echo "VERDICT: CANNOT GRADE -- --grade needs an existing, non-empty capture file (got '${2:-}')"; exit 2; } ;;
 esac
 
+# --- deadline, trailer and signals (added 2026-11-15 08:30, patch deadline-30).
+# WHY A DEADLINE AND NOT A TRY COUNT: the flush-retry loop was 5 x (sleep 1 + journalctl),
+# i.e. a DURATION that nobody printed, and its ceiling moved with the sleep's overshoot:
+# slot+7.27..7.52. Measured 02:28: the last read ended 02:28:40.519272 and the backup's own
+# line landed 02:28:40.533775 -- the loop lost the arm by 14.503 ms and printed "NO
+# CHECKPOINT LINE AT ALL", a wrong cause with a wrong next action. The wait is now bounded
+# by an absolute deadline and the lateness is a property of the ARM (its own slot token
+# minus this script's slot second), so a missed slot names the number.
+# DEADLINE < AGENT_CHAT_JANITOR_OFFSET IS STRUCTURAL, NOT MARGIN: the deadline is
+# grid+DEADLINE; the janitor tick is grid+60.006 and MOVING AWAY at 0.005562 s/h (its own
+# work; measured 10:29:33.764448 -> 07:29:33.881251). There is no override in
+# ~/.config/hermes-fleet/env and the code default is 60. If that offset ever drops to
+# <= DEADLINE the chase loop finds the JANITOR's line first, grades the janitor arm as the
+# hour and never sees backup. That is the break -- not "a late janitor".
+# WHY 30: backup lateness was 10.010883 at 07:28:43, drift 0.440486 s/h over 21 intervals.
+# The 0.760681 at tick 1 is 0.644335 s of ExecMainStartTimestamp truncation (from
+# ExecMainStartTimestampMonotonic) + 0.116346 s of thread startup: a START CONSTANT that
+# redraws on restart, NOT a rate -- do not divide the first tick by the hour count.
+# Headroom 19.99 s puts the last good slot between 11-17 00:28 and 08:28 depending on
+# whether you take the last six ticks, the mean, or the load hour excluded; every rate in
+# that band fails by the 09:28 slot on the 17th. Quote the band, never one instant.
+DEADLINE="${WDEADLINE:-30}"
+
+TOKEN_RE='src=backup slot=[0-9T.-]+'
+arm_ep() { # slot token 20261114T152835.534123-0500 -> epoch seconds, 0 if unparsable
+  date -d "$(printf '%s' "$1" | sed -E 's/^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})\..*([+-][0-9]{4})$/\1-\2-\3 \4:\5:\6 \7/')" +%s 2>/dev/null || echo 0
+}
+
+_finished=0
+LATE=""
+# finish() writes EXACTLY ONE trailer, and ONLY on the capture path: in --grade mode OUT is
+# the stored capture, so an unconditional trailer is the mutation this instrument forbids.
+# It also no-ops on exits that happen before this run created its own file (exit 2 has no
+# OUT; exit 3 runs before `: > "$OUT"`). Append with >> AFTER the tee pipeline closed and
+# AFTER the flush-retry append: tee opens without O_APPEND, so a trailer written while the
+# group still holds the fd is overwritten by tee's next write at its own offset. A signal
+# that lands INSIDE the group can still lose that race; the journal's ExecMainStatus is
+# then the honest witness and the trailer/status pair below is what catches it.
+finish() {
+  local rc="${1:-0}" why="${2:-OK}"
+  if [ -n "${GRADE_FILE:-}" ] || [ -z "${OUT:-}" ] || [ ! -f "${OUT:-/nonexistent}" ] || [ "$_finished" = 1 ]; then
+    return 0
+  fi
+  _finished=1
+  printf '# VERDICT: rc=%s %s late=%s deadline=%ss\n' "$rc" "$why" "${LATE:-absent}" "$DEADLINE" >> "$OUT"
+}
+on_sig() {
+  # MEASURED on bash 5.2.21: an UNTRAPPED TERM/INT/HUP still runs an EXIT trap, and inside
+  # it $? is 0 (wait_rc 143/0/129, trap printing rc=0 every time); only KILL leaves no
+  # trap. So "missing trailer means killed" is false in both directions, and an EXIT-only
+  # trap would write rc=0 on a killed run. Trap the three, name the signal, and compare the
+  # trailer's rc with systemd's ExecMainStatus (143/129/130 vs 0).
+  finish "$((128 + $2))" "KILLED_$1"
+  exit "$((128 + $2))"
+}
+trap 'on_sig TERM 15' TERM
+trap 'on_sig INT 2' INT
+trap 'on_sig HUP 1' HUP
+
 # Rehearsal overrides. Defaults ARE production; nothing changes unless the caller
 # sets them. A rehearsal must run THIS script's gate, not a copy of it, or the
 # proof is about the copy: measured 2026-11-13, the rehearsal bus is a transient
@@ -208,29 +267,59 @@ REPO="$HOME/Agents/Projects/hermes-agent-fleet-toolkit"
 } | tee "$OUT"
 fi
 
-# --- flush race guard (added 2026-11-14 after the 15:28:35 FALSE NEGATIVE).
-# The capture instant is slot+2; the bus writes its own `checkpoint-pre:` line at
-# slot+2.5 on this host, so a single journalctl read at slot+2 can miss the very line
-# it was armed to watch and fall through to exit 4 "NO CHECKPOINT LINE AT ALL -- restart
-# or stopped unit", which is a wrong cause AND a wrong next action. Measured: 15:28:35
-# capture read the window before the 15:28:35.534 backup lines landed, while
-# 10:28/11:28/12:28/13:28/14:28 all read them fine -- i.e. a sub-second race, not a
-# unit state. This guard only re-reads the same window; it changes no verdict and adds
-# no line to any path that already found one.
+# --- chase to the DEADLINE, then say so (2026-11-15; replaces 5 x (sleep 1 + journalctl)).
+# The capture instant is slot+2.16..2.41 (the sleep to slot+2 overshoots); the old loop was
+# 5 x (1 s + journalctl 0.01 s) = 5.11 s, so its ceiling was slot+7.27..7.52 and the 02:28
+# arm at slot+7.5338 lost by 14.5 ms. This loop re-reads the same window until the absolute
+# deadline, so a line at slot+12 is caught and a line that never comes is NAMED (exit 6)
+# instead of being reported as a restart. It changes no verdict on a window that has a line.
 if [ -z "$GRADE_FILE" ] && ! grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; then
   _tries=0
-  while [ "$_tries" -lt 5 ] && ! grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; do
+  _dl_ns=$(( (SLOT + DEADLINE) * 1000000000 ))
+  while [ "$(date +%s%N)" -lt "$_dl_ns" ] && ! grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; do
     sleep 1; _tries=$(( _tries + 1 ))
     journalctl --user -u "$SVC" --since "$SINCE" --no-pager \
       | grep -E 'checkpoint-pre:|checkpoint:|checkpoint failed|janitor failed|backup failed' >> "$OUT"
   done
-  [ "$_tries" -gt 0 ] && echo "# flush-retry: ${_tries} extra read(s) of the same window (slot+2 capture can precede the arm's own line)" >> "$OUT"
+  [ "$_tries" -gt 0 ] && echo "# flush-retry: ${_tries} read(s) of the same window; deadline slot+${DEADLINE}s" >> "$OUT"
+fi
+
+# --- the arm's lateness, read from THIS artifact's own token (never from BT at the grading
+# block, which is `tail -1` of the tick log: on expiry the arm never ticked, so BT is the
+# PREVIOUS hour and the field would print ~3600 s; in --grade it is whatever the log says at
+# grading time). Every checkpoint-pre: line carries its own slot= token, so subtract that.
+_BTOK="$(grep -oE "$TOKEN_RE" "$OUT" 2>/dev/null | tail -1 | sed 's/.*slot=//')"
+# Reference second: the live grid for a capture, but for --grade the ARTIFACT's own slot
+# from its header -- SLOT in grade mode is the NEXT slot from the clock, so subtracting it
+# from a stored token would print a negative number of hours.
+_ref="$SLOT"
+if [ -n "$GRADE_FILE" ]; then
+  _ref="$(date -d "$(sed -nE 's/^# captured .*; slot ([^;]+);.*$/\1/p' "$OUT" | head -1)" +%s 2>/dev/null || echo "$SLOT")"
+fi
+if [ -n "$_BTOK" ]; then
+  _frac="$(printf '%s' "$_BTOK" | sed -nE 's/^[0-9]{8}T[0-9]{6}\.([0-9]+)[+-][0-9]{4}$/\1/p')"
+  [ -z "$_frac" ] && _frac=0
+  LATE="$(awk -v a="$(arm_ep "$_BTOK")" -v f="$_frac" -v b="$_ref" 'BEGIN{printf "%.3f", a + f / (10 ^ length(f)) - b}')"
+  echo "# arm backup slot=${_BTOK} late=${LATE}s (arm token - slot second, deadline ${DEADLINE}s)"
+else
+  LATE="absent"
+  echo "# arm backup slot=absent late=absent (no checkpoint line in this artifact)"
 fi
 
 # --- presence first: an empty window is a witness failure, not a healthy database.
 # (the vacuous gate below must not swallow it -- measured 11:22, empty window printed
 #  VACUOUS because LOGMAX defaulted to 0)
 if ! grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; then
+  # --- expiry is its own cause, never exit 4. The old exit 4 text ("restart or stopped
+  # unit") was wrong for every miss after the lateness outgrew the 5-try ceiling: measured
+  # 02:28 (line at slot+7.5338) and every slot after it. rc 6 carries the number, so the
+  # journal and the trailer agree that the arm is late rather than absent.
+  _dl_ns=${_dl_ns:-0}
+  if [ -z "$GRADE_FILE" ] && [ "$_dl_ns" -gt 0 ] && [ "$(date +%s%N)" -ge "$_dl_ns" ]; then
+    echo "VERDICT: DEADLINE EXPIRED -- no checkpoint-pre:/checkpoint: line by slot+${DEADLINE}s. This is NOT a restart and NOT an empty phase: the arm is past the deadline. Re-derive the lateness series from bus-checkpoint.log before grading this hour, and do not read the slot as evidence either way."
+    finish 6 DEADLINE_EXPIRED
+    exit 6
+  fi
   # A failed fold is not a restart. Two real failures measured 2026-11-13 on a rehearsal bus driven
   # into the failure (frames held in the WAL, DB frozen with chattr +i; shipped bus.py at aef2baf):
   #   15:47:01  janitor failed: attempt to write a readonly database
@@ -245,9 +334,11 @@ if ! grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; then
     CAUSE="$(grep -Eo '(janitor failed|backup failed|checkpoint failed).*' "$OUT" \
       | sed -E 's/^[a-z ]+failed: *//; s/^src=[^ ]+ //; s/^err=//' | sort -u | paste -sd'@' - | sed 's/@/; /g')"
     echo "VERDICT: PAIR FAILED BEFORE ANY CHECKPOINT -- cause: ${CAUSE:-unnamed failure line}; the arms could not fold, so this window grades no arm and must not be read as an empty phase. A failed fold is not a restart, and this branch fires whatever the cause was: read the err text above, do not assume a lock."
+    finish 5 PAIR_FAILED
     exit 5
   fi
   echo "VERDICT: NO CHECKPOINT LINE AT ALL in window and no failure line -- restart or stopped unit; recompute the phase from ExecMainStartTimestamp."
+  finish 4 NO_LINE
   exit 4
 fi
 
@@ -265,9 +356,8 @@ NARMS=$(printf '%s' "$SRCS" | wc -w)
 # measured arm offset, read from the tick log rather than assumed: the janitor offset
 # change (census, wal-census.md) moved the second arm ~60 s past the first, which is why
 # both arms can no longer appear in one 7 s window.
-arm_ep() { # slot token 20261114T152835.534123-0500 -> epoch seconds, 0 if unparsable
-  date -d "$(printf '%s' "$1" | sed -E 's/^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})\..*([+-][0-9]{4})$/\1-\2-\3 \4:\5:\6 \7/')" +%s 2>/dev/null || echo 0
-}
+# arm_ep() is defined with the deadline/trailer helpers at the top of this script; the
+# lateness field needs it before this block runs.
 BT="$(grep -oE 'src=backup slot=[0-9T.-]+' "$CPLOG" 2>/dev/null | tail -1 | sed 's/.*slot=//')"
 JT="$(grep -oE 'src=janitor slot=[0-9T.-]+' "$CPLOG" 2>/dev/null | tail -1 | sed 's/.*slot=//')"
 if [ -n "$BT" ] && [ -n "$JT" ]; then
@@ -286,9 +376,11 @@ if [ "${LOGMAX:-0}" -le 0 ] && [ "${BUSY_ANY:-0}" -eq 0 ]; then
   # forced by the connection model rather than by the traffic in this hour.
   if ! grep -Eq '^# wal [0-9]+' "$OUT" && grep -Eq '^# keeper pid=0' "$OUT"; then
     echo "VERDICT: VACUOUS (STRUCTURAL) -- no -wal sidecar at capture and no persistent holder: the bus opens/closes a connection per request and SQLite deletes the -wal on the last close, so backup/janitor TRUNCATEd a zero-frame database. busy=0 is forced on ANY build and this slot grades nothing. No persistent holder and no live kernel at the capture second: the keeper is retired (unit stopped, disabled, Wants= removed), so frame supply is opportunistic and this hourly pair grades frames only in the slots where they happen to be there."
+    finish 0 VACUOUS_STRUCTURAL
     exit 0
   fi
   echo "VERDICT: VACUOUS -- slot ran with log=0 on every line (no frames to contend); busy=0 here is a property of an idle WAL, not of the build. Not evidence either way."
+  finish 0 VACUOUS
   exit 0
 fi
 
@@ -330,3 +422,10 @@ elif grep -Eq 'checkpoint-pre:|checkpoint:' "$OUT"; then
 else
   echo "VERDICT: UNGRADED -- checkpoint lines present but no arm matched (new line shape; fix the greps before trusting this file)."
 fi
+
+# --- the trailer, on every normal path that produced an artifact. This is the line the
+# census and the per-slot check read: `grep -c '^# VERDICT: rc='` must be 1 and it must be
+# the last line. Before this patch NO verdict reached the file at all (every one was echoed
+# outside the tee group), so 42 of 61 existing captures end on `# keeper ` and 17 on
+# `# flush-retry:` -- the rule needs a cutover head, not a single regex.
+finish 0 GRADED
