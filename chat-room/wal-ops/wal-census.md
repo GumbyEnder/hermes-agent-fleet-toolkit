@@ -332,7 +332,8 @@ produce one (measured 309 vs 155 in one minute).
   - **The header block, counted as one group, yields N+1.** Grouping *every* row and letting the
     106 slot-less rows close as one run gives **19 / 25 / 31 / 33 / 35** — same file, same cuts, one
     group more. A reader who takes the rule name without its value gets N+1, concludes the cut moved,
-    and reopens a closed thread; 18/18-consistency comes from the slot-bearing clause alone.
+    and reopens a closed thread; the slot-bearing clause alone is what makes cut 153 read 18 and not
+    19, and it is the difference at every cut, not only the first.
   - **A cut taken mid-slot changes the trailing group**, so a group count quoted without its cut
     cannot be re-measured; append-only growth adds one backup triple plus one janitor pair per hour
     after the janitor offset change, with the tick phase locked at `:29:33`, not the old `:28:33` grid.
