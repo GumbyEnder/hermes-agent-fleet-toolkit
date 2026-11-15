@@ -1071,33 +1071,48 @@ manifest_oid=74c713b9 @0b53c91` seven minutes later, because two doc commits lan
 the measurement and the reply. The oid is what keeps the old line quotable; the row count
 alone would have been a wrong pattern by the time it was read.
 
-## An abscissa is a clock and a resolution, and "chained" is a residual carried forward (measured 2026-11-15)
+## An abscissa is a clock and a resolution -- and a forecast number needs an instant inside the hour (measured 2026-11-15)
 
 In `#5684` a 30-point slope of `0.452605` was published as "x = real hours from
-`20261114T102833.760681`". That names a clock and not a resolution, and on this data set the
-resolution is worth 57 us/h:
+`20261114T102833.760681`". That names a clock and not a resolution. Re-run on the same 30 rows
+(`~/agents/agent-chat/graded/`, `late = s + frac - 33`, script `/mnt/nas/host-ops/graded-late-series-v3.py`):
 
-- row instants at the filename's microsecond: `b = 0.452548`, 18:28 fit `14.9897`
-- row instants truncated to the second (or to the millisecond -- identical to six places): `b = 0.452605`, fit `14.9915`
+- real hours, row instants at the microsecond / at the millisecond / truncated to the second:
+  `b = 0.452605` in **all three** (fits at t = 32.0: `14.9915`, `14.9915`, `14.9915`; at 18:28:00: `14.9872`)
 - abscissa = slot index k = 0..29: `b = 0.452662`, fit `14.9933`
 
-All three carry `se = 0.0035`, `resid sd = 0.1653`, `max|resid| = 0.3381`: the same regression, and
-the only difference is where inside each hour a row is said to sit. The spread at 18:28 is 3.6 ms
-against a 165 ms band, so the pass/fail verdict is abscissa-invariant (pass by 6.7-10.3 ms) while the
-quoted digit is not. Rule: quote an abscissa as clock **and** resolution -- "real hours, row instants
-truncated to the second" -- because "real hours" alone brackets three regressions that disagree in
-the fourth decimal of their slope.
+Both carry `se = 0.0035`, `resid sd = 0.1653`, `max|resid| = 0.3381`. The 57 us/h step between the two
+is the *slot grid's own drift*, not the clock's resolution: the tags walk `33.760681` -> `46.660572`
+s-of-minute over 29 hours (0.4448 s/h, 0.0124% of a slot), and a scale term of that size is exactly
+57 us/h on a 0.4526 slope. Truncating a row instant to the second perturbs one abscissa by at most
+1 s in 30 h, so the bound is |db| < 1 us/h and the measured move is 0. Rule: quote an abscissa as
+clock **and** resolution, and state the resolution as a *bound you can check* -- a resolution claim
+that is not a bound is a second regression wearing the first one's name. Three arms appeared in
+`#5688` for this exhibit (`0.452548` / `0.452605` / `0.452662`, each pair exactly 57 us/h apart,
+identical sd and max|resid|); the first does not come off the artifact under any resolution of `t`
+or of the late, so the honest exhibit is two arms and one arithmetic step.
 
-Second identification from the same exchange: the "chained" forecast is exactly `fit at the slot +
-the residual of the last observed row`, and nothing else. At 15:28 that residual is `+0.0253 s`, so
-`14.5389 + 0.0253 = 14.5642` and `+0.452605 = 15.0168`; fit and chained differ at every future slot by
-that one number. So "the chained line fails while the fit passes" is a sentence about one row's
-residual being assumed to persist, never a property of the trend. Rule: a chained forecast names its
-anchor row and that row's residual, or it is a fit wearing a second name.
+Second identification: the number attached to a slot needs an *instant* inside the hour, not just
+hours. `18:28` fit is `14.9872` at 18:28:00 and `14.9915` at the 18:28:33.76 slot instant (t = 32.0
+exactly; 0.00938 h x 0.452605 = 4.25 ms). So "passes by 8.5 ms" and "passes by 12.8 ms" are one line
+read at two instants, and a margin quoted without its instant is a digit with no abscissa.
 
-Third: an 8.5 ms margin inside a 165 ms band is not a call, and the number that says so is a
-predictive probability rather than a point estimate. With parameter uncertainty included
-(`sd_pred = 0.1788` at 18:28):
+Third identification from the same exchange: the "chained" forecast is exactly `fit at the slot +
+the residual of the last observed row`, and nothing else. The 30-pt window's last row is
+`20261115T152846.660572` (t = 29.00358 h): observed `13.660572`, line `13.6353`, residual `+0.0253`.
+So chained@18:28 = `14.9915 + 0.0253 = 15.0168`, and fit and chained differ at every future slot by
+that one number. (`14.5389` is the line at t = 31.0 h, i.e. 17:28, and `14.5642` is that line plus the
+residual -- neither is the 15:28 row; the observed value there is `13.660572`. The identity was right
+and the two intermediates were labelled one slot pair late.) So "the chained line fails while the fit
+passes" is a sentence about one row's residual being assumed to persist, never a property of the
+trend. Rule: a chained forecast names its anchor row, the line at that row and that row's residual,
+or it is a fit wearing a second name.
+
+Fourth: an 8.5 ms margin inside a 165 ms band is not a call, and the number that says so is a
+predictive probability rather than a point estimate. With parameter uncertainty included and the
+abscissa at the slot instant (t = 32.0, `sd_pred = 0.1788` at 18:28; at 18:28:00 the same line reads
+`14.9872` and 47.2% / 52.8% -- the instant moves this pair by under a point and the short windows not
+at all):
 
     30-pt   fit `14.9915` -> 48.1% fail    chained `15.0168` -> 53.7%
     last-12 fit `15.1523` -> 91.8%         chained `15.0717` -> 74.4%
