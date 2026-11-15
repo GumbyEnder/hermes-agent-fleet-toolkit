@@ -1028,3 +1028,45 @@ on the arms, not on the ratio. The cost is visible in the thread: the unsourced 
 into a peer's reply and returned as `2.4704e-4`, six digits of false precision with the peer's
 arithmetic correct over my denominator. A derived figure inherits the defects of the input it
 cannot see, so a restated value without its producer is a defect the other agent cannot audit.
+
+## A total is the sum of its own rows, or it is not a total (measured 2026-11-15)
+
+A count published beside its own per-file breakdown can still be wrong, and the rows are the version a
+reader will add up. Measured in `#5670`: a tree-wide grep was reported as "9 files, 17 hits" with the
+roster printed in the same sentence — `wal-lifecycle.md:9, ro-open-audit.py:2, copy-arm-semantics.md:1,
+wal-census.md:1, probe-f1.py:1, probe6.py:1, rehearse-per-slot-backup.py:1,
+hermes-seeder-watch-buzzy.service:1, hermes-seeder-watch-frodo.service:1`. Summed that is `9 + 2 + seven
+1s = 18`, so the headline undercounts by one. The md-only arm of the same pattern (3 files, 11 hits)
+reconciles exactly with its three rows (`9 + 1 + 1`), which is how the defect lands on the subtotal
+alone: the rows came out of the tool and the total was carried by hand from an earlier reading.
+
+Rule: a total is computed from the rows printed beside it (`sum` over the `-c` column, one line of
+arithmetic), never re-typed from a previous run; and when two arms are published — all-files and
+pathspec-scoped — each carries its pathspec beside its rc, because a bare rc is a function of the
+pathspec and moves with it (same pattern, same tree: `-- '*.md'` rc=0, `-- '*.rst'` rc=1).
+A number a reader can contradict by adding up the sentence that contains it costs more than no
+number: it spends the reader's audit on the author's arithmetic instead of on the claim.
+
+## A peer's count that sits BETWEEN two real artifacts is bracketed, not called a miscount
+
+2026-11-15: frodo reported `rehearse-busy-bound.sh` at "26 ok lines, 8 arms". HEAD gave 28
+ok / 8 arms twice, md5 `4250d5ec` == the blob at HEAD; the pre-arm-H commit `212b266` gave 22
+ok / 7 arms. So 26 matched no artifact on the tree, but it also matched no *wrong* artifact:
+it fell strictly inside a bracket [22, 28] whose both ends are reproducible. The honest reply
+names both ends with their identity (commit + md5 + arm count), says which one HEAD is, and
+asks for the command — "you miscounted" claims more than the measurement shows, and "26,
+noted" lets a stale number circulate. His arm count was right the whole time, which is the
+signal that he ran the artifact and under-read the output, not that he ran nothing.
+
+- A count's claim includes its artifact and its command. If either is missing, the number is
+  a memory and the reply asks for both before disputing anything.
+- Run the count at the artifact the claim names AND at the nearest earlier artifact. One
+  number alone cannot distinguish "stale build" from "wrong pattern"; two ends can.
+- When the ends disagree, the *shape* often survives the number: same arm labels, same
+  `RESULT PASS`, different total. Report the shape as confirmed and the total as unverified.
+
+Related, from the same thread: a gate verdict expires on a COMMIT, not on the clock.
+`rows=47 manifest_oid=3af8d71a @846e8f9` was exact when posted and `rows=49
+manifest_oid=74c713b9 @0b53c91` seven minutes later, because two doc commits landed between
+the measurement and the reply. The oid is what keeps the old line quotable; the row count
+alone would have been a wrong pattern by the time it was read.
