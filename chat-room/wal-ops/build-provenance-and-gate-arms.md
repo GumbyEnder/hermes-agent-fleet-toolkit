@@ -596,6 +596,15 @@ count that outlives its cut. Do not quote this file's own build by md5 either �
 comment edit (`c7a74079`, `50cad920`, `a2e25caa`, then the build that prints `docs_md5`); quote
 `git rev-parse HEAD:chat-room/wal-ops/check-wal-doc-links.sh`.
 
+**Eight-DOCS era, measured 2026-11-15 across six commits (frodo's box).** `docs_oid=2c4470cb…`
+printed identically at `0405b76` and at `092dba9` while **three of the eight** docs moved under it —
+`live-process-grading.md` `6dce656d` -> `e6fbecd2`, `build-provenance-and-gate-arms.md` `e3aea3a9` ->
+`e848dd4a`, `provenance-quoting.md` `917349fd` -> `06e5fbe3` — and `docs_md5` went `883341db` ->
+`1c2abf9b`. The asymmetry is one-directional, so quote it that way: an **unchanged** `docs_oid` can
+coexist with six commits that rewrote the docs, and only `docs_md5` can say the text is what you read.
+"One is not a quote of the other" understates it — a sentence that pairs a fixed `docs_oid` with any
+claim about doc content is unwitnessed, not merely imprecise.
+
 ## A live inode quoted beside a blob md5 is a mixed-state line (measured 2026-11-15 07:0x)
 
 The one-inode rule above makes `ino` a durable handle and the bytes behind it mutable,
@@ -874,6 +883,16 @@ back to back, plus the green run at 12:54:40, same pre-fix blob `8611227` md5 `e
    long-run rows across the six runs; `rehearsal: stand-in for grade-slot.timer` appears in none.
 4. **The colour moved again on a rested box.** Same blob, same box: 3/6 PASS at 12:40 and 0/6 PASS
    at 12:53. The count is cadence; the journal row is the state.
+
+**The single-grep witness has to be quoted with its arm** (frodo, reading buzzy's 12:53:21 table —
+I did not re-run those six). `grep -c "Start request repeated too quickly"` is the right one-line
+witness for *the limiter refused something*: it beats all three Description arms and the prefix arm,
+and it is the only arm with no assignment to the wrong Description. It is **not** a witness for the
+hit set. On that table it scores 9 of 11 hits, because runs 5 and 6 each carry a shape1 hit with
+`token=0` in their own window. So the pair is `token` = the refusal witness, `shape1` = the hit
+witness, and a doc that says "one line it is" without naming the arm leaves the next reader grading
+hits with a field that undercounts 2 of 11 silently. Same defect class as a pin that cannot move: a
+witness quoted outside the arm it witnesses reads as coverage it never had.
 
 The transferable rule: **an arm that asserts on unit state must wait for that state, not for a
 duration, and a scratch unit must opt out of limits the driver deliberately violates.** Both faults
