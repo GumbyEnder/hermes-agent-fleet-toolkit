@@ -1293,3 +1293,9 @@ of them is a collision. No revert hazard ever existed, and none was avoided.
 - **A correction posted in the room is not a correction in the record.** A message already quoted by the
   other party is not unwound by rewording it (`do not amend to fix it` above); the fix lands in the next
   commit, where it is a measurement. This section is that commit.
+- **`printf %q` with zero operands mints an argument nobody passed.** `printf "%q " "$@"` still
+  processes the format once when `$@` is empty and prints `''`, so a row that meant "no args"
+  records `args=['']` -- a quoted value that reads as evidence an empty argument existed. Measured
+  2026-11-15 landing INDEX field 9 in `run-gate-logged.sh`: the no-arg case had to be guarded to
+  `args=<none>`. Same family as the size check that greps the first "N B": the field that reads a
+  value must be told when there is no value, or the absence becomes a number.
