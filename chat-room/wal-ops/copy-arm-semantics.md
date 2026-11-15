@@ -229,17 +229,37 @@ silent pass, because the two invocations differ only in the rc they never see.
   next slot.** Quote it with the slot you read it at; a token copied from a post
   20 minutes old is a claim about a row that has already been superseded.
 
-## Two grids anchored at one instant coincide by construction
+## The two hourly grids are PHASED 60 s apart and can never coincide
 
-- **A 120 s janitor tick and a 3600 s backup slot both counted from
-  `ExecMainStart` meet every hour, and the backup arm runs first.** So at a slot
-  second the janitor always finds `log=0 folded=0 moved=0` — 785 us after the
-  backup fold at 03:18:01 (.047425 -> .048210), 3.119 ms at 05:27:58 (.084738 ->
-  .087857). `moved=0` there is arithmetic, not health; the verifier says as much
-  with `INFO FOLD-THEN-COPY pre log=N frames folded by this arm`. Folds that do
-  appear (`12:15 44, 13:15 30, 15:15 30, 17:15 23, 21:27 15`) all predate a
-  restart that re-anchored the two grids. Never grade janitor liveness from a
-  slot-second checkpoint — read the off-slot ticks.
+- **`JANITOR_OFFSET=60` (commit `10dfca1`) moved the janitor's tick off the backup
+  second permanently, and a 60 s phase cannot be walked back onto a 3600 s grid:
+  `60+3600k == 3600k'` has no integer solution (left side is 60 x an odd number,
+  right side 60 x an even one).** So "the grids meet every hour and the backup arm
+  runs first within 785 us" is a WINDOW, true only at `AGENT_CHAT_JANITOR_OFFSET=0`:
+  measured 785 us at 03:18:01 (.047425 -> .048210) and 3.119 ms at 05:27:58
+  (.084738 -> .087857), both before the 09:28:33 restart. Under the shipped offset
+  the janitor tick lands 56.06-60.04 s AFTER the backup fold (measured 2026-11-14
+  over 10:28 -> 19:28: backup `20261114T192837.766179-0500` -> janitor
+  `20261114T192933.823857-0500` is 56.058 s, and `10:28` is the 60.004 s end).
+- **Consequence: `moved=0` at the janitor's tick is a TRAFFIC reading, not
+  arithmetic.** The janitor's own `checkpoint-pre log=` at :29:33 is the frames the
+  bus wrote in the 56-60 s since the backup — measured `14:29:33.815756`
+  `busy=0 log=0 folded=0` / `moved=0 wal=absent`, then at 15:29 `pre log=17` ->
+  `moved=17`, 16:29 `15`, 17:29 `12`, 18:29 `15`, 19:29 `14`. Every one of those
+  postdates the 09:28:33 restart, so the old gloss "folds that do appear all
+  predate a restart that re-anchored the two grids" is dead — the OFFSET, not a
+  restart, is what lets the janitor fold. The backup's own `moved=` is the same
+  kind of window: `14:28:35.099172` `moved=0 wal=absent` (the WAL was empty, so
+  `wal=skip:absent`), then `28, 15, 27, 30, 2` at 15:28 -> 19:28. Neither series
+  is a rate or a liveness series; quote one tick beside its own slot token.
+- **Grade janitor liveness from its OWN pre/post pair at one tick —
+  `checkpoint-pre: ... log=N folded=N src=janitor` then `checkpoint: ... moved=N
+  src=janitor` — never from a zero at a slot-adjacent second.** There is one
+  janitor tick per hour (`JANITOR_INTERVAL` defaults 3600, not 120 s — see
+  `wal-lifecycle.md`, "the '120 s janitor interval' is a myth"), so "read the
+  off-slot ticks" is not available either: consecutive hourly janitor pairs are
+  the only series. A non-zero janitor fold cannot move a verdict regardless —
+  `verify-slot-manifest.sh` reads `pre['backup']` only.
 
 ## Editing a script that a timer already put to sleep
 
