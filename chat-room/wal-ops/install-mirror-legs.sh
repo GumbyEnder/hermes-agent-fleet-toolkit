@@ -33,7 +33,14 @@ NAS=${NAS:-/mnt/nas/host-ops/agent-chat}
 LEG_TABLE="
 grade-slot.sh|$HOME/.local/bin:$NAS
 witness-split-pair-v2.sh|$NAS
+verify-slot-manifest.sh|$NAS
 "
+# verify-slot-manifest.sh is in this table because it IS the gate grade-slot
+# executes (AGENT_CHAT_VERIFIER defaults to the NAS path) and it had no writer:
+# until 2026-11-15 the NAS copy was maintained by hand, so an edit to the repo
+# verifier changed no verdict until somebody remembered to copy it, and no gate
+# hashed it. One leg, the NAS one -- ~/.local/bin carries no verifier, and
+# inventing one would be a leg nothing runs.
 
 rc=0
 while IFS='|' read -r f legs; do

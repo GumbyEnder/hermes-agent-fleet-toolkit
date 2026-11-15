@@ -63,10 +63,25 @@
 # Pair on the `slot=` field truncated to the second, and pair backup@P with the
 # first src=janitor whose token lands in [P, P+61s). Classes: pre (both arms in
 # P), post (janitor inside the window), restart (only src=shutdown in P),
-# unknown otherwise. Every delta prints the prefix that supplied the janitor:
-# a delta without its supplying prefix is a number with no referent.
+# pending (no arm yet AND the window [P, P+61s) has not closed at READ time --
+# the second arm is not due, so this cannot speak about the hour), unknown
+# otherwise (window closed, arm absent). Every delta prints the prefix that
+# supplied the janitor: a delta without its supplying prefix is a number with no
+# referent.
+#
+# WHY pending EXISTS (frodo, 2026-11-15 #5485 item 2). The class test used to
+# collapse "the janitor arm has not happened yet" and "the janitor arm never
+# happened" into class=unknown. Absence inside a window that is still open is
+# not evidence, and the hourly auto-grade fires ~13 s after the slot -- inside
+# the 61 s window, before the second arm exists -- so it published a claim
+# about an hour whose second arm had not run. The discriminator is one
+# comparison, read clock vs P_dt+61s, and it is only reachable live: a re-grade
+# of a past slot always reads after the window closed. pending is NOT a verdict:
+# it exits 3 and its RESULT line says so.
 #
 # Usage: verify-slot-manifest.sh [slot-prefix]      (default: newest row)
+# rc: 0 PASS, 1 a leg failed, 2 no row matched, 3 PENDING (legs passed, the
+#     slot-pair window was still open at read time -- not a verdict on the hour).
 set -u
 BACKUP_DIR=${AGENT_CHAT_BACKUP:-/mnt/nas/agent-chat}
 MAN=${BACKUP_DIR}/room.db.bak.manifest.jsonl
@@ -81,7 +96,8 @@ from datetime import datetime, timedelta
 # (3600 s). A citation of that slot alone silently expires: every older row
 # prints the same token, and an hour later it names a different slot. Stamp the
 # read so the citation carries its own frame of reference.
-READ_AT = datetime.now().astimezone().strftime('%Y%m%dT%H%M%S%z')
+READ_DT = datetime.now().astimezone()
+READ_AT = READ_DT.strftime('%Y%m%dT%H%M%S%z')
 man, bdir, buslog, want_slot = sys.argv[1:5]
 KEEP = int(os.environ.get('AGENT_CHAT_BACKUP_KEEP', '24'))
 
@@ -248,10 +264,28 @@ elif srcs and srcs <= {'shutdown'}:
     # janitor's own prefix and n/a, never a number with no pair behind it.
     cls, ref = 'restart', None
 else:
-    cls, ref = 'unknown', (jan[0] if jan else None)
+    # Two different states, and the read clock is the only thing that separates
+    # them: the window [P, P+61s) is either still OPEN (the janitor arm is not
+    # due yet -- an hourly grade at P+13 s lands here) or CLOSED (the arm is
+    # absent after P+61 s). Printing 'unknown' for both published a claim about
+    # an hour whose second arm did not exist yet (frodo 2026-11-15, #5485).
+    window_end = P_dt + timedelta(seconds=61)
+    if READ_DT < window_end:
+        cls, ref = 'pending', None
+        pending_left = (window_end - READ_DT).total_seconds()
+    else:
+        cls, ref = 'unknown', (jan[0] if jan else None)
 if ref is not None:
     info('slot pair', 'class=%s delta=%.4f janitor_prefix=%s'
          % (cls, (ref[0] - P_dt).total_seconds(), slot_sec(ref[1])))
+elif cls == 'pending':
+    # Name the frame: the countdown is only meaningful with the read clock and
+    # the window edge on the same line.
+    info('slot pair', 'class=pending delta=n/a window_open read=%s '
+         'window_end=%s remaining=%.4fs arms_in_P=%s -- the janitor arm for '
+         '[P, P+61s) is not due yet; this is NOT a verdict on the hour'
+         % (READ_AT, (window_end.strftime('%Y%m%dT%H%M%S%z')), pending_left,
+            sorted(srcs) or 'none'))
 elif jan:
     info('slot pair', 'class=%s delta=n/a janitor_prefix=%s arms_in_P=%s'
          % (cls, slot_sec(jan[0][1]), sorted(srcs) or 'none'))
@@ -299,6 +333,18 @@ elif row['wal'].startswith('skip'):
         leg('wal skip:absent agrees with pre', pre['backup'][0] <= 0,
             'pre log=%d' % pre['backup'][0])
 
-print('RESULT %s (%d failed legs)' % ('PASS' if not fails else 'FAIL', fails))
-sys.exit(0 if not fails else 1)
+# A pending read is not a verdict: it exits 3 and says so on the RESULT line, so
+# a quote of this output cannot be carried into the room as a PASS about the
+# hour. A failed leg outranks it -- a missing artifact is still a FAIL.
+if fails:
+    print('RESULT FAIL (%d failed legs)' % fails)
+    sys.exit(1)
+if cls == 'pending':
+    print('RESULT PENDING (0 failed legs) slot-pair=class=pending '
+          'remaining=%.4fs at read %s -- the janitor arm for [P, P+61s) is not '
+          'due yet; this grades manifest legs only, NOT the hour'
+          % (pending_left, READ_AT))
+    sys.exit(3)
+print('RESULT PASS (0 failed legs)')
+sys.exit(0)
 PY
