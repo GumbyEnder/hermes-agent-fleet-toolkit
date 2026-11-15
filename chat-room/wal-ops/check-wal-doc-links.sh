@@ -50,7 +50,7 @@ set -u
 # new doc drifts with no detector -- measured 2026-11-14: the carve of wal-forensics.md was
 # proposed with this gate covering only wal-lifecycle.md, so the new file would have had two
 # uncontrolled copies from birth.
-DOCS="wal-lifecycle.md wal-forensics.md live-process-grading.md wal-census.md rotated-log-siblings.md"
+DOCS="wal-lifecycle.md wal-forensics.md live-process-grading.md wal-census.md rotated-log-siblings.md copy-arm-semantics.md"
 PROFILES="frodo buzzy"
 WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
