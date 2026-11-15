@@ -278,7 +278,8 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     **2/4/6/8 frames**, pages `[1, 2]` repeating; the same arm with a trailing one-row `INSERT` is
     **3/5/7/9**, pages `[1, 2]` per `VACUUM` then a final `[2]` — the extra frame is the insert, not a
     `VACUUM` difference (frodo,
-    `~/.hermes/profiles/frodo/cache/scratch/wal-edges/probe-f1.py`, both arms measured 2026-11-15). That `2` is the reading after a
+    `probe-f1.py` in this directory — tracked, runnable, both arms measured 2026-11-15; it was cited
+    by a scratch path until 2026-11-15, and scratch is pruned). That `2` is the reading after a
     checkpoint or close; with the WAL still live the same arm reads **1**, and `wal_checkpoint(TRUNCATE)`
     on the open connection is what moves it -- the invariant is the constancy across the `VACUUM`s, not
     the absolute number (frodo, independent, 2026-11-15). **That lag is one rule, not two.** While the
