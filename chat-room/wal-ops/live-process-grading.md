@@ -313,6 +313,18 @@ was read (`bus-checkpoint.log`). At 2026-11-14 14:28 the manifest held 26 rows: 
 lines in `bus-checkpoint.log`. Every copy slot so far folded clean -- but "folded clean" is
 two different shapes, and only one of them is a fold this arm performed.
 
+Re-taken 2026-11-15 05:12 ET: that 26-row generation no longer exists anywhere. The live path
+`/mnt/nas/agent-chat/room.db.bak.manifest.jsonl` (inode 736231823, 4,396 B, sha256 `f757b3dc`)
+holds 8 rows and its OLDEST slot is `20261114T212838.570570-0500` -- the file was clobbered at
+21:55 and re-seeded from the recovery at 21:58, so no row at or below `20261114T142835` is in it.
+The surviving reconstruction `room.db.bak.manifest.jsonl.recovered-20261114T215844-0500`
+(15,166 B, sha256 `ffd9c504`, 25 rows, 01:14:02 -> 21:28:38) is log-derived over a NARROWER
+window: the same pin reads 18 rows (13 `src=backup` / 5 `shutdown`, 14 `bytes=0`, 4 `state=absent`),
+not 26 / 16 / 10 / 22-4. So the 26 is not a reading anyone can re-take, and a manifest census is
+gradeable only against a content-addressed artifact: cite the path plus its sha256 and row count,
+and where the generation is gone write "UNREPRODUCIBLE -- generation replaced 2026-11-14T21:55",
+never the bare number. A slot cut alone pins a log, not a file.
+
 Three rules for a verdict:
 - The only shape that CAN produce a non-empty `wal.bak` is a BLOCKED fold (`busy=1`,
   `checkpointed < log`, a holder inside a read transaction at the slot second). When one
