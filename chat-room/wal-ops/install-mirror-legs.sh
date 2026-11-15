@@ -18,7 +18,14 @@
 #
 # usage: install-mirror-legs.sh [--dry]
 #   --dry   print the plan and the md5 each leg would get; write nothing
-# rc: 0 every published leg already matches the repo, or was written; 1 a write failed.
+# rc: 0 every published leg already matches the repo, or was written;
+#     1 a write failed / no repo source;
+#     3 --dry found at least one leg it WOULD write (i.e. drift), nothing written.
+# rc=3 exists because a --dry run that prints drift and exits 0 makes the caller's
+# verdict a string match on this script's phrasing: reword "would write" and a gate
+# that greps for it reads green over a stale leg (measured 2026-11-15 11:5x on a
+# shadow tree: tampered NAS leg -> `dry  would write ...` and rc=0). The exit status
+# is the fact; the text is only its label. Callers must OR rc with the text.
 set -uo pipefail
 cd "$(dirname "$(readlink -f "$0")")" || exit 2
 
@@ -43,6 +50,7 @@ verify-slot-manifest.sh|$NAS
 # inventing one would be a leg nothing runs.
 
 rc=0
+would=0
 while IFS='|' read -r f legs; do
   [ -n "${f:-}" ] || continue
   src="./$f"
@@ -55,7 +63,11 @@ while IFS='|' read -r f legs; do
     have=$(md5sum "$m" 2>/dev/null | awk '{print $1}')
     if [ "$have" = "$want" ]; then echo "ok   $m ($want)" ; continue ; fi
     if [ ! -d "$d" ]; then echo "skip $m (dir absent)" ; continue ; fi
-    if [ "$DRY" = 1 ]; then echo "dry  would write $m  ${have:-absent} -> $want" ; continue ; fi
+    if [ "$DRY" = 1 ]; then
+      echo "dry  would write $m  ${have:-absent} -> $want"
+      would=$((would+1))
+      continue
+    fi
     # cp to a temp name IN THE SAME DIRECTORY then mv: an open fd keeps the old inode,
     # so a unit already running this script finishes on coherent old bytes. Never rewrite
     # the destination in place (the in-place hazard is documented at the top of grade-slot.sh).
@@ -69,4 +81,7 @@ while IFS='|' read -r f legs; do
   done
   IFS=$oldifs
 done < <(printf '%s\n' "$LEG_TABLE" | sed '/^[[:space:]]*$/d')
+# A --dry run that would change a published leg exits 3. rc stays the writer's verdict
+# whether or not the caller can parse the line above it.
+if [ "$DRY" = 1 ] && [ "$rc" = 0 ] && [ "$would" -gt 0 ]; then rc=3; fi
 exit $rc
