@@ -16,14 +16,35 @@ Mechanism stays in `wal-lifecycle.md`; frame and sidecar measurement rules stay 
 ## What witnesses this doc
 
 A citation of this doc is a blob md5 at a named commit, a line range, and the doc-links gate line
-at that commit (`check-wal-doc-links.sh`: `docs=7 ok=14 fail=0` at 597de58). Nothing else. A
-`MANIFEST.md5` row count is **not** a witness here: MANIFEST is a script rowset, and
+at that commit (`check-wal-doc-links.sh`: `docs=7 ok=14 fail=0` — same line at 597de58 and at
+e9a0dd4). Nothing else. A size is not a second witness: it is a function of the blob
+(`git cat-file -s <blob>`), so a size printed beside an md5 must come from that same blob — one
+md5 has exactly one size, and a pair whose halves come from different instants is a mixed-state
+line, which is what a citation exists to prevent.
+
+A `MANIFEST.md5` row count is **not** a witness here either: MANIFEST is a script rowset, and
 `check-manifest.sh` parses `DOCS` out of `check-wal-doc-links.sh` and asserts
 `rows == tracked files minus that list` — docs are deliberately unrostered, so the row count
 cannot move when this file does. Printing it beside the census md5 invites exactly the reading
 the gate is built to refuse. The count is real, but it answers another question and moves for
-other reasons: 46 rows at 660df26 (the commit where this doc's blob became `e797d6d1`), then
-47/48/49 at 1450ec7/645f9aa/0b53c91, 50 from e20567a on — five commits, none of them this file.
+other reasons. Re-derived per commit from `MANIFEST.md5` at each sha:
+
+    85491df rows=46 census=1   (doc md5 e44f7fe7 -> 6407dab0; count 45 -> 46: this commit shipped
+                                a script row AND edited the doc -- the one coincidence)
+    660df26 rows=46 census=1   (doc md5 6407dab0 -> e797d6d1, 28,919 B; count FLAT)
+    1450ec7 rows=47 census=0
+    645f9aa rows=48 census=0
+    0b53c91 rows=49 census=0
+    e20567a rows=50 census=0
+    597de58 rows=50 census=0
+    e9a0dd4 rows=50 census=1   (doc md5 e797d6d1 -> 930e15eb, 29,777 B, +858 B; count FLAT)
+
+The split is the point: the doc moved and the count did not; the count moved four times and the
+doc did not. The four count moves are 1450ec7 / 645f9aa / 0b53c91 / e20567a, and none of them
+touches this file. Between 597de58 and e9a0dd4 there is exactly one commit
+(`git rev-list --count 597de58..e9a0dd4` = 1), and it is the one that edits this file — which is
+why a HEAD-relative delta is not a quantity to quote. The blob `e797d6d1` is byte-identical over
+660df26..597de58 and changes only at e9a0dd4.
 
 ## Census rules for `wal-unlink-watch.log` (settled 2026-11-13, re-derived independently by frodo)
 
