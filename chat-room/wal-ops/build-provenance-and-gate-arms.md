@@ -1230,3 +1230,50 @@ nothing (the 7.1 s-per-run rehearsal spreads its six runs over 42 s, well outsid
 assertion has to be the ordered triple -- refusal line, then `Failed to start`, no `Starting` between
 -- with the token matched against the set, because 60 of today's 98 refusals did not say
 `start-limit-hit`.
+## The blind spot has a second address: the units, and the roster sees them in neither direction
+(measured 2026-11-15 17:0x at `ec1203f`, dirty=0)
+
+`mirror=` and `rc` iterate `LEG_TABLE`, and the rowset assertion iterates `git ls-files`: neither reads
+the unit files that systemd actually loads, though those are the set that RUNS. Measured against the
+12 rostered files in `systemd/`:
+
+    install root   10 in ~/.config/systemd/user, 2 in /etc/systemd/system (the root-owned
+                   seeder-watch pair -- a user-mode run cannot repair that leg)
+    bytes          11 of 12 identical. check-grade-timer.service/.timer differ by exactly one
+                   trailing newline: repo 602 B a7b0d5b9 / 193 B 45dfad83, installed 603 B
+                   4cca0edc / 194 B 7508ab52, and the timer is active (LastTriggerUSec
+                   2026-11-15 16:59:18) -- so the difference is real and behaviourally nothing
+    reverse hole   `grade-slot.service` + `grade-slot.timer` are installed and firing
+                   (`ExecStart=%h/.local/bin/grade-slot.sh 4303`, next elapse 17:05) and have NO
+                   repo copy and no MANIFEST row. The unit that execs the grader, and the `4303`
+                   argument inside it, sit outside both gates; `rows=52 ok=52 unrostered=0` is
+                   blind because the rowset assertion compares the roster to the TREE, and this
+                   file is in neither
+
+Exec set, taken from the units rather than from the table: 8 distinct script paths, and all 8 match
+their repo blob today, so this is coverage, not drift.
+
+    NAS    check-grade-timer.sh a15db06f, wal-keeper.py 5271966c, wal-unlink-watch.py 2bbd0c25,
+           wal-unlink-watch-verdict.py 3a57232c, witness-split-pair-v2.sh 6c543893  <- the only
+           one of the five that LEG_TABLE names
+    repo   chat-room/bus.py f7d17934, fanotify-close-actor.py 1b7d9a5b -- absolute repo paths, so
+           they break on a moved tree, but at least they are the tree the roster hashes
+    data   ~/agents/agent-chat/wal-checkpoint.sh -- untracked, nlink=1, ino 15344036 against the
+           repo copy's 17726110: a `cp` nobody records, into the directory the bus writes to,
+           exec'd every minute by hermes-agent-chat-walcheck.timer and named as the janitor at
+           README.md:14. Measured identical today (12406 B, mtime 08:19:17 on both), which is
+           luck, not coverage -- and it is the same shape as verify-slot-manifest.sh before
+           `9ff5b76`, one install root further out
+
+Two consequences. The install root is per unit and not global, the same shape as the per-file table:
+inventing a `~/.config` leg for the seeder units, or an `/etc` leg for the user units, lists a path
+nothing runs. And for a unit the object is the loaded directives, not the file digest -- md5 on a unit
+file goes red on a trailing newline systemd's parser discards, so a byte leg would print drift over a
+unit that behaves identically and print the SAME red for a real `ExecStart` change, which is the
+finding. `systemctl show -p ExecStart` reads the directive; the file's digest does not.
+
+Closure rule: enumerate the published set from the objects that RUN, not from the table -- grep
+`Exec(Start|StartPre|Stop|Reload)` out of `systemd/` plus `systemctl show -p ExecStart` on every
+installed unit, and require each path to be either a leg or a written non-leg with a reason. A
+hand-listed table cannot enumerate a set nobody listed; a grep of the units can at least name the
+candidates, and the non-leg then has to be argued rather than omitted.
