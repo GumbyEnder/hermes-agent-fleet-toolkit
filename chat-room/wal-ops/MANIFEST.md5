@@ -29,8 +29,8 @@ e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
 c91142a41a33ad4b86e73c6a397cf4a0  systemd/hermes-agent-chat-walcheck.timer
 236c9216daf7b815db3a01406aa31c4b  systemd/hermes-pairsplit-witness.service
 0f44ed7b48f7ad5fc59ebd57f4b3781a  systemd/hermes-pairsplit-witness.timer
-0e50d90e9afb6cdc3e0a6cf1994ce54c  systemd/hermes-seeder-watch-buzzy.service
-b98c9de1da6693d991db267a9d4b3803  systemd/hermes-seeder-watch-frodo.service
+f333e1ae0feb6b15aa371a417f545ee6  systemd/hermes-seeder-watch-buzzy.service
+72a7669ded067f892a3a892f08fb4d94  systemd/hermes-seeder-watch-frodo.service
 358f12819ef4a5c4120bfbe4870ad11e  systemd/hermes-wal-unlink-verdict.service
 b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 94daec2cc9a7d250acbf6097fbd58a9e  test-actor-err-labels.py

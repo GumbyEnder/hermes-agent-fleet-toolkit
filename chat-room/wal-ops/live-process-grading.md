@@ -727,6 +727,23 @@ people check. Measured on this box 2026-11-15 00:22-00:25 ET against the two see
   The script writes `stop` on its own deadline, so the absence is the witness. The 00:12:20 arm in
   `seeder-watch-buzzy.jsonl` has a `start` and no `stop` -- it was a session-bound child, not a
   watcher that finished.
+- **`NRestarts` is not admissible evidence for "never restarted".** It is reset when the unit is
+  cleanly stopped, so a unit that re-armed three times and was then `systemctl stop`ped reads
+  `NRestarts=0` with `Result=success`, exactly like a unit that never restarted. Measured on this box
+  2026-11-15 13:50 ET: `Restart=always` + `sleep 1; exit 0` read `NRestarts=3`, `ActiveState=activating`;
+  one `systemctl stop` later it read `NRestarts=0`, `Result=success`, `ExecMainStatus=0`. So
+  `systemctl show -p Result,NRestarts,ExecMainStartTimestamp` on a dead unit proves nothing about why
+  it died -- the discriminator stays the `stop` line in the arm's own log, and for a live unit the
+  count is only meaningful while it is running.
+- **A root-run arm inside a user profile leaves a log the profile owner cannot write.** systemd
+  creates the log as the unit's `User`, so `~/.hermes/profiles/<p>/logs/seeder-watch-<p>.jsonl` is
+  `root:root 0664`: the owner can read it and cannot append to or truncate it, so `: > log` fails
+  `EACCES` and reads exactly like a dead watcher. Fix belongs in the unit, not in sudo discipline:
+  `ExecStartPre=+/bin/sh -c 'touch <log> && chown <owner>:<owner> <log>'` (`touch`+`chown`, never
+  `install`, which truncates an existing log). Both seeder units carry it as of 2026-11-15 13:55 ET; the repo copy is the only editable leg.
+  The 03:26:29 generation of both arms also writes to `<profile>/logs/`, never to
+  `cache/scratch`: scratch is pruned at 24 h and `--seconds 86400` outlives it, and a buzzy arm
+  writing into frodo's scratch is one profile naming another's evidence.
 - **The durable form is the one this repo already ships.** `systemd/*.service` + a MANIFEST row +
   `systemctl enable`. The seeder arms now live there as `hermes-seeder-watch-{frodo,buzzy}.service`
   (`Restart=always`, `WantedBy=multi-user.target`, installed and enabled 00:24:28), and the transient
