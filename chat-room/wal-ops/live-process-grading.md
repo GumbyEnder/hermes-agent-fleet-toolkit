@@ -304,12 +304,24 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   cannot back seven paths at `nlink 1`, and seven distinct paths at `nlink 1` would need seven
   inodes. `find ~/.hermes -inum 9574583` resolves the quoted inode to
   `profiles/frodo/skills/agent-chat-bus/references/live-measurement-gotchas.md` (4,410 B, md5
-  `6d49ae05`, `nlink 1`, birth 23:39:46), a file that is not a `DOCS=` arm at all. The drift it
+  `6d49ae05`, `nlink 1`, birth 23:39:46 — a 02:0x reading; the PATH still resolves, the STAT does
+  not, since later edits left it 6,255 B / md5 `3ee6b62e`), a file that is not a `DOCS=` arm at
+  all. The drift it
   asserted is corroborated by `4be687f`'s own message ("re-links frodo's copy, which had drifted
   to a separate inode") and by no table either party kept, and the re-links since then destroyed
   the objects: a multi-path claim cannot be repaired after the fact, because the next `ln -f`
   overwrites the evidence it rested on. Take the table (path, inode, nlink, md5) in the turn that
   asserts it.
+- **A gate reading needs a log path, or it is a sample with no table.** Measured 2026-11-15: both
+  parties quoted a 21:53 doc-links run and neither could produce it. The captures lived in a
+  session scratch dir, which prunes entries idle 24 h — the run was not lost, it was stored where
+  it expires, and the multi-path claim it backed died with it. Run gates through
+  `bash /mnt/nas/host-ops/run-gate-logged.sh <gate> [args...]` from the repo root: it writes the
+  full stdout+stderr on FAIL as well as PASS to
+  `/mnt/nas/host-ops/gate-logs/<gate>-<UTCts>-<head12>.log`, with a header (cwd, repo, HEAD,
+  origin/master, dirty count, host) and a footer (rc plus the gate's own signature line), and
+  appends one row to `INDEX.tsv`. Quote the log path with the number. A gate number without one
+  is indistinguishable from a recollection, which is the exact failure this file keeps re-learning.
 - **A two-edit turn needs the guard to accept the turn's own intermediate md5.** Guarding the
   re-link against the parent committed blob alone refuses the SECOND edit of the same file in one
   turn, because by then the copies legitimately hold edit #1, which is neither the parent nor the
