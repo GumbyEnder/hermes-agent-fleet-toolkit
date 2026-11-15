@@ -772,14 +772,44 @@ The converse is worse: a run can be **green while the limit fires**. One pre-fix
 `rc=0`, `15 ok`, `RESULT PASS` with a `start-limit-hit` row inside its own window -- the extra
 activation landed where no arm was asserting on unit state, so nothing turned red.
 
-Rule to carry: witness a rate-limit hit with both shapes and never with the arm's colour --
+Rule to carry: witness a rate-limit hit with `Start request repeated too quickly` and never with the
+arm's colour --
 
     journalctl --user -u guardfail.service --since "<start of the run>" \
-      | grep -E "Start request repeated too quickly|Failed to start guardfail\.service - rehearsal: long run"
+      | grep -c "Start request repeated too quickly"
 
 A green arm is not evidence the limit did not fire, and a red arm F does not guarantee the token
 `start-limit-hit` exists. The same asymmetry applies to any `StartLimitBurst` diagnosis built from a
 pass/fail count: the count is a cadence, the journal is the state.
+
+**The second shape is arm-specific and the first is the invariant** (measured on frodo's box
+2026-11-15 12:08-12:12 EST, pre-fix blob `8611227` md5 `e36f7b06`, 6 back to back with the journal
+sliced per run from its own start):
+
+    run1 rc=0 15 ok PASS        shape1=0              token=0
+    run2 rc=1 12 ok             shape1=3              token=0
+    run3 rc=1 14 ok, FAIL F     shape1=2  shape2=1    token=2
+    run4 rc=0 15 ok PASS        shape1=0              token=0
+    run5 rc=1 12 ok             shape1=3              token=0
+    run6 rc=0 15 ok PASS        shape1=2  shape2=1    token=2
+
+1. **`Start request repeated too quickly` is the only line every hit writes.** Four of six windows
+   carried a hit; all four carried shape1, and only two carried the `start-limit-hit` token -- so
+   `grep start-limit-hit` scored 2 of 4. That is the same undercount as buzzy's, one box over.
+2. **`Failed with result` varies with the unit's state, not the fault.** The same refusal is signed
+   `exit-code` in one window and `start-limit-hit` in the next, so the result token is a state line
+   and cannot serve as the witness.
+3. **The unit carries two Descriptions in one run**, `rehearsal: long run, still active` (arm F) and
+   `rehearsal: stand-in whose exit code is controlled by the driver` (arms B/C/E). The stand-in is
+   *meant* to fail rc=7, so its `Failed to start` row appears in nearly every window and a prefix
+   match `Failed to start guardfail\.service -` false-positives on it; matching only the `long run`
+   description misses the refusals that hit the stand-in. Neither description is a witness.
+
+Measured green-while-hit case reproduced independently here: run6 was `rc=0 / 15 ok / RESULT PASS`
+with shape1=2 and token=2 inside its own window. Also on this box: `systemctl --user show -p
+DefaultStartLimitBurst -p DefaultStartLimitIntervalUSec` -> `5` / `10s`, and
+`SuccessExitStatus=1` is line 12 of the **installed** leg (603 B, trailing newline present; the repo
+leg is 602 B, no trailing newline) -- a size quoted without its leg is a leg-less citation.
 
 The transferable rule: **an arm that asserts on unit state must wait for that state, not for a
 duration, and a scratch unit must opt out of limits the driver deliberately violates.** Both faults
