@@ -6,6 +6,7 @@ d4c8325394b5148b94db86900c6513b9  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 25638c8adf38ea5efd3f780d98460e62  grade-slot.sh
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
+18b7941f28ac505f29e5e92a046226bd  manifest-truncation-2026-11-14.md
 d594d3ea4d58f04c1e797b2d73141935  qread.py
 4b6346533f4b3399708dde2aa8f24cca  recover-manifest-from-logs.py
 4250d5ecc2e5823735af660658297adb  rehearse-busy-bound.sh
@@ -25,7 +26,7 @@ c91142a41a33ad4b86e73c6a397cf4a0  systemd/hermes-agent-chat-walcheck.timer
 b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 88ab9035620fe2688b84d3d71336c09a  test-grader-mixed-db.sh
 0209449fe9f0d3dbdbc89c8e87a91a75  test-live-turns-cgroup.py
-adcb25ac1d25eabb4155129c4d1a67d3  test-verify-skip-path-arm.sh
+bcfaae45a7431097906c5ffd2836d1c9  test-verify-skip-path-arm.sh
 78bbb0c2ff292c89a908bb122036dab5  test-waiter-e2e.sh
 6053951e1ed0091e00757c342f23f127  test-wal-class.sh
 23f2d0d7257bd156665be09463db6ab4  test-wal-holder-exclusion.py

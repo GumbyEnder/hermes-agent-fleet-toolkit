@@ -32,7 +32,11 @@ trap 'rm -rf "$W"' EXIT
 bad=0
 note() { printf '%s\n' "$*"; }
 
-[ -x "$VERIFY" ] || { note "FAIL verifier not executable: $VERIFY"; exit 2; }
+# The installed copy on the CIFS backup share cannot hold the exec bit
+# (mount is nounix, file_mode=0644), so run it through bash when it is not
+# executable rather than refusing to audit the installed build.
+[ -r "$VERIFY" ] || { note "FAIL verifier not readable: $VERIFY"; exit 2; }
+if [ -x "$VERIFY" ]; then VRUN=("$VERIFY"); else VRUN=(bash "$VERIFY"); fi
 [ -r "$MAN" ]    || { note "FAIL live manifest unreadable: $MAN"; exit 2; }
 
 # --- shadow backup dir: symlinks to the live artifacts + a crafted manifest -----
@@ -80,7 +84,7 @@ run_manifest() {  # $1=crafted rows, $2=label ; rc on stdout
     # history: point the log at an empty file rather than at the live log, where
     # an unrelated slot's pre-phase would add legs these arms are not about.
     AGENT_CHAT_BACKUP=$W AGENT_CHAT_BACKUP_KEEP=24 \
-        BUS_CHECKPOINT_LOG="$W/buslog.empty" "$VERIFY" >"$W/out.$2" 2>&1
+        BUS_CHECKPOINT_LOG="$W/buslog.empty" "${VRUN[@]}" >"$W/out.$2" 2>&1
     echo $?
 }
 : > "$W/buslog.empty"
@@ -105,14 +109,15 @@ else
 fi
 
 # --- C: live manifest, and byte-identity against a reference build if given -----
-AGENT_CHAT_BACKUP_KEEP=24 "$VERIFY" >"$W/out.C" 2>&1; rcC=$?
+AGENT_CHAT_BACKUP_KEEP=24 "${VRUN[@]}" >"$W/out.C" 2>&1; rcC=$?
 if [ "$rcC" -eq 0 ] && grep -q '^RESULT PASS' "$W/out.C"; then
     note "PASS arm C: live manifest PASSes (rc=0)"
 else
     note "FAIL arm C: live manifest rc=$rcC"; sed 's/^/    C| /' "$W/out.C"; bad=1
 fi
 if [ -n "${VERIFY_REF:-}" ]; then
-    AGENT_CHAT_BACKUP_KEEP=24 "$VERIFY_REF" >"$W/out.Cref" 2>&1
+    if [ -x "$VERIFY_REF" ]; then RRUN=("$VERIFY_REF"); else RRUN=(bash "$VERIFY_REF"); fi
+    AGENT_CHAT_BACKUP_KEEP=24 "${RRUN[@]}" >"$W/out.Cref" 2>&1
     if diff -q "$W/out.Cref" "$W/out.C" >/dev/null; then
         note "PASS arm C-ref: live output byte-identical to $VERIFY_REF"
     else
