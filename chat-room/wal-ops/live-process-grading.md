@@ -213,10 +213,12 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   inode and unlinks every arm; a plain in-place write keeps the inode and leaves the set whole
   and `-ef` TRUE. Measured 2026-11-15: `copy-arm-semantics.md` moved 22,269 → 25,180 B at
   06:22:33 on inode `17728203`, birth 19:58:51.208, `nlink 3`, so that edit was in place and no
-  re-link was owed. The one break on THIS doc has a named cause, not a drift: frodo's skill-path
+  re-link was owed. The one break on THIS doc with a curator row has a named cause, not a drift: frodo's skill-path
   `patch` at 22:07:17 (curator ledger row `4b2c9314ce8b`, `references/live-process-grading.md`,
   before sha256 `c865b956…` = blob `4c439a4:chat-room/wal-ops/live-process-grading.md`, after
-  `eaa054da…`, no blob reachable from any ref). Measured 2026-11-14: a repair
+  `eaa054da…`, no blob reachable from any ref — re-measured 2026-11-15 13:12 as 0 hits for both
+  hashes against the content-sha256 of all 516 unique blobs on every ref; 514 when the claim was
+  made, and the two extra are the commits that landed after it). Measured 2026-11-14: a repair
   landed inode `17728416` / `nlink 3`, and the very next doc commit (`4be687f`, 22:14) had to
   re-link frodo's copy, "which had drifted to a separate inode"; the drift was that patch, six
   minutes before `4be687f` and twenty after the read that called all three arms `-ef` true, and
@@ -226,6 +228,19 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   that re-link against the PARENT committed blob, not the new working tree: after a content edit
   the copies are legitimately stale, so a guard on the new md5 refuses the only correct action and
   the gate keeps failing on the copies it was written to catch.
+- **A repair mints nothing, so `ctime` is the only field that dates it — and `birth == mtime` is
+  what a replace looks like.** `ln -f` unlinks the leg and links the repo inode, so the break's
+  inode survives the repair: birth and mtime stay at the instant the replace wrote the content,
+  `nlink` goes back to the arm count, and only `ctime` moves. Measured 2026-11-15 13:08 on
+  `live-process-grading.md`: one inode `17748167` on all three legs, `nlink 3`, 54,519 B,
+  birth `13:03:16.446166734` = mtime `13:03:16.446935362` (the replace), ctime `13:07:03.189854193`
+  (the re-link, 3 m 47 s later); against `17728203` with birth `19:58:51.208` and mtime
+  `06:22:33.078`, where birth < mtime is the in-place write. So birth == mtime names a replace,
+  birth < mtime names an in-place write, and a set that reads `nlink == arms` with birth == mtime
+  is a set that was broken and repaired — do not date the doc's stability from its birth.
+  Measured the same turn: this doc has broken at least three times (`22:07:17` — the one with a
+  curator row — `06:49:34` on inode `17748026`, and `13:03:16` on `17748167`), each followed by a
+  re-link and a green gate. "The one break" is a statement about the ledger, not about the doc.
 - **An inode names ONE object, so `N` paths need `N` rows — or one row at `nlink N`.** Measured
   2026-11-15: a post claimed "all seven frodo arms ... inode `9574583`, `nlink 1`" — one inode
   cannot back seven paths at `nlink 1`, and seven distinct paths at `nlink 1` would need seven
