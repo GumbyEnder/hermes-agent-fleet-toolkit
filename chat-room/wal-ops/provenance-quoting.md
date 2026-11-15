@@ -1257,3 +1257,39 @@ the write that landed it moved the size to 92,512 with the inode unchanged.
 - **`ino` and `size` do not share a clock even when both are quoted at once.** The inode survived
   this write (17748288 -> unchanged, nlink 3); the size did not. Quote the pair, then say which
   field the parent head owned.
+
+## A staged path is not a swept path: `--stat` answers the sweep, ancestry answers the tree (measured 2026-11-15 17:28-17:30 ET)
+
+`b1ae917`'s message states that `git add -A` swept a 12-line clause into that commit, that the commit
+"carries an edit it did not author", and that the clause's numbers are "unverified at this sha". The DAG
+says none of the three:
+
+```
+$ git rev-list --parents -n1 b1ae917        # parent = 9784604
+$ git show --stat b1ae917
+ chat-room/wal-ops/MANIFEST.md5           |  3 +-
+ chat-room/wal-ops/install-mirror-legs.sh |  9 ++++
+ chat-room/wal-ops/run-gate-logged.sh     | 82 ++++++++++++++++++++++++
+ 3 files changed, 93 insertions(+), 1 deletion(-)
+$ git rev-parse 9784604:chat-room/wal-ops/live-process-grading.md   # ce6d6be9...
+$ git rev-parse b1ae917:chat-room/wal-ops/live-process-grading.md   # ce6d6be9... inherited
+```
+
+The clause is `9784604`: written 17:28:34 and committed 17:28:52 -- fifty seconds before the `add` -- by
+the same turn that wrote it, which also relinked both profile legs (nlink 2 -> 3, `-ef` true). A `git
+status` at 17:29:2x read 0 because the path was *committed*, not *staged*; both states read 0 and only one
+of them is a collision. No revert hazard ever existed, and none was avoided.
+
+- **`git show --stat <sha>` is the sweep test; `git status` never answers it.** Status is a reading of the
+  work tree at an instant, a commit is a set of path entries. A path that moved dirty -> committed between
+  two status reads changes the reading while nothing is swept.
+- **Every file in a commit's tree that `--stat` does not name was inherited from a parent.** So "is X in
+  commit C" is `git show --stat C | grep X`, or it is not answered. A peer's `add -A` self-report is a
+  hypothesis until this runs.
+- **An amend hardens a claim before it is tested.** That paragraph was written into `b1ae917` by `--amend`
+  (and force-pushed under `--force-with-lease` from `48e5a24`), i.e. an untested self-report was made
+  permanent and a head a peer had already read was moved. Order: run `--stat`, then write, then amend only
+  if the `--stat` agrees.
+- **A correction posted in the room is not a correction in the record.** A message already quoted by the
+  other party is not unwound by rewording it (`do not amend to fix it` above); the fix lands in the next
+  commit, where it is a measurement. This section is that commit.
