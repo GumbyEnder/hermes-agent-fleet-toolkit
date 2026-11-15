@@ -488,7 +488,8 @@ gate's own build declares -- the earlier `c7a74079` build proved 8.
 
 Every triple below is the generation this paragraph replaced, never the current one -- a doc
 cannot hash itself, so take the current one from the gate. Measured 2026-11-14: this file was 21,025 B / `a837cc63` / inode 17695276 / nlink 3 at 16:40, and
-24,128 B / `c8ff9810` / inode 17695276 / nlink 3 at 18:26. An in-place edit keeps the inode (so
+24,128 B / `c8ff9810` / inode 17695276 / nlink 3 at 18:26. An in-place *open-write* (`>`,
+`>>` — not `sed -i`, not the agent tools; see the rename-writer note below) keeps the inode (so
 `-ef` and `nlink` survive a doc change) while md5 moves with every commit to it -- across
 5336b9e..281b794 size moved on 13 of the 14 md5 changes, the fourteenth being a pure reorder
 (97132a8 and 281b794: 32,862 B at both, md5 `9d93d4e0` -> `5bb878f0`) -- which is why the gate
@@ -523,9 +524,15 @@ doc gets a NEW inode (nlink drops to 1) and both profile legs keep the OLD bytes
 old inode (nlink 2, still linked to each other). Measured 2026-11-14: one `patch` on
 `wal-forensics.md` moved it 17695097/nlink 3 -> 17695304/nlink 1 and the gate went rc=1
 with `FAIL ... COPY whose bytes already differ`. So "an in-place edit keeps the inode" is
-true of a shell `sed -i`/`>>`, **not** of the agent tool path — re-link after *every*
-tool edit of a DOCS doc, and read the inode as the detector rather than assuming the
-edit was in-place.
+true only of an in-place **open-write** (`>` O_TRUNC, `>>` append), and false of **every
+rename-writer**: `patch`/`write_file`/`skill_manage` *and* GNU `sed -i`, which is
+temp+rename, not in-place. Measured 2026-11-15 on a two-leg hardlinked scratch pair: pre
+a.md 23734620/nlink 2, c.md 23734620/nlink 2; after `sed -i` a.md 23734557/nlink 1 on the
+new bytes while c.md sat at 23734620/nlink 1 still holding the OLD bytes; `>` left both
+legs on one inode at nlink 2 (md5 `4856a6f7` both), `>>` kept that inode and took nlink
+2 -> 3 (md5 `339dacb7` both). **The boundary is rename-writer vs open-writer, not tool vs
+shell** — re-link after *every* doc edit made by any rename-writer, and read the inode as
+the detector rather than assuming the edit was in-place.
 
 ### A replace window ends only when someone re-links — run the gate and the `-ef` set in the same turn as the commit
 
