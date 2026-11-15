@@ -244,6 +244,11 @@ def main():
     # availability failure, not a measurement cost. So: walk, mark each directory, dedupe by
     # (dev,ino) so a bind/loop cannot burn the mark budget, never follow a symlinked dir.
     marks = {"armed": 1, "failed": []}
+    # Every directory that actually took a mark, in walk order. The resolver has to scan the
+    # SAME set: an ino map built from --dir alone can name nothing it marked below the top,
+    # which is how a --depth 2 arm fires and still reports file=null/UNLINKED for every row
+    # (measured 2026-11-15).
+    marked_dirs: list[str] = [a.dir]
 
     def _mark_dir(path: str) -> None:
         r = libc.syscall(ctypes.c_long(NR_fanotify_mark), ctypes.c_int(fd),
@@ -254,6 +259,7 @@ def main():
             marks["failed"].append({"path": path, "errno": ctypes.get_errno()})
         else:
             marks["armed"] += 1
+            marked_dirs.append(path)
 
     def _walk(path: str, depth: int, seen: set) -> None:
         if depth <= 0:
@@ -308,23 +314,36 @@ def main():
 
     def _scan_ino_map(gen):
         ino_map.clear()
-        try:
-            with os.scandir(a.dir) as it:
-                for e in it:
-                    try:
-                        st = e.stat(follow_symlinks=False)
-                    except OSError:
-                        continue
-                    ino_map[st.st_ino] = (e.name, st)
-        except OSError:
-            pass
+        seen_dirs = set()
+        for d in marked_dirs:
+            try:
+                st_d = os.stat(d, follow_symlinks=False)
+            except OSError:
+                continue  # marked dir removed since arm: its events are UNLINKED by definition
+            key = (st_d.st_dev, st_d.st_ino)
+            if key in seen_dirs:
+                continue
+            seen_dirs.add(key)
+            try:
+                with os.scandir(d) as it:
+                    for e in it:
+                        try:
+                            st = e.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        # name is relative to --dir so a row below the top is still an address,
+                        # not a basename that could collide with a same-named sibling.
+                        rel = os.path.relpath(e.path, a.dir)
+                        ino_map[st.st_ino] = (rel, st)
+            except OSError:
+                continue
         ino_gen[0] = gen
 
     def resolve(handle, gen):
         """-> (basename|None, errname|None, st|None) for the event's inode.
 
         NAMED BY INODE, NOT BY open_by_handle_at. The handle already carries the
-        inode; matching it against one scandir of the marked directory costs stat
+        inode; matching it against one scandir of each marked directory costs stat
         calls and NO opens, which matters twice over:
           - open_by_handle_at OPENS the watched file, and with FAN_OPEN armed that
             open is itself an event: the arm doubles its own queue and falls
