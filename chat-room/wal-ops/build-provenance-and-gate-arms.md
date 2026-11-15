@@ -132,6 +132,15 @@ repo bytes for every reader, so a profile-side "fix" is a repo commit whether or
 not anyone committed it. Appending is safe for the same reason it is dangerous —
 it keeps the link, and it publishes instantly.
 
+Run step 2 even when your edit already kept the inode. `cat >> file` and a
+single-handle rewrite (`open('r+b')`, seek 0, write, truncate) leave `ino` and
+`nlink` untouched, so the gate never goes red and the repair is a no-op you
+still execute and still quote. A green gate is the evidence; skipping the check
+because the edit *should* have preserved the link is the same bet that lost
+17695311 the first time, and the next tool to touch the file may not be yours.
+Two paths, one gate: for a temp+replace edit the relink is load-bearing, for an
+in-place edit it is a re-measure, and neither proceeds on the edit's own word.
+
 ## "Is it on the remote?" is a remote question, not a tracking-ref question
 
 Measured 2026-11-14 22:3x on 4be687f, from a clone whose remote-tracking ref had
