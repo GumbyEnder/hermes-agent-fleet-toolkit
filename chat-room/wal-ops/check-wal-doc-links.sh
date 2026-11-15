@@ -3,13 +3,22 @@
 #
 # WHY (measured 2026-11-14, mechanism PROVEN 07:05 by controlled experiment): the doc
 # is repo-canonical at chat-room/wal-ops/wal-lifecycle.md and each profile's skill
-# reference is meant to be a symlink to it (commit 95ed257). The trigger is NOT
-# "any skill_manage call" -- a SUCCESSFUL batch writes straight through the link and
-# leaves it intact (verified: patch of SKILL.md with an outside link in references/,
-# patch of an inside link -> link survived, .curator_ledger records both paths).
+# reference is meant to be a symlink to it (commit 95ed257). There are TWO
+# materialisers, success and failure, and they are not the same function:
+#   SUCCESS materialises the file it writes. _guarded_write -> atomic_write_text
+#   (utils.py:428, _atomic_write :379) is temp file + fsync + os.replace, so the
+#   WRITTEN path gets a NEW inode on every successful patch/write_file and a link on
+#   that path is BROKEN by the success. Refs no op touched keep their inode/nlink.
+#   Measured 2026-11-15T16:42:33 ET (throwaway skill, outside hardlink): written
+#   reference ino 14552820 nlink=2 -> ino 14552821 nlink=1 at 71 B, the outside name
+#   still 14552820 holding the 30 B pre-image, `cmp` DIVERGED, SKILL.md untouched at
+#   14552818. The earlier note here ("a SUCCESSFUL batch writes straight through the
+#   link and leaves it intact") was FALSE for the written path and licensed skipping
+#   the relink after exactly the edit this file's PROCEDURE says to relink; it is
+#   withdrawn, not softened.
 # skill_manage also REFUSES to write through a link that resolves outside the skill
 # dir ("Path escapes allowed directory", patch and write_file both).
-# The materialization happens on the ROLLBACK of a FAILED batch: ops applied before
+# The second materialiser is the ROLLBACK of a FAILED batch: ops applied before
 # the failure are restored by writing the pre-image bytes with an atomic replace,
 # which puts a regular file where the symlink was. Signature: bytes identical to the
 # pre-image, mtime preserved from before the call, ctime on the failed call's second.
@@ -54,32 +63,50 @@ set -u
 #   incomplete. One call per doc edit, because two hand-typed `ln -f` lines is where
 #   a half-repair happens -- done twice by hand on 2026-11-15, once by each agent.
 #
-#   The copier is the BATCH ROLLBACK, not the write. A SUCCESSFUL skill_manage write goes
-#   straight through the inode (patch and write_file both verified 2026-11-15T00:08:03 and
-#   00:10:51: one file created, every other ref kept inode/nlink, arms stayed nlink=3).
+#   The copier in the FAILURE arm is the BATCH ROLLBACK. A SUCCESSFUL write materialises
+#   the file it writes (atomic_write_text: temp + fsync + os.replace -> new inode, so the
+#   link on THAT path is broken and the outside name keeps the pre-image; other refs keep
+#   ino/nlink -- measured 2026-11-15T16:42:33 ET, ino 14552820 nlink=2 -> 14552821 nlink=1).
+#   A FAILED batch materialises every file in the skill dir (copytree of the dir snapshot).
+#   Relink is therefore part of every edit, success or failure -- never only after a fail.
 #   On ANY failure inside an operations=[...] batch -- even one op, even a failed old_string
 #   match, even an over-cap body refused pre-write -- _restore_snapshot copytree's the whole
 #   skill dir back: every reference gets a fresh inode at nlink=1 with identical bytes and its
 #   own earlier mtime, including refs no op touched. Signature: birth new, mtime = that file's
-#   earlier mtime, ctime on the failing call's second. So the arms' half-life is not "the next
-#   write" -- it is the next FAILED batch in either profile, and identity comes from the log
-#   line, never from the stat.
-#     Detect (agent.tool_executor truncates at 368 chars, so `batch aborted` misses every
-#     over-cap failure -- 0 hits in both live logs):
+#   earlier mtime, ctime on the failing call's second. Reproduced 2026-11-15T16:42:46 ET on a
+#   throwaway skill: SKILL.md 14552818 -> 14552826 and probe-b 14552821 -> 14552825, both
+#   nlink=1, mtimes preserved (16:42:28.755 / 16:42:33.444), ctime 16:42:46.30. So an arm's
+#   half-life is the next EDIT of that doc (success breaks it) and, for every ref in the dir,
+#   the next FAILED batch in that profile; identity comes from the log line, never the stat.
+#     Detect (tool_executor.py:1561 logs error_preview = the payload truncated at 200 chars,
+#     so a full log line tops out at 368 with its ~168-char prefix; `batch aborted` survives
+#     only when the body is short -- measured 2026-11-15T16:43 ET: frodo 22 wrapper hits / 1
+#     with `batch aborted`, buzzy 56 / 2, max payload 200 in both):
 #       grep 'Tool skill_manage returned error.*operations\[' <profile>/logs/agent.log*
-#   Durable fix: keep SKILL.md well under the 100,000-character cap. Measured 2026-11-15
-#   01:16: frodo 99,528 ch (472 margin), buzzy 96,408 ch. An over-cap SKILL.md patch fails and
-#   re-materialises every reference in that profile, which is the whole failure mode.
+#   UNWINDOW -- a third defect class in the same function: _restore_snapshot :188 renames the
+#   skill dir to `<name>.rollback-broken` and :190 copytree's the snapshot back, so between
+#   those two calls the skill directory does not exist. Writers do not race it (a batch holds
+#   skill_file_lock, a cross-process flock), but LOCK-FREE READERS do: skill_view, the curator
+#   walk, and anything calling find_skill can see a missing skill, not a stale one. Sub-second;
+#   it is a visibility hole, not a corruption path.
+#   Durable fix: keep SKILL.md well under the 100,000-character cap. The cap is len(content)
+#   in Python characters (skill_manager_tool.py:110 / :188), NOT bytes -- a file can read
+#   100,010 bytes and still pass, so a byte-based margin panics 10 bytes early. Quote the rule
+#   and the read, never a margin pair (a quoted margin was stale inside five minutes):
+#     python3 -c "import sys;print(100000-len(open(sys.argv[1],encoding='utf-8').read()))" \
+#       ~/.hermes/profiles/<p>/skills/agent-chat-bus/SKILL.md
+#   At 2026-11-15T16:42 ET that read 748 ch (frodo) and 42 ch (buzzy) -- buzzy was one append
+#   from the cap, where every later batch in that profile fails and re-materialises every ref.
 #
 # SCOPE -- what this gate does NOT cover. Counted, not assumed:
-#   repo root 13 `.md` (`git ls-files '*.md'`), chat-room/wal-ops 10, DOCS 8 -> 16 arms.
+#   repo 14 tracked `.md` (`git ls-files '*.md'`: 4 root + chat-room/wal-ops 10), DOCS 8 -> 16 arms.
 #   The 4 root docs and the 2 wal-ops docs outside DOCS (README.md,
 #   manifest-truncation-2026-11-14.md) have no reference in the frodo, buzzy, aragorn or sam
 #   profile dirs, so they have no drift path. Everywhere else this gate is blind by
-#   construction: 38 reference docs in frodo's dir and 34 in buzzy's -- 72 profile-local docs
+#   construction: 38 reference docs in frodo's dir and 35 in buzzy's -- 73 profile-local docs
 #   against 8 graded -- are neither in DOCS nor in the repo. Coverage is exhaustive for the 8
 #   DOCS names x 2 profiles and for nothing else. Never restate it as "exhaustive for drift".
-#   (Counts re-measured 2026-11-15 12:52 ET at 808b897 + this commit: `git ls-files`, `ls` in
+#   (Counts re-measured 2026-11-15T16:43 ET at 3a3a3c5 + this commit: `git ls-files`, `ls` in
 #   each references dir. The previous line read 27/24/51, which was already stale by 10 docs
 #   before provenance-quoting.md was added -- a count in a comment decays silently, so re-count
 #   it in the same edit, never carry it.)
