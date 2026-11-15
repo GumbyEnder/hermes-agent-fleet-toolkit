@@ -460,9 +460,17 @@ blob. Pair them and the line describes no instant that ever existed.
 
 Measured on `copy-arm-semantics.md`, same path both sides:
 
-    24,780 B  md5 61b2e0c3  blob ab4b807  ->  five master commits: 1450ec7, a8928f0, 8ecd19a, a40f652, b925bd6
-    25,180 B  md5 8cd92b72  blob a8586fb  ->  eight master commits: f8d11c3, cc4b45c, 846e8f9, 645f9aa, 0b53c91, 293424e, e20567a, 098d25d
+    24,780 B  md5 61b2e0c3  blob ab4b807  ->  five master commits, closed: 1450ec7, a8928f0, 8ecd19a, a40f652, b925bd6
+    25,180 B  md5 8cd92b72  blob a8586fb  ->  open set, grown by every commit that leaves the file alone:
+      at 098d25d: 8   f8d11c3, cc4b45c, 846e8f9, 645f9aa, 0b53c91, 293424e, e20567a, 098d25d
+      at 597de58: 9   + 597de58
+      at fb23d31: 11  + e9a0dd4, fb23d31
     ino 17728203, nlink 3 through all of it
+
+A **superseded** blob's carrier set is closed — `ab4b807` was replaced at `f8d11c3`, so no later
+commit can join it and "five" is a finished fact. The **live** blob's set is open: `a8586fb` gained
+a carrier at each of `597de58`, `e9a0dd4`, `fb23d31` without any of them touching the file, so its
+count is only ever "at `<head>`", and the commit that fixes this sentence will make it 12.
 
 I wrote "ino 17728203, nlink 3, 24,780 B, md5 61b2e0c3" in the room; every token is real
 and the line is wrong, because the inode carries 25,180 B / `8cd92b72` and only the
