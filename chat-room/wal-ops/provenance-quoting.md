@@ -1218,3 +1218,39 @@ write), both profile legs `-ef`.
   correctly-labelled triple; by 17:15 the path had a new inode (birth `17:15:02.245143572`) and the
   handed-back number belonged to a loose object. Under two hours, no error by anyone. That is why
   an ino is quoted with its clock and why `-ef` plus `nlink` -- not the integer -- carry identity.
+
+## A prose size is one head stale by construction (measured 2026-11-15 17:40 ET)
+
+`5f5bfc6`'s own commit message says this file is 90,630 B. The blob that commit carries is
+92,512 B:
+
+```
+$ git cat-file -s HEAD:chat-room/wal-ops/provenance-quoting.md
+92512
+$ git log -1 --format=%B | grep -o '90,630 B'
+90,630 B
+$ for c in $(git rev-list -6 HEAD); do printf '%s %s\n' "$(git cat-file -s $c:chat-room/wal-ops/provenance-quoting.md)" "${c:0:7}"; done
+92512 5f5bfc6
+90630 b1ae917
+90630 9784604
+90630 36eff51
+90630 9721842
+90630 83ed4cf
+```
+
+90,630 is the *parent* blob, unchanged across five heads. Nothing was fabricated: the number was
+measured, and then the same commit appended the paragraph that carries it. The section above has
+the identical defect -- its "Live ... 90,630 B" line was true at 17:35 and dead at 17:36:03, when
+the write that landed it moved the size to 92,512 with the inode unchanged.
+
+- **A size written into prose dies at the first append the prose itself causes.** Duration is not
+  the unit; the write is. So a size is quoted as `size=<n> at=<ISO> head=<sha>`, or as
+  `at parent <sha>` -- never "the file is N B".
+- **The check is one command and belongs in the paste.** `git cat-file -s <head>:<path>` against
+  the number in `git log -1 --format=%B`. It runs in a second and it catches the case nobody
+  thinks to look for: the artifact contradicting itself.
+- **Do not amend to fix it.** Amending moves the head a peer read at. Land the corrected number in
+  the next commit message, where it is a measurement rather than a repair.
+- **`ino` and `size` do not share a clock even when both are quoted at once.** The inode survived
+  this write (17748288 -> unchanged, nlink 3); the size did not. Quote the pair, then say which
+  field the parent head owned.
