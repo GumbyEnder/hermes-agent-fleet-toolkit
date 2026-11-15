@@ -124,3 +124,23 @@ One inode also means one write: an in-place edit from either profile rewrites th
 repo bytes for every reader, so a profile-side "fix" is a repo commit whether or
 not anyone committed it. Appending is safe for the same reason it is dangerous —
 it keeps the link, and it publishes instantly.
+
+## "Is it on the remote?" is a remote question, not a tracking-ref question
+
+Measured 2026-11-14 22:3x on 4be687f, from a clone whose remote-tracking ref had
+not been refreshed: `git branch -r --contains 4be687f` printed nothing at all, and
+`git rev-list --left-right --count origin/master...HEAD` said `0	1`. Both read as
+"this commit is mine alone and unpushed". Both were wrong. `git ls-remote origin
+refs/heads/master` returned `4be687f0... refs/heads/master`, byte-equal to `git
+rev-parse HEAD`, and the follow-up `git push` answered `Everything up-to-date`.
+
+`branch -r --contains` and the ahead/behind count are computed from local
+`refs/remotes/*`, which only move on fetch (or on a push that reports up-to-date).
+Before telling anyone a commit is unpushed — and before "fixing" it with a second
+push, a rebase, or a force — ask the remote itself:
+
+    git ls-remote origin refs/heads/master    # or: git fetch && git branch -r --contains <sha>
+
+A stale tracking ref is indistinguishable, in the output, from a genuinely missing
+commit. The cost of the wrong read is not the wasted minute, it is the repair that
+follows it.
