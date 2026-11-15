@@ -434,10 +434,11 @@ is the three that were counted at 17:05:
 ## These docs are not MANIFEST.md5 rows -- the gate's per-arm md5 is their integrity leg
 
 `check-manifest.sh`'s rows are scripts and units only; no `wal-ops/*.md` is rostered -- `grep -c '\.md'`
-on `MANIFEST.md5` returns 0. The row *total* is not the leg either: it read 34 at 18:20 and 36 at
-18:30, two rows landing in ten minutes, so a bare total is a clock like any other. Quote it dated
-(36 rows / 2,211 B / `b766dc6c` at 18:31), or quote only the `0 .md` column, which is the column
-the argument actually needs. So a doc
+on `MANIFEST.md5` returns 0, and since 2026-11-15 the gate *asserts* that instead of describing it (a row
+for a doc reads `FAIL stray row`). The row *total* is a clock if quoted bare -- it read 34 at 18:20 and 36
+at 18:30, two rows landing in ten minutes -- but it is no longer a hand-maintained number: the gate now
+compares the row set against the git index, so quote the verdict's `rowset=asserted unrostered=0
+missing=0` columns and a count quoted from a run carries its own witness. So a doc
 commit owes no restamp, and a doc's absence from the manifest is not a rotten row. The integrity
 leg for a doc is `check-wal-doc-links.sh`: for each `DOCS` entry it prints the repo md5, then
 requires each profile's reference to be `-ef` the repo file and to carry that same md5. Quote the
@@ -453,12 +454,27 @@ cannot hash itself, so take the current one from the gate. Measured 2026-11-14: 
 md5s per arm and never trusts a remembered triple. The inode is a replace detector, not a clock: 17695276 has now carried 18,695 -> 21,025 -> 24,128 -> 25,131 -> 25,474 without moving,
 while 17695197 -> 17695276 at 17:16 marked a replace, not an edit.
 
-- **`check-manifest.sh` cannot witness a row count at all.** It is 604 B of `set -u`, a `cd`, and
-  `md5sum -c MANIFEST.md5` (md5 `ee5890c0`): rc=0 means every row the file *declares* matches, so a
-  deleted row passes silently and the total is never read by the gate. Quoting a row count is always
-  a manual `grep -c`, i.e. an undated clock -- which is why the count belongs beside a date or not at
-  all. It also means this section's own first draft shipped `34 rows` while the commit carrying it
-  already had 36: the number was unwitnessed at the moment it was written.
+- **`check-manifest.sh` could not witness a row count; since 2026-11-15 it asserts the row SET.** At
+  `7e9c74f` it was 604 B of `set -u`, a `cd`, and `md5sum -c MANIFEST.md5` (md5 `ee5890c0`), and rc=0
+  meant only "every row the file *declares* matches" -- a deleted row passed silently. Measured
+  2026-11-15: an export of `7e9c74f` with `sed -i 1d MANIFEST.md5` gave 35 OK, no complaint, rc=0; the
+  same delete at the then-HEAD gave `rows=42 rows_seen=42 ok=42 fail=0 rc=0`; corrupting one rostered
+  byte gave `ok=42 fail=1 rc=1`. A printed count is not the fix -- `rows` and `rows_seen` are both
+  derived from `MANIFEST.md5`, so they agree with each other exactly when the file has shrunk, and
+  `manifest_oid` pins what the remaining rows *say*, never how many there are. The fix is set equality
+  against the index: rows == `git ls-files` in wal-ops minus the `DOCS` names (parsed out of
+  `check-wal-doc-links.sh`, so the two gates read one contract) minus `MANIFEST.md5` and `README.md`.
+  Both directions fail -- a tracked file with no row, and a row with no tracked file -- and the verdict
+  line carries `rowset=asserted unrostered=N missing=N`. Negative tests at this build: delete a row ->
+  `FAIL unrostered ... check-grade-timer.sh`, rc=1; tracked script with no row -> rc=1; row for a file
+  the tree does not carry -> `FAIL stray row`, rc=1; one corrupted byte -> rc=1; clean ->
+  `rows=44 rowset=asserted unrostered=0 missing=0 rc=0`. Without a git index (a tarball) it prints
+  `rowset=nogit` and asserts nothing rather than claiming a set it never checked.
+  The same patch closed the one real exception to "rows are scripts only": `rehearse-per-slot-backup.py`
+  was tracked with no row and no mention in this doc, which is byte-for-byte indistinguishable from a
+  deleted row. It is rostered now, so the exclusion list is exactly `DOCS` + the two metadata files.
+  This bullet's first draft shipped `34 rows` while the commit carrying it already had 36: the number
+  was unwitnessed at the moment it was written.
 
 **An agent's own file tools are replace detectors too, and they fire every time.** The
 `patch`/`write_file` tools write a temp file and rename it over the target, so the repo

@@ -34,5 +34,48 @@ printf '%s\n' "$out"
 ok=$(printf '%s\n' "$out" | grep -c ': OK$')
 fail=$(printf '%s\n' "$out" | grep -v '^md5sum: ' | grep -vc ': OK$')
 seen=$(printf '%s\n' "$out" | grep -vc '^md5sum: ')
-echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rc=$rc"
+
+# --- ROW SET ASSERTION -------------------------------------------------------
+# `md5sum -c` is a PER-ROW predicate. It says "every row the file declares matches";
+# it never reads the total, so deleting a row leaves rc=0. Measured 2026-11-15: an
+# exported 7e9c74f with `sed -i 1d MANIFEST.md5` -> 35 OK lines, no complaint, rc=0;
+# the same one-line delete at HEAD -> rows=42 rows_seen=42 ok=42 fail=0 rc=0. And a
+# count cannot fix it, because `rows` and `rows_seen` are both derived from the same
+# file: they agree with each other precisely when the file has shrunk. The oid pins
+# what the remaining rows SAY; it pins nothing about how many there are.
+#
+# The only witness that is not circular is the tree. Assert set equality:
+#     rows  ==  (files git tracks in wal-ops)  -  (deliberately unrostered files)
+# Unrostered = every DOCS name (a doc's integrity leg is check-wal-doc-links.sh, never
+# a row) plus MANIFEST.md5 and README.md. DOCS is parsed out of check-wal-doc-links.sh
+# so the two gates read ONE contract: adding a doc to DOCS does not need a second edit
+# here. If that parse ever comes back empty the gate fails loud (every doc then reads
+# as an unrostered tracked file) rather than passing quiet.
+#
+# Both directions fail: a tracked script with no row, and a row for a file the tree
+# does not carry. Nothing is asserted when git is unavailable (an export or a tarball
+# has no index to compare against) -- that case prints rowset=nogit and says so.
+META="MANIFEST.md5 README.md"
+docs_line=$(sed -n 's/^DOCS="\(.*\)"[[:space:]]*$/\1/p' check-wal-doc-links.sh 2>/dev/null)
+rs_tmp=$(mktemp -d) || exit 2
+rs_unrostered=0
+rs_missing=0
+rs_state=nogit
+if tracked=$(git ls-files . 2>/dev/null) && [ -n "$tracked" ]; then
+  rs_state=asserted
+  printf '%s\n' $META $docs_line | sed '/^$/d' | sort -u > "$rs_tmp/exc"
+  printf '%s\n' "$tracked" | sort -u > "$rs_tmp/trk"
+  comm -23 "$rs_tmp/trk" "$rs_tmp/exc" > "$rs_tmp/want"      # rows that must exist
+  awk '{print $2}' MANIFEST.md5 | sed 's|^\./||' | sort -u > "$rs_tmp/have"
+  comm -23 "$rs_tmp/want" "$rs_tmp/have" > "$rs_tmp/extra"   # tracked, no row
+  comm -13 "$rs_tmp/want" "$rs_tmp/have" > "$rs_tmp/gone"    # row, not in the tree
+  rs_unrostered=$(grep -c '[^[:space:]]' "$rs_tmp/extra")
+  rs_missing=$(grep -c '[^[:space:]]' "$rs_tmp/gone")
+  sed 's|^|FAIL unrostered (tracked file has no MANIFEST row): |' "$rs_tmp/extra"
+  sed 's|^|FAIL stray row (no such tracked file): |' "$rs_tmp/gone"
+  if [ "$rs_unrostered" -gt 0 ] || [ "$rs_missing" -gt 0 ]; then rc=1; fi
+fi
+rm -rf "$rs_tmp"
+
+echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing rc=$rc"
 exit $rc
