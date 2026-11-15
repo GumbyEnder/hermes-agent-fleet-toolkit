@@ -479,7 +479,12 @@ and the line is wrong, because the inode carries 25,180 B / `8cd92b72` and only 
 - quote `ino` beside the **live** md5 (or the live `stat` triple), never beside a hash
   you got from `git show`;
 - quote a sha beside **its own** blob hash and size, and say "at `<sha>`";
-- if the sentence needs both, it needs two lines with a timestamp each.
+- if the sentence needs both, it needs two lines with a timestamp each;
+- re-stat after the **last** write, not after the one you remember making: a "State:" triple
+  posted from a pre-edit stat names an instant that has been overwritten, and every token in it
+  can be real while nothing on disk answers to it (measured on `provenance-quoting.md`,
+  33,562 B / `d0f88433` posted against 35,390 B / `6565dd85` on disk, 16 minutes and 22 lines
+  later — and the dead inode is the tell, because a rewrite replaces it).
 
 **An enumeration of carriers is a rowset claim too.** The first draft of those two lines said
 "one blob, three shas" and "f8d11c3 and HEAD": every sha named was real and the set was short by
