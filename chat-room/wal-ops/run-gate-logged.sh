@@ -8,7 +8,8 @@
 #
 # So: every gate run writes
 #   $LOG_DIR/<gate>-<UTCts>-<head12>.log   full stdout+stderr, plus a HEADER/FOOTER
-#   $LOG_DIR/INDEX.tsv                     one row per run: ts, gate, head, origin, dirty, rc, signature
+#   $LOG_DIR/INDEX.tsv                     one row per run: ts, gate, head, origin, dirty, rc,
+#                                          signature, log, args (args is field NINE, last)
 # and the log is written on FAIL as well as PASS (a failure that was not captured is the
 # expensive case). Logs live on NAS, never in a session scratch dir.
 #
@@ -66,6 +67,17 @@ RC=${PIPESTATUS[0]}
 # The gate's own closing line is its signature: "doc-links gate: head=... ok=.. fail=.. rc=..".
 SIG=$(grep -E 'gate:.*ok=|^RESULT ' "$LOG" | tail -1)
 
+# ARGS is field NINE, last, so nothing that parses the first eight columns breaks, and an
+# args field can never sit where a head is read. Why %q then tr: the SLOT_EP incident is
+# the argument -- an arg carrying whitespace or a tab either shifts every column to its
+# right or silently truncates the row. %q keeps the value re-enterable; the tr keeps the
+# row one line of tab-separated fields. (2026-11-15, frodo's counter-proposal, landed.)
+ARGS=$(printf '%q ' "$@"); ARGS=${ARGS% }
+ARGS=$(printf '%s' "$ARGS" | tr '\t\n' '  ')
+# printf '%q ' with zero operands still runs the format once and prints '', which would
+# claim an empty argument was passed. A gate invoked with no args says so explicitly.
+[ $# -gt 0 ] || ARGS='<none>'
+
 {
   echo "#--- footer ---"
   echo "# finished_local : $(date +%Y-%m-%dT%H:%M:%S%z)"
@@ -73,9 +85,9 @@ SIG=$(grep -E 'gate:.*ok=|^RESULT ' "$LOG" | tail -1)
   echo "# signature      : ${SIG:-<none>}"
 } >> "$LOG"
 
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   "$TS_LOCAL" "$GATE_NAME" "$HEAD12" "${ORIGIN_SHA:0:12}" "$DIRTY" "$RC" \
-  "${SIG:-<none>}" "$LOG" >> "$LOG_DIR/INDEX.tsv"
+  "${SIG:-<none>}" "$LOG" "$ARGS" >> "$LOG_DIR/INDEX.tsv"
 
 echo "run-gate-logged: rc=$RC log=$LOG"
 

@@ -21,7 +21,7 @@ d265f17dd557ab5387596786460b2d67  rehearse-run-failure.sh
 81cd467620e85398422f8095aaf2d005  relink-wal-docs.sh
 5fc43fd95e68382b8987b73e3d56abde  restart-dispatcher-when-no-turns.sh
 afaef597b3d62b29e2248bfcd800d0d6  ro-open-audit.py
-75fd7664a9dfdf7956d84932d8172fab  run-gate-logged.sh
+0f4851c53fb402a7e5b0f5b692fafe04  run-gate-logged.sh
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 45dfad832e8c773f49e3eea1622a8bfc  systemd/check-grade-timer.timer
 e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
