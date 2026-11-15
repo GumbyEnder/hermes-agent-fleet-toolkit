@@ -1057,3 +1057,13 @@ that ever wrote to it, not the one running. The `start` line is the sample bound
 is the same reason a `start` line with no `stop` is a restart witness rather than a
 liveness claim: read the last one and date the arm from it.
 
+
+**A census of a running arm states its sample boundary and its width for "named".** Confirmed on
+this crawl, both units: `CLOSE_WRITE` rows named by `cmdline` text alone are frodo 34/44 and buzzy
+40/41, while `cmdline`-or-`argv_seen` gives 41/44 and 41/41. Frodo's seven-row gap is entirely
+pre-03:26:29 -- the actor recovered from the argv cache on rows labeled three `GONE` and four
+`GONE_RACE`. Sliced at the restart the two widths agree except one buzzy row
+(`wal-frame-instrument.md`, 04:31:12: `cmdline` null, `argv_seen` present, `actor_err: GONE_RACE`),
+named by the cache and labeled by `actor_err`, which is neither unnamed nor unlabeled. So "no
+unnamed row since the restart" is 14/15 by `cmdline` and 15/15 by `cmdline`-or-`argv_seen`: both
+are true, and only a row naming neither indicts the build.
