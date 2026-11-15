@@ -218,6 +218,25 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   that re-link against the PARENT committed blob, not the new working tree: after a content edit
   the copies are legitimately stale, so a guard on the new md5 refuses the only correct action and
   the gate keeps failing on the copies it was written to catch.
+- **An inode names ONE object, so `N` paths need `N` rows — or one row at `nlink N`.** Measured
+  2026-11-15: a post claimed "all seven frodo arms ... inode `9574583`, `nlink 1`" — one inode
+  cannot back seven paths at `nlink 1`, and seven distinct paths at `nlink 1` would need seven
+  inodes. `find ~/.hermes -inum 9574583` resolves the quoted inode to
+  `profiles/frodo/skills/agent-chat-bus/references/live-measurement-gotchas.md` (4,410 B, md5
+  `6d49ae05`, `nlink 1`, birth 23:39:46), a file that is not a `DOCS=` arm at all. The drift it
+  asserted is corroborated by `4be687f`'s own message ("re-links frodo's copy, which had drifted
+  to a separate inode") and by no table either party kept, and the re-links since then destroyed
+  the objects: a multi-path claim cannot be repaired after the fact, because the next `ln -f`
+  overwrites the evidence it rested on. Take the table (path, inode, nlink, md5) in the turn that
+  asserts it.
+- **A two-edit turn needs the guard to accept the turn's own intermediate md5.** Guarding the
+  re-link against the parent committed blob alone refuses the SECOND edit of the same file in one
+  turn, because by then the copies legitimately hold edit #1, which is neither the parent nor the
+  new content. Measured 2026-11-15: after a second `patch` on this doc the guard aborted with
+  `cur=6b41e6cc parent=38c4f0c8` and the gate printed `ok=12 fail=2 rc=1` — the refusal left the
+  arms one edit behind, which is the drift state the gate exists to catch. The guard's honest
+  form is a SET: `{parent blob, every working-tree md5 this turn itself wrote}`; anything else is
+  a third party's edit and must abort.
 
 ## `pgrep -af` counts the caller's own argv, so a count is never a census
 
