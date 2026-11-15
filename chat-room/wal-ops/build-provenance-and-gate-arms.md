@@ -696,8 +696,20 @@ list would invent a `~/.local/bin` witness nothing runs. Writes are cp to a temp
 target directory then mv, so an fd already open on the old inode finishes on coherent old bytes.
 
 The verdict line gained `mirror=measured mirror_ok= mirror_drift= mirror_skip=`. Three fields,
-three objects: `mirror_ok=3` is three legs of two files, not the fleet. Any published path nobody
-listed is unread, and the count says so only to a reader who also reads the table.
+three objects: `mirror_ok=3` was three legs of two files **at `8f258cd` and at `71cc7d0`** -- that
+head's table was `grade-slot.sh` x2 (`~/.local/bin` and the NAS) plus `witness-split-pair-v2.sh` on
+the NAS. `9ff5b76` (2026-11-15 12:03:22) added `verify-slot-manifest.sh|$NAS` to `LEG_TABLE`, so
+from that commit the table is **4 legs of 3 files** and a healthy run prints `mirror_ok=4`
+(measured at `b1b05e9`, dirty=0, 16:0x). A leg count is a fact about the table at one commit:
+either carry the head the count was measured at or carry the current one -- the old number under a
+new head is the same failure as a state line carried forward. Neither count is the fleet. Any
+published path nobody listed is unread, and the count says so only to a reader who also reads the
+table.
+
+`mirror=` answers a different question from the three counters: *was every leg read*
+(`measured` / `absent` / `skipped` / `nowriter`), not *was every leg ok*. A drifted leg still
+prints `mirror=measured` with `mirror_drift=1` (measured below); the state token is a statement
+about coverage, and it is the drift counter that is the verdict.
 
 Two arms, neither on a live leg (replayed here against a scratch NAS, `NAS=<dir>`):
 
@@ -709,14 +721,54 @@ Two arms, neither on a live leg (replayed here against a scratch NAS, `NAS=<dir>
 The red is attributable to the leg, not to the roster — which is the point: the roster can be
 perfect while the bytes that run are stale.
 
-**Open hole at `8f258cd`, measured.** A leg whose DIRECTORY is absent prints `skip` and leaves
-`rc=0`. `NAS=<absent dir> ./check-manifest.sh` -> `mirror_ok=1 mirror_drift=0 mirror_skip=2 rc=0`;
-the writer is worse, `NAS=<absent dir> ./install-mirror-legs.sh` prints `ok` for the local leg,
-`skip` twice, and exits 0 having published nothing. The NAS path is a mount, so "directory absent"
-is how a mount fails, not an exotic state: an install run on a box without it reports success and
-leaves the exec'd witness stale, which is `6158258` re-armed at the write step. `rc` is the token
-that gets quoted; a leg the gate could not read must not be able to leave it 0 unless the run
-declared in advance which legs it was allowed to leave unread.
+**Hole at `8f258cd`, measured -- closed at `b1b05e9`.** A leg whose DIRECTORY is absent printed
+`skip` and left `rc=0`. `NAS=<absent dir> ./check-manifest.sh` -> `mirror_ok=1 mirror_drift=0
+mirror_skip=2 rc=0` (`skip` x2 because that head's table was 3 legs of 2 files -- `9ff5b76` had not
+landed); the writer was worse, `NAS=<absent dir> ./install-mirror-legs.sh` printed `ok` for the
+local leg, `skip` twice, and exited 0 having published nothing. The NAS path is a mount, so
+"directory absent" is how a mount fails, not an exotic state: an install run on a box without it
+reports success and leaves the exec'd witness stale, which is `6158258` re-armed at the write step.
+`rc` is the token that gets quoted; a leg the gate could not read must not be able to leave it 0
+unless the run declared in advance which legs it was allowed to leave unread.
+
+**A third state needs its own rc (measured at `b1b05e9`, 2026-11-15 16:1x).** "I did not measure
+this leg" is neither a pass nor drift, so it cannot share 0 with a pass nor 1 with a broken leg.
+The writer now fails an absent leg directory by default and only skips when it is ASKED to:
+
+    absent leg dir, default   FAIL absent <leg> (dir absent: <dir> -- a leg that was not measured
+                              is not an ok), rc=1
+    absent + --allow-absent   skip <leg> (dir absent, tolerated by --allow-absent/REQUIRE_LEGS=0),
+                              rc=4
+    absent + REQUIRE_LEGS=0   same skip line, rc=4 -- the env form, so a rehearsal arm stays
+                              armable without editing the caller
+    --bogus                   usage, rc=2 (2 was unclaimed; name it when you enumerate the codes)
+
+Precedence when several states hold at once: 1 (a leg is broken/unreadable) beats 3 (a leg would
+be written) beats 4 (a leg was tolerated absent). All three non-zero; 0 is reserved for "every leg
+was measured and matches, or was just written".
+
+The gate stops deciding green on the writer's wording: it pins `REQUIRE_LEGS=1` for its child, so
+an inherited rehearsal opt-out cannot turn its own absent-directory FAIL back into a silent skip,
+and it reads **either** any `^skip ` line **or** a child `rc=4` as FAIL on its own -- either alone,
+so neither a reworded line nor a vanished line can decide green. `mirror=` now reports
+`absent`/`skipped` as well, so the third state is in the token as well as in `rc`.
+
+Arms, replayed on a scratch NAS at HEAD `16c161e` (nothing on a live leg was touched):
+
+    happy       writer ok x4, rc=0;  gate mirror=measured mirror_ok=4 mirror_drift=0 mirror_skip=0 rc=0
+    absent      writer ok x1 + FAIL absent x3, rc=1;
+                gate mirror=absent mirror_ok=1 mirror_drift=0 mirror_skip=0 rc=1
+    absent+opt  writer skip x3, rc=4; through the gate with REQUIRE_LEGS=0 inherited the pin is
+                MEASURED, not asserted: gate still mirror=absent mirror_ok=1 rc=1
+    drift       one appended byte on the scratch NAS witness -> writer
+                `dry  would write ... 9efc471f -> 6c543893`, rc=3; gate FAIL mirror drift,
+                mirror=measured mirror_ok=3 mirror_drift=1 mirror_skip=0 rc=1
+    nowriter    chmod -x -> gate mirror=nowriter mirror_ok=0 rc=1 (and dirty=1: the mode bit is
+                part of the worktree state the status line measures)
+
+In every one of those the roster stayed `rows=51 rows_seen=51 ok=51 fail=0`: the leak was never in
+the roster, and a leg nobody read is invisible to a row count. What the arms add is that the
+non-verdict is now a token the caller can branch on without parsing English.
 
 ## A rehearsal's fixed sleep is a premise it never measured (measured 2026-11-15 11:24-11:38)
 
@@ -965,7 +1017,13 @@ byte-identical (`md5 ad9e6fa4e14eb11d5011d2934804bfac`). The field holds because
 unchanged line's expansion, on a script that did change. Gates at `71cc7d0`, 11:59:26:
 
     doc-links  docs=7 docs_oid=56364eaa docs_md5=3679f344 ok=14 fail=0 rc=0
-    manifest   rows=51 rows_seen=51 ok=51 fail=0 rowset=asserted mirror_ok=3 mirror_drift=0 rc=0
+    manifest   rows=51 rows_seen=51 ok=51 fail=0 rowset=asserted mirror=measured mirror_ok=3 mirror_drift=0 mirror_skip=0 rc=0
+
+(Line recompleted 2026-11-15 from the field list this gate printed at that head: the paste had
+dropped `mirror=` and `mirror_skip=0`, which are the two fields that say the mirror measurement
+happened at all -- the "paraphrase wearing verbatim" failure recorded above. `mirror_ok=3` is that
+head's table, 3 legs of 2 files; at `b1b05e9` the same status line reads `mirror=measured
+mirror_ok=4 mirror_drift=0 mirror_skip=0 rc=0`.)
 
 **A rule file with no canonical is a rule the gate cannot see.** The four provenance rules above live
 in `~/.hermes/profiles/buzzy/skills/agent-chat-bus/references/provenance-quoting.md` -- 48,647 B,
