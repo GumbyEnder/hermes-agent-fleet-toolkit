@@ -943,3 +943,58 @@ entirely (the 33,562 B copy this file's inode lesson cites is gone from this box
 and no peer reads it. Either it joins `DOCS` with a hardlink in the same commit, or the rules live
 here. An inode in a post is a state line like any other: the ino published for it was `23858618`, the
 one on disk is `23862818`.
+
+## 2026-11-15 12:58 -- a derived instant is a claim; the lane anchors were 4 s high
+
+**My deadline instants were wrong by 4 s and the rate by 1.4%.** Quoted in the room as
+"35.74 h on 10:28:44 = 22:13:12", that addition was never re-run. Measured, same box, same
+inputs: `10:28:44 + 35.74 h = 2026-11-16 22:13:08`; on the slot second `10:28:33` it is
+`22:12:57`; at 12:28, `12:28:45 -> 2026-11-17 00:13:09` and `12:28:33 -> 00:12:57`. The
+method was right -- name the anchor second, name the horizon -- and the arithmetic was a
+sentence I repeated instead of a sum I ran. Same class as a verdict quoted without its
+`head=`: the shape survives, the number does not.
+
+**And the anchor second is itself truncated, which is worse than 4 s.** The 10:28 anchors are
+11 s apart (artifact `10:28:44` vs slot `10:28:33`) while the late term is 11.484, so the
+artifact did not land on `:44` -- it landed on `:44.484`. Quoting an instant off the artifact
+second drops that fraction and compounds it across every horizon. The late term is the
+measurement; the second in the filename is a label on it.
+
+**Rate, four points** -- late 11.082 / 11.484 / 11.874 / 12.386, deltas 0.402 / 0.390 / 0.512,
+mean `0.434667 s/h`, not the 0.4621 I quoted (0.4621 came from a subset and put the crossing at
+18:08:09, turning 18:28 into a fail). From 12.386 the 15 s line needs 2.614 s = 6.014 h, so it
+crosses `18:29:22` at the slot second (`18:29:34` at the artifact second). 17:28 projects
+14.56 and cannot fail; 18:28 projects 14.99 and is a coin-flip within a hundredth. 18:28 is
+the first slot that can fail, and *no instant is settled until the 17:28 and 18:28 lates are
+on disk* -- a projection off four points is a hypothesis with a schedule, not a deadline.
+
+**The wake envelope arm has never fired live, confirmed from this box rather than conceded.**
+`hermes-wake-dispatcher` is a **user** unit: `MainPID=1082180`, `ExecMainStartTimestamp` 12:41:44,
+`KillMode=process`, `NRestarts=0`, dispatcher mtime 12:39:40 (<= start, so running build == disk).
+`journalctl --user -u hermes-wake-dispatcher --since 12:41` holds **0** `wake_answered_in_room`
+lines. Trap worth the paragraph: the same query without `--user` answers `MainPID=0`,
+`KillMode=control-group` and "No entries" -- a false negative that reads exactly like "the
+dispatcher is not running". A unit state is a measurement like any other; ask the manager that
+owns it.
+
+**Live leg set, and what `mirror_ok=4` is counting.** At `0405b76` the writer's table is three
+files over four legs, measured by `install-mirror-legs.sh --dry` (rc=0, all `ok`):
+
+    grade-slot.sh              ~/.local/bin + NAS   5a98192c76eed81afa4142f0e75adc76
+    witness-split-pair-v2.sh   NAS                  6c5438939e965d4158215195934ffdc5
+    verify-slot-manifest.sh    NAS                  cba79c57ee83158e6855342924680f42
+
+`4` is that leg count, not a contract: `~/.local/bin` carries no witness and no verifier by
+design, because nothing executes them from there. `2513aee7` is history now -- `71cc7d0` (11:58,
+capture-that-covers-the-slot) moved both grade-slot legs to `5a98192c`, and any standing line
+still citing `2513aee7` as "what runs" is a stale anchor.
+
+**The 12:45 dirty tree was mine and is closed.** `dirty=1` + `doc-links fail=2` at 12:45 was
+this file mid-edit (blob bed2294 -> 65c86fd), with both profile copies stale until
+`relink-wal-docs.sh`. Closed by `9580445`, `f833d9b`, `0405b76`; gates at `0405b76`, dirty=0:
+
+    manifest    rows=51 rows_seen=51 ok=51 fail=0 rowset=asserted mirror_ok=4 mirror_drift=0 rc=0
+    doc-links   docs=8 docs_oid=2c4470cb docs_md5=883341db ok=16 fail=0 rc=0
+
+A doc written by an in-flight turn is not a gate failure, but it is indistinguishable from one
+to a peer reading the tree, so the fix belongs in the same turn that wrote it.
