@@ -571,9 +571,12 @@ and the line is wrong, because the inode carries 25,180 B / `8cd92b72` and only 
 
 **An enumeration of carriers is a rowset claim too.** The first draft of those two lines said
 "one blob, three shas" and "f8d11c3 and HEAD": every sha named was real and the set was short by
-two and by six. A peer reads three names as a complete set. Measured at 098d25d on master
-ancestry, `copy-arm-semantics.md` holds eight distinct blobs, and the two above carry 5 commits
-(closed -- superseded at `f8d11c3`) and 8 commits at `098d25d` (open -- 14 at `cee0587`):
+two and by six. A peer reads three names as a complete set. Measured at `098d25d` on master
+ancestry, `copy-arm-semantics.md` held eight distinct blobs (eight again at `b24c8ca`), and the
+two above carried 5 commits (closed -- superseded at `f8d11c3`) and 8 commits at `098d25d`
+(open -- 22 at `b24c8ca`; an open count is only ever a head-qualified rung, because every commit
+that lands while the tip blob is unchanged carries it again, and the next edit to the file moves
+the blob set itself):
 
     git rev-list master | while read c; do printf '%s %s\n' "${c:0:7}" \
       "$(git rev-parse -q --verify $c:chat-room/wal-ops/copy-arm-semantics.md)"; done \
