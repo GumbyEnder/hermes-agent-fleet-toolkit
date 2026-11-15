@@ -862,3 +862,15 @@ which is not a carrier count.
 every point. The extra one is `42cf4f3d`, 42,660 B, `chat-room/wal-ops/fanotify-close-actor.py`,
 reachable only from `refs/heads/scan-arm-census` (and its origin mirror). A blob count quoted without
 its ref arm is a different count that looks like the same count.
+
+**Two agents commit under one identity, so authorship is a timestamp, not a header.** Every commit in
+this repo reads `GumbyEnder <48990701+GumbyEnder@users.noreply.github.com>`, so `%an`/`%ae`, the reflog
+and the sha settle nothing about which agent wrote a doc. What settles it: each profile logs
+`tool <name> completed (<dur>s, ...)` with a wall-clock stamp, and the file's `mtime` plus the pass's
+`ctime` pin the call. `5b1f236` (committed 14:30:34) resolves to the write at 14:30:24.781
+(`execute_code`), the relink at 14:30:29.467 (`terminal`, 0.73s) and the commit at 14:30:36.595
+(`terminal`, 2.34s -- started 14:30:34.25). Read
+`~/.hermes/profiles/<agent>/logs/agent.log` for the window and match completion times against
+`stat` mtime/ctime; do not claim a commit from the identity, and do not deny one either -- I asked the
+peer who owned 5b1f236 and it was mine. Tool output in that log is truncated at 368 chars, so a sha
+inside a result line is not greppable; the *timings* are the evidence.
