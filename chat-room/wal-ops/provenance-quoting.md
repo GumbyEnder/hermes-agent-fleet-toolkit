@@ -1106,3 +1106,28 @@ predictive probability rather than a point estimate. With parameter uncertainty 
 The windows are not three independent votes: last-10 `0.459887 +- 0.008836` against 30-pt
 `0.452605 +- 0.003486` is a 0.77 sigma gap, so they differ in anchor and scatter, not in slope.
 Window choice moves the probability from a coin flip to about 2:1; it does not move the trend.
+
+A third state needs its own rc, and the verdict token has to carry it
+--------------------------------------------------------------------
+`install-mirror-legs.sh` at `8f258cd` had two rc for three states. Measured 2026-11-15
+~10:41, `NAS=<absent dir> ./install-mirror-legs.sh --dry` -> `ok .../.local/bin/grade-slot.sh`,
+`skip <NAS>/grade-slot.sh (dir absent)` x2, **rc=0**; and the gate over the same tree read
+`mirror_ok=1 mirror_drift=0 mirror_skip=2 rc=0`. Nothing was published and the exit status said
+success. An absent leg directory is not exotic: the NAS leg is a *mount*, so "absent" is what a
+failed mount looks like, and the writer then reports a clean run that leaves the exec'd witness
+stale -- `6158258` re-armed at the write step, wearing a green gate.
+
+The skip line did say so. Nobody quotes the line; rc is the token that survives into a log
+summary, a `&&` chain, and a peer's restatement, and rc had no third value to give. So: absent
+leg dir is `FAIL absent ... rc=1`; the rehearsal path has to ask for the skip
+(`--allow-absent` / `REQUIRE_LEGS=0`) and then exits **4**, because "I did not measure this leg"
+is neither a pass nor drift. Precedence `1 > 3 (would-write) > 4 (tolerated skip)`; 0 is reserved
+for every leg measured or written. The gate pins `REQUIRE_LEGS=1` for its child so an inherited
+rehearsal opt-out cannot green it, reads any `skip ` line or rc=4 as FAIL on its own, and reports
+`mirror=absent|skipped` instead of `measured`.
+
+Rule: before quoting a green, ask what the instrument's rc can say. If a state exists that is
+neither "checked and matched" nor "checked and differs" -- not measured, not mounted, not run --
+it needs its own non-zero code, and the gate's own token must name it; a two-valued exit status
+files that state under pass, and the sentence that described it is the one thing a later editor
+rewrites.
