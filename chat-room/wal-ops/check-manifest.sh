@@ -90,6 +90,17 @@ rm -rf "$rs_tmp"
 # would do rather than carrying a second copy of the table that can drift from it.
 # A missing or erroring writer is a FAIL, never a skip: an unread contract cannot pass.
 #
+# A LEG THE WRITER SKIPPED IS ALSO A FAIL. Measured 2026-11-15 ~10:41: with the NAS
+# directory absent, `install-mirror-legs.sh --dry` printed `ok` for the local leg,
+# `skip ... (dir absent)` x2 and exited 0, so this gate printed
+# `mirror_ok=1 mirror_drift=0 mirror_skip=2 rc=0` -- green, over a witness leg nothing
+# had measured. An absent leg directory is how a failed /mnt/nas mount presents, so it
+# is the ordinary case, not an exotic one. Fixed in two places, because either alone
+# can be reworded away: the writer now FAILs on an absent leg dir (rc=1) and only
+# skips when explicitly told (--allow-absent / REQUIRE_LEGS=0, then rc=4), and this
+# gate reads rc=4 or any `skip ` line as FAIL on its own. The gate also pins
+# REQUIRE_LEGS=1 for the child so an inherited opt-out cannot green it.
+#
 # THE WRITER'S EXIT STATUS IS THE VERDICT; ITS SENTENCES ARE ONLY LABELS. Measured
 # 2026-11-15 on a shadow tree: a tampered NAS leg produced `dry  would write ...` and
 # the writer exited 0, so this branch was a grep for a phrase -- reword the phrase and
@@ -99,10 +110,20 @@ rm -rf "$rs_tmp"
 # parse never decides green alone.
 m_ok=0; m_drift=0; m_skip=0; m_state=measured
 if [ -x ./install-mirror-legs.sh ]; then
-  m_out=$(./install-mirror-legs.sh --dry 2>&1); m_rc=$?
+  # REQUIRE_LEGS=1 pinned: an inherited REQUIRE_LEGS=0 is a rehearsal opt-out and must
+  # not be able to turn this gate's absent-directory FAIL back into a silent skip.
+  m_out=$(REQUIRE_LEGS=1 ./install-mirror-legs.sh --dry 2>&1); m_rc=$?
   m_ok=$(printf '%s\n' "$m_out" | grep -c '^ok   ')
   m_drift=$(printf '%s\n' "$m_out" | grep -c '^dry  would write')
   m_skip=$(printf '%s\n' "$m_out" | grep -c '^skip ')
+  m_absent=$(printf '%s\n' "$m_out" | grep -c '^FAIL absent')
+  if [ "$m_absent" -gt 0 ]; then m_state=absent; fi
+  if [ "$m_skip" -gt 0 ]; then
+    printf '%s\n' "$m_out" | grep '^skip ' \
+      | sed 's|^skip |FAIL mirror skip (published leg was NOT measured, dir absent): |'
+    m_state=skipped
+    rc=1
+  fi
   if [ "$m_drift" -gt 0 ]; then
     printf '%s\n' "$m_out" | grep '^dry  would write' \
       | sed 's|^dry  would write |FAIL mirror drift (published leg is stale): |'
@@ -116,6 +137,13 @@ if [ -x ./install-mirror-legs.sh ]; then
       m_drift=1
       rc=1
     }
+  elif [ "$m_rc" -eq 4 ]; then
+    # a tolerated skip: the writer was told an absent leg is acceptable, but a leg it
+    # did not measure is not a green gate.
+    printf '%s\n' "$m_out"
+    echo "FAIL mirror skip (writer rc=4: an absent leg directory was tolerated; one or more published legs were never measured)"
+    m_state=skipped
+    rc=1
   elif [ "$m_rc" -ne 0 ]; then
     printf '%s\n' "$m_out" | grep '^FAIL'
     echo "FAIL mirror legs: ./install-mirror-legs.sh --dry exited $m_rc"
