@@ -298,8 +298,10 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     uses to find commit boundaries. The **page image**'s bytes 28-31 of a page-1 frame are that page's
     own header db-size and are **populated mid-group**, so reading a size off it is safe: a 40-frame
     `INSERT` group carries `page_image[28:32] = 40` on its first frame while the same frame's
-    `frame_header_dbsize = 0` (probe6, `decode.db`; likewise probe4's `delete-all` group, page 1 first,
-    `dbsize_pages` 40, last frame page 3). Only the frame-header field reads 0 on a non-commit frame.)
+    `frame_header_dbsize = 0` (re-running probe6, whose `decode.db` is that probe's **own temp fixture**
+    and not a stored artifact — cite the re-run, not the file; likewise `probe4.py` in this directory
+    runs a `delete-all` group that reads page 1 first, `dbsize_pages` 40, last frame page 3 — re-run
+    2026-11-15 from the repo path). Only the frame-header field reads 0 on a non-commit frame.)
   **Why a Python fixture's ride arm silently does not ride:** `sqlite3`'s legacy transaction control
   (`isolation_level=''`, the default) emits the implicit `BEGIN` only before `INSERT`/`UPDATE`/
   `DELETE`/`REPLACE` — **DDL runs in autocommit**, so `CREATE TABLE` commits on its own and the "ride"
