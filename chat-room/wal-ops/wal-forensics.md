@@ -230,6 +230,16 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   - **An empty commit appends no frame.** `CREATE TABLE` alone then `BEGIN; COMMIT` = 2 commits,
     **2 frames, 8,272 B** (Δ = −1). So the counter counts *commits that wrote at least one page*; a
     zero-write commit is invisible to the WAL and to any ladder built on it.
+  - **The `+1` is page 1, and it can be absent altogether.** `CREATE TABLE` alone, then
+    `PRAGMA wal_checkpoint(TRUNCATE)` (WAL → 0 B), then **one** single-row commit = **1 commit,
+    1 frame, 4,152 B**, the frame carrying page 2 only; three commits after the truncate = 3 commits,
+    3 frames, 12,392 B, pages `[2] [2] [2]`. `frames == commits` exactly, no `+1`. So the invariant is
+    **frames = Σ pages dirtied over all committed transactions** — one frame per dirty page per commit,
+    nothing for a commit that dirtied none. The ladder's `+1` is the database header page (page 1) that
+    the schema-creating commit dirties, and it appears exactly once because the WAL records it once;
+    it is not a structural constant. (The 400-row commit above writes page 1 *again*, `[1…52]`, because
+    it moves the change counter — a commit that dirties N pages appends N frames, page 1 included when
+    this commit is one of them.)
   **Why a Python fixture's ride arm silently does not ride:** `sqlite3`'s legacy transaction control
   (`isolation_level=''`, the default) emits the implicit `BEGIN` only before `INSERT`/`UPDATE`/
   `DELETE`/`REPLACE` — **DDL runs in autocommit**, so `CREATE TABLE` commits on its own and the "ride"
@@ -237,6 +247,15 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   `COMMIT` with no `BEGIN` before the DDL. Reproduced twice here in one turn, the second time in a
   fixture written specifically to fix the first. Any DDL-carrying arm needs `isolation_level=None` with
   explicit `BEGIN`, or `autocommit=False`; nothing about the SQL text reveals which mode you got.
+  **The mirror of that defect: an autocommitted DDL is invisible to a trace-based counter.** With
+  `isolation_level=None` and the `CREATE` left unwrapped, no `BEGIN`/`COMMIT` text is sent at all, so a
+  counter built on the trace reads **0 commits while the WAL holds 1** (measured 2026-11-15 04:07 here:
+  trace `COMMIT` count 0, WAL 2 frames / 8,272 B, pages `[1, 2]`; the first version of my own probe died
+  on its `commits == len(groups)` assert — the counter failing closed, which is the counter working).
+  So `commits == len(groups)` guards the *wrapping*, not the DDL: it is green only when every group
+  issues an explicit `BEGIN…COMMIT`. Read the count from the **WAL frame header** instead — the
+  `dbsize` field is non-zero on the last frame of a committed transaction and zero elsewhere, so
+  commit boundaries and pages-dirtied both come out of the file and neither driver mode can fool them.
 - **A ladder rung is not a commit number.** Bootstrap (`CREATE TABLE` and the first `INSERT` as
   **two** commits = 3 frames = 12,392 B; as one commit it is 2 frames = 8,272 B) then N commits gives
   `size = 32 + (3+N)×4,120`. `173,072` is N = 39; N = 40 lands on `177,192` / 43
