@@ -72,9 +72,12 @@
 # WHY pending EXISTS (frodo, 2026-11-15 #5485 item 2). The class test used to
 # collapse "the janitor arm has not happened yet" and "the janitor arm never
 # happened" into class=unknown. Absence inside a window that is still open is
-# not evidence, and the hourly auto-grade fires ~13 s after the slot -- inside
-# the 61 s window, before the second arm exists -- so it published a claim
-# about an hour whose second arm had not run. The discriminator is one
+# not evidence, and the hourly auto-grade USED to fire ~13 s after the slot --
+# inside the 61 s window, before the second arm exists -- so it published a
+# claim about an hour whose second arm had not run. Since 2026-11-15 19:05 the
+# grader waits to the edge (grade-slot.sh: sleep to P+62, bounded re-read while
+# rc=3), so the timer's read now lands after the arm and pending is reachable
+# only when that arm is genuinely late. The discriminator is unchanged: one
 # comparison, read clock vs P_dt+61s, and it is only reachable live: a re-grade
 # of a past slot always reads after the window closed. pending is NOT a verdict:
 # it exits 3 and its RESULT line says so.

@@ -237,6 +237,33 @@ done
 [ -n "${log:-}" ] && cap_slot=$(grep -oE 'slot=[0-9]{8}T[0-9]{6}\.[0-9]+' "$log" 2>/dev/null | tail -1 | cut -d= -f2)
 echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot} capture_slot=${cap_slot:-ABSENT}"
 
+# THE READ MUST LAND AT THE WINDOW EDGE, NOT AT P+12 (frodo, 2026-11-15 18:5x).
+# Measured on the three fires 5541/5569/5622: this run wakes at slot_ep+8, the
+# row resolves ~4 s later, and the verifier reads at P+12 -- while the janitor
+# arm for [P, P+61s) is written at P+60.87..P+60.92 (ten captures, grid-anchored).
+# A read 48 s BEFORE the arm exists can return nothing but class=pending (rc=3),
+# so every hourly auto-grade was a non-verdict and the room carried no
+# machine-posted verdict for ANY hour: 24 pendings a day, rc=0 never. Pending was
+# not a boundary the timer probed, it was the only outcome it could reach.
+# Fix: sleep to P+62 and read once, then re-read every 3 s while the verifier
+# still reports rc=3, bounded at P+90, publishing the LAST read -- so a genuinely
+# absent arm still shows as pending/unknown rather than as a silent pass. P is
+# the DERIVED grid second, not the row's own token: the backup arm drifts later
+# (15.165 s at 18:28 today, ~0.42 s/h) while the janitor stays grid-anchored at
+# P+60.87..60.92, so a row-anchored wait would walk the read past the window edge
+# as the drift grows, and a grid-anchored one cannot. P+62 is 1.1 s past the arm
+# and still inside the verifier's [row_P, row_P+61s) window (row_P >= P).
+EDGE_S=${GRADE_EDGE_S:-62}
+EDGE_DEADLINE_S=${GRADE_EDGE_DEADLINE_S:-90}
+edge_wait=$(( slot_ep + EDGE_S - $(date +%s) ))
+if [ "$edge_wait" -gt 0 ]; then
+  if [ "$DRY" = 1 ]; then
+    echo "would wait ${edge_wait}s to the slot-pair window edge (P+${EDGE_S}s) before reading (--dry: not waiting)" >&2
+  else
+    sleep "$edge_wait"
+  fi
+fi
+
 {
   echo "slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start $start_txt $offs_txt), graded automatically"
   echo
@@ -245,6 +272,21 @@ echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot} capture
     echo
   fi
   out=$(bash "$VERIFY" "$slot_tag" 2>&1); rc=$?
+  # A pending read is not a verdict (the verifier says so itself on its RESULT
+  # line). Re-read instead of publishing a non-verdict, bounded: the edge wait
+  # above should have put us past the arm, so this only fires when the arm is
+  # LATE -- and then the last read is what gets posted, so a genuinely absent
+  # arm still shows up as class=unknown / pending rather than as a silent pass.
+  rd=0
+  while [ "$rc" = 3 ]; do
+    rd=$((rd+1))
+    if [ "$DRY" = 1 ] || [ "$rd" -ge "${GRADE_READ_TRIES:-10}" ] \
+       || [ "$(date +%s)" -ge "$((slot_ep + EDGE_DEADLINE_S))" ]; then
+      break
+    fi
+    sleep 3
+    out=$(bash "$VERIFY" "$slot_tag" 2>&1); rc=$?
+  done
   printf '%s\n' "$out" | sed 's/^/  /'
   echo
   # Verifier identity: the gate that grades must be the committed blob.

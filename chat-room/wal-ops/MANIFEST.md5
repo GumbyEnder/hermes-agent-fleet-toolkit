@@ -6,7 +6,7 @@ ab5f31edb85beea1e8f4538e73d7de44  check-manifest.sh
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
 1b7d9a5b1c7058b4605cf7ce17248985  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
-ca3ce404fc1cebac0f4dc48292365b4a  grade-slot.sh
+409e19d9b357fb85ba1923cf9bbad291  grade-slot.sh
 0ed272593f2c16241519002529aca4e6  install-mirror-legs.sh
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 18b7941f28ac505f29e5e92a046226bd  manifest-truncation-2026-11-14.md
@@ -44,7 +44,7 @@ bcfaae45a7431097906c5ffd2836d1c9  test-verify-skip-path-arm.sh
 23f2d0d7257bd156665be09463db6ab4  test-wal-holder-exclusion.py
 5e223e475405e36d1a13275a1a901744  test-wal-verdict-stall.py
 bd4df5ea7f9741be0b5f54a02c54a0a0  test-witness-wal-line.sh
-cba79c57ee83158e6855342924680f42  verify-slot-manifest.sh
+eaf58e985d98b23237d1e4f3363c6321  verify-slot-manifest.sh
 a11a0feba201c05f87751973edb361e6  wal-checkpoint.sh
 5271966c1a06f1aa591d3f598fefd9d8  wal-keeper.py
 3a57232cb8e226b8b6fe2c9c8feb04fc  wal-unlink-watch-verdict.py
