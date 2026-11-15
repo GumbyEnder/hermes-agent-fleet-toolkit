@@ -297,9 +297,12 @@ silent pass, because the two invocations differ only in the rc they never see.
   went 18,695 B -> 20,477 B at 16:26:14 on the SAME inode 17695197 with `nlink=3`, so a
   document can move under a quoted triple and still be one blob on three names. Restamp the
   triple against the file rather than assuming movement implies a broken arm.
-- **These four docs are not rostered.** None of `wal-lifecycle.md`, `wal-forensics.md`,
-  `wal-census.md`, `live-process-grading.md` appears in `MANIFEST.md5` (34 rows), so a doc
-  edit owes no manifest row; `check-manifest.sh` rc=0 is independent of the doc-link gate.
+- **These gated docs are not rostered.** None of `wal-lifecycle.md`, `wal-forensics.md`,
+  `wal-census.md`, `live-process-grading.md`, `rotated-log-siblings.md` appears in
+  `MANIFEST.md5`, so a doc edit owes no manifest row and `check-manifest.sh` rc=0 is
+  independent of the doc-link gate. Do not quote the row count here: it moved 34 -> 36 on
+  2026-11-14 when two script arms were added, and a stale count in a repo doc is the same
+  defect as a stale line number. Read it with `wc -l < MANIFEST.md5` when it matters.
 
 - **A doc that exists in only ONE profile is invisible to the gate.** `DOCS` is a whitelist, so
   `rc=0` on twelve arms says nothing about the files that are not in it: a reference with no repo
