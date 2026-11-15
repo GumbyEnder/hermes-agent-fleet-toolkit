@@ -108,11 +108,27 @@ rm -rf "$rs_tmp"
 # 3 when it would write anything; this gate treats rc=3 as drift on its own, and only
 # uses the text to say WHICH leg. A gate is a fact about the sentence it parses, so the
 # parse never decides green alone.
-m_ok=0; m_drift=0; m_skip=0; m_state=measured
+# A VERDICT WITHOUT A COORDINATE IS NOT EVIDENCE. Measured 2026-11-15: this gate read
+# `mirror_ok=4 mirror_drift=0` over /mnt/nas at 16:05, and an absent-leg drill run with
+# NAS pointed at a scratch tree prints a line of exactly the same shape. So `mirror=`
+# alone cannot be compared to another run's `mirror=` -- the drill that mints a
+# trustworthy 4/0 is the one most likely to be quoted as if it were the share. The
+# writer now names every leg root it reads (`root  <dir>`), and the verdict line
+# carries them as mirror_root=<roots>. A writer that prints no root line gets
+# mirror_root=unreported and rc=1: an unread coordinate cannot pass, for the same
+# reason an unread contract cannot pass.
+m_ok=0; m_drift=0; m_skip=0; m_state=measured; m_roots=unreported
 if [ -x ./install-mirror-legs.sh ]; then
   # REQUIRE_LEGS=1 pinned: an inherited REQUIRE_LEGS=0 is a rehearsal opt-out and must
   # not be able to turn this gate's absent-directory FAIL back into a silent skip.
   m_out=$(REQUIRE_LEGS=1 ./install-mirror-legs.sh --dry 2>&1); m_rc=$?
+  m_roots=$(printf '%s\n' "$m_out" | sed -n 's/^root  //p' | paste -sd, -)
+  [ -n "$m_roots" ] || m_roots=unreported
+  if [ "$m_roots" = unreported ]; then
+    echo "FAIL mirror coordinate (writer printed no 'root  <dir>' line: the directory this run measured is unknown, so its verdict cannot be attributed to a share)"
+    rc=1
+    [ "$m_state" = measured ] && m_state=unrooted
+  fi
   m_ok=$(printf '%s\n' "$m_out" | grep -c '^ok   ')
   m_drift=$(printf '%s\n' "$m_out" | grep -c '^dry  would write')
   m_skip=$(printf '%s\n' "$m_out" | grep -c '^skip ')
@@ -120,13 +136,16 @@ if [ -x ./install-mirror-legs.sh ]; then
   if [ "$m_absent" -gt 0 ]; then m_state=absent; fi
   if [ "$m_skip" -gt 0 ]; then
     printf '%s\n' "$m_out" | grep '^skip ' \
-      | sed 's|^skip |FAIL mirror skip (published leg was NOT measured, dir absent): |'
+      | sed 's|^skip |FAIL mirror skip (published leg was NOT measured, dir absent): |; s|$|; repair: mount the leg root, then ./install-mirror-legs.sh|'
     m_state=skipped
     rc=1
   fi
   if [ "$m_drift" -gt 0 ]; then
+    # The FAIL line carries the command that clears it. A gate that only says "stale"
+    # makes the reader hunt for the writer; the repair is one path and it belongs on
+    # the artifact, not in a doc.
     printf '%s\n' "$m_out" | grep '^dry  would write' \
-      | sed 's|^dry  would write |FAIL mirror drift (published leg is stale): |'
+      | sed 's|^dry  would write |FAIL mirror drift (published leg is stale): |; s|$|; repair: ./install-mirror-legs.sh|'
     rc=1
   fi
   if [ "$m_rc" -eq 3 ]; then
@@ -145,8 +164,12 @@ if [ -x ./install-mirror-legs.sh ]; then
     m_state=skipped
     rc=1
   elif [ "$m_rc" -ne 0 ]; then
-    printf '%s\n' "$m_out" | grep '^FAIL'
-    echo "FAIL mirror legs: ./install-mirror-legs.sh --dry exited $m_rc"
+    if [ "$m_absent" -gt 0 ]; then
+      printf '%s\n' "$m_out" | grep '^FAIL absent' \
+        | sed 's|^FAIL absent |FAIL mirror absent (leg directory is not there, so the leg was never measured): |; s|$|; repair: mount the leg root, then ./install-mirror-legs.sh|'
+    fi
+    printf '%s\n' "$m_out" | grep '^FAIL' | grep -v '^FAIL absent'
+    echo "FAIL mirror legs: ./install-mirror-legs.sh --dry exited $m_rc over mirror_root=$m_roots; repair: ./install-mirror-legs.sh"
     rc=1
   fi
 else
@@ -154,5 +177,5 @@ else
   echo "FAIL mirror legs: ./install-mirror-legs.sh is not executable -- the published-leg contract is not readable"
 fi
 
-echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip rc=$rc"
+echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_root=$m_roots mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip rc=$rc"
 exit $rc

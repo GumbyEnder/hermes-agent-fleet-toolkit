@@ -72,6 +72,24 @@ verify-slot-manifest.sh|$NAS
 # hashed it. One leg, the NAS one -- ~/.local/bin carries no verifier, and
 # inventing one would be a leg nothing runs.
 
+# --- THE COORDINATE ----------------------------------------------------------
+# Output from this script is quoted as evidence that a published leg was measured.
+# Two runs over two different directories print byte-identical `ok`/`dry`/`skip`
+# lines, so a reader cannot tell a scratch rehearsal from a run over the real share.
+# Measured 2026-11-15: with NAS pointed at a scratch tree, an absent-leg drill and a
+# green run over /mnt/nas produce the same shape of line; the verdict travels but the
+# directory does not, and the drill is precisely the run that mints a trustworthy 4/0
+# for the wrong root. So every run names the roots it is about to read, before it
+# reads them, one line each in first-seen order:
+#     root  <dir>
+# `--dry` prints it too. A caller quoting a verdict without this line is quoting a
+# number with no coordinate, and the gate treats a missing coordinate as a FAIL.
+roots=$(printf '%s\n' "$LEG_TABLE" | sed '/^[[:space:]]*$/d' \
+        | awk -F'|' '{print $2}' | tr ':' '\n' | awk 'NF && !seen[$0]++')
+while IFS= read -r d; do
+  [ -n "$d" ] && echo "root  $d"
+done <<< "$roots"
+
 rc=0
 would=0
 skipped=0

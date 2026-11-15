@@ -1,12 +1,12 @@
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
-1902cab5a41bcf7f16182bd078c7e76d  check-manifest.sh
+ab5f31edb85beea1e8f4538e73d7de44  check-manifest.sh
 84b66d0d4a2e29ae8c1dbebf1ec6665c  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
 1b7d9a5b1c7058b4605cf7ce17248985  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 ca3ce404fc1cebac0f4dc48292365b4a  grade-slot.sh
-4c4baeba8236699799bc7d9434029055  install-mirror-legs.sh
+1256a203ada6f7448bb25ca468894183  install-mirror-legs.sh
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 18b7941f28ac505f29e5e92a046226bd  manifest-truncation-2026-11-14.md
 2defb57c2bfa3bded2703aa1364caf52  probe-f1.py
