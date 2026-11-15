@@ -710,12 +710,16 @@ Moved to **`wal-forensics.md`** (`## The dwell/pending column is measured in tic
   since 21:27:50.
 - **Describe the grid as `ExecMainStart + 3600k + accumulated overshoot`, never as a fixed second of the
   hour.** Measured slot seconds walk `10:28:33.760681` -> `11:28:34.073259` -> `12:28:34.388698`, i.e.
-  **+0.31 s/hr** of sleep-first drift, so ":28:33 of the hour" is already wrong in the third decimal place
+  **+0.31 s/hr** of sleep-first drift over 3 slots — a WINDOW, not a rate: the same series out to
+  `19:28:37.766179` is 9 slots / **+4.005498 s** (+0.445 s/hr) and one slot (`16:28:35.937736` ->
+  `17:28:36.904592`) moved 0.97 s, so ":28:33 of the hour" is already wrong in the third decimal place
   and someone will later call a 0.6 s difference a failure. A 60 s offset leaves ~190 h of headroom, so the
   drift is not urgent — it only means the slot must be derived from `ExecMainStartTimestamp` at read time.
 - **A phase without its referent is a different measurement, and the two clocks diverge.** Janitor vs the
   slot TOKEN walks 60.003767 -> 59.708350 -> 59.410052 -> 59.073002 s at 10:28:33 -> 13:28:34, while the
-  janitor's own wall grid moves 09:29:33.762138 -> 13:29:33.814917 (+52.779 ms in 4 h). The same hour reads
+  janitor's own wall grid moves 09:29:33.762138 -> 13:29:33.814917 (+52.779 ms in 4 h) and then only
+  +8.940 ms over the NEXT 6 h, to 19:29:33.823857 — 13.19 vs 1.49 ms/h, so that grid drifts at no fixed
+  rate either and "+52.779 ms in 4 h" is a window, not a per-hour constant. The same hour reads
   60.78 against the derived second and 60.0038 against the stamp — both true, 1.07 s apart and widening.
   Quote "slot token + 59.07 s" / "ExecMainStart + 60.76 s"; never "60 s" as a constant.
 - **The janitor is now the arm that meets a long-running transaction, and that is the shape that looks like
