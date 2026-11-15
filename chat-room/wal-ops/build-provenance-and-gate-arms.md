@@ -307,3 +307,13 @@ rejects the same mask plus `FAN_CREATE` (errno 22, EINVAL) or plus `FAN_MOVED_TO
 rc=0). So the shape is a **second, NOTIF-class instance** whose only job is to see directories
 appear and add a mark to each on the pre-content instance — not a mask change to the arm that
 is currently the only durable witness.
+
+## `docs_oid` pins the ROSTER, not the doc set (2026-11-15)
+
+`check-wal-doc-links.sh:142` is `git hash-object --stdin` over the seven DOCS **filenames**, so
+`docs_oid=56364eaa…` printed identically at 67c112a, 6756f21 and cbc035e while cbc035e edited three
+of the seven docs (build-provenance, live-process-grading, rotated-log-siblings). Quote it as the
+roster/contract pin only. A doc set's identity is the seven per-doc md5s the gate prints on its arm
+lines, plus the gate's own build: md5 `50cad920` / 8,650 B on 2026-11-15, not the `c7a74079` /
+5,332 B build cited above. A pin that cannot move when its object moves is the same defect class as
+a count that outlives its cut.
