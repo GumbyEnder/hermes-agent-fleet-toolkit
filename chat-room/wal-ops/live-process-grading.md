@@ -332,6 +332,32 @@ the candidate: `RESULT PASS (0 failed arms)` — healthy 3 vs 3 (installed vs pp
 into the unit's cgroup 4 vs 3, after the kill 3 vs 3 — plus a stub `systemctl` returning a dead MainPID
 printing `-1`.
 
+## The waiter's own firing is the arm three harnesses missed
+
+`live_turns()` being right does not make the waiter right: the predicate was graded four times, and until
+2026-11-14 20:18 nothing had ever exercised the waiter **end-to-end** — arm, quiesce loop, restart branch,
+`-1` branch. `chat-room/wal-ops/test-waiter-e2e.sh` does, without touching the real dispatcher: it starts
+throwaway transient user units ("sinks"), points a byte-identical copy of the installed script at one
+(`arm 0` diffs the copy and fails unless the only changed lines are `UNIT=` and `LOG=`), and intercepts
+every `restart` with a stub `systemctl` that forwards `show` to the real binary and only logs the restart.
+
+11 arms, `0 failed`, run 20:21 against the installed 6,921 B / `5fc43fd9` build while the real unit kept
+`MainPID 2419516`, `ExecMainStart 11:31:30`, `NRestarts=0`: healthy 3; orphan-in-cgroup 4 vs ppid 3; after
+the kill 3 vs 3; dead MainPID `-1`; **waiter on `-1` burns its idle deadline, logs `GAVE UP ... live_turns=-1`,
+exits 1, and makes zero restart attempts**; waiter on 0 turns restarts exactly once and names the unit it was
+asked to restart. That last pair is the point — the `-1` fallback was argued from the code, and now the
+firing itself is observed in both directions.
+
+Two fixture traps, both measured, both worth carrying:
+
+- **A child spawned from the test shell is in the shell's cgroup, not the unit's.** The orphan leg silently
+  graded 3 vs 3 until the spawner migrated *itself* into the unit's `cgroup.procs` before forking
+  (`E2E_CGROUP`); membership is inherited at fork, so migrate first, double-fork second.
+- **`grep -q` on `/proc/<pid>/cmdline` returns 1 even when the text is there** — the file is NUL-separated
+  and this grep suppresses binary matches. `grep -aq` matches. A shape filter written with plain `grep -q`
+  is a filter that always says "not a turn", i.e. a blind 0 in a fixture that then grades the predicate
+  green for the wrong reason.
+
 ## A probe of a collected transient unit writes the journal residue it then reports
 
 `wake-dispatcher-reload-<sha>.service` was collected at its deadline (exit 1, 13:11:29), and five
