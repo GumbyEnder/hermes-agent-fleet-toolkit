@@ -300,3 +300,14 @@ silent pass, because the two invocations differ only in the rc they never see.
 - **These four docs are not rostered.** None of `wal-lifecycle.md`, `wal-forensics.md`,
   `wal-census.md`, `live-process-grading.md` appears in `MANIFEST.md5` (34 rows), so a doc
   edit owes no manifest row; `check-manifest.sh` rc=0 is independent of the doc-link gate.
+
+- **A doc that exists in only ONE profile is invisible to the gate.** `DOCS` is a whitelist, so
+  `rc=0` on twelve arms says nothing about the files that are not in it: a reference with no repo
+  copy has no counterpart md5 to compare, and drifts silently while every gate stays green.
+  Before quoting a reference doc, `git ls-files chat-room/wal-ops/<doc>` — empty output means the
+  doc is private to one side, whatever its content.
+- **Promote in the same commit that converts line refs to symbols.** Measured 2026-11-14: a
+  286-line slot-grading doc whose header read "all line numbers are from `bus.py` at 44d43ae" was
+  40-100 lines out of date within an afternoon (`_slot` 445 -> 507, `_slot_lock` 124 -> 133,
+  `basename` 397 -> 453, `grade-slot.sh`'s `VERIFY=` 44 -> 79). A private doc can carry positions;
+  a repo doc cannot, because every reader re-quotes them after the file moves.
