@@ -528,6 +528,15 @@ read off this box while `origin/master` was still `421abd3` — the peer's commi
 unpublished, and the gate line looked landed. Pair every gate line with
 `git rev-parse HEAD origin/master`, or say "unpublished" out loud; "landed" requires the remote ref.
 
+**The pair takes two full shas, and `--short` cannot carry it.** `rev-parse --short` is a
+single-revision form: `git rev-parse --short HEAD origin/master` prints `fatal: Needed a single
+revision` and exits 128 with no sha on stdout at all — measured 2026-11-15 on git 2.43.0 in two
+unrelated repos, and `--short=7` fails the same way. Since `wal-forensics.md:434` recommends
+`rev-parse --short HEAD` for a dirty-status quote, the two habits meet exactly here: the
+abbreviated pairing fails CLOSED and reads like "no such ref" instead of the argument-count error
+it is. Pair un-abbreviated (`git rev-parse HEAD origin/master`), abbreviate afterwards if the line
+needs it, never inside the call.
+
 ## An open carrier set has rungs, not a total — and a `State:` triple is only current after the LAST write
 
 Both measured 2026-11-15 against `copy-arm-semantics.md` and this file on this box, re-derived here
