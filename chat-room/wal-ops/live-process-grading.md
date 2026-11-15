@@ -499,6 +499,13 @@ two directories short.
 - **A copy count is a file count, not a distinct-hash count.** "Five builds" and "thirteen files"
   are both true and describe different things; quoting one alone understates how many tool bodies
   sit on the box.
+- **A count is a quantity at a root set; a commit count is a quantity at a HEAD.** "13 files" and
+  "18 files" were both true in the same minute because the walks had different roots, and "6" and
+  "10" commits were both true because one was a wall-clock window and the other a rev range.
+  Measured 2026-11-14: `git rev-list --count b29c707..97132a8` = 10 at 18:51, and the identical
+  command read 23 at 20:5x with HEAD `65f2048` -- the range is not stable either, so quote range +
+  HEAD. No ledger row can supply a size (rows carry `before/after{path,sha256}` and nothing else),
+  so a size quote is a same-turn `md5 + mtime + inode` stat, closer file first.
 - **`MAX_SKILL_CONTENT_CHARS = 100_000` in all five.** Only the Apr-11 clone moves the constant off
   `:110`. Two call-site dialects exist -- `if err := _validate_content_size(...)` in the three 47k
   builds, `err = _validate_content_size(...)` in the two older ones. That is a refactor, not a line
