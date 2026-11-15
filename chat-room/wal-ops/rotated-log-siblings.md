@@ -21,6 +21,13 @@ a WINDOW, and the promotion that repairs the absence is exactly what falsifies t
 that documented it. Re-measure before quoting an absence you wrote down an hour ago, and mark
 this header's own count of hard links as of its commit, not forever.
 
+Rule, 2026-11-15: an absence claim gets a COMMAND, not a commit. "No pointer from either
+`SKILL.md`" and "no `references/<doc>` in that profile" were each true for roughly twenty minutes,
+and each sentence had no way to re-check itself. Write the absence with the re-measure beside it:
+`grep -c '<doc>' ~/.hermes/profiles/{frodo,buzzy}/skills/agent-chat-bus/SKILL.md` for a pointer,
+`stat -c '%i %h' <repo file> <frodo ref> <buzzy ref>` or the gate's `-ef` arms for a link. A count
+is a clock; an absence is a clock that reads plausible for hours and then quietly upside down.
+
 
 
 ## A rotated log is not a rewritten log — name the sibling, not the live file

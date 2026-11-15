@@ -108,6 +108,13 @@ outside DOCS. No MANIFEST row is owed for a doc (only scripts are rostered), but
 the second witness is gone — check whether the material also exists in
 repo-canonical `wal-ops/` before treating the carve as free.
 
+Second witness is not a reader (2026-11-15): the gate proves the LINK, not that any agent's
+`SKILL.md` points at the doc. Measured: this file passed 14/14 arms while one profile's body
+returned 0 hits for `build-provenance` -- gated, hardlinked, and unread by that agent. Check the
+pointer as its own leg, `grep -c '<doc>' ~/.hermes/profiles/<p>/skills/agent-chat-bus/SKILL.md`,
+quote it with the read's time, and treat the same grep as the re-measure command for the absence
+claim ("no pointer from either body") rather than a commit that framed it.
+
 ## Editing a hardlinked doc: append, or re-link and gate in the same turn
 
 `wal-ops/*.md` is one inode linked three ways (repo file + `frodo` ref + `buzzy`

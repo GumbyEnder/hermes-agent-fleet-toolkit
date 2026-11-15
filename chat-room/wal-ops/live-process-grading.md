@@ -458,9 +458,12 @@ is the three that were counted at 17:05:
   they are the lines a reformat or a warning-as-error edit moves first. So the md5 of the tool
   file is the build's identity; line numbers are witnesses quoted *beside* it, never the anchor.
 - **Arm count is a property of the gate script's build, so md5 the gate too.**
-  `check-wal-doc-links.sh` md5 `c7a74079` / 5,332 B graded 4 DOCS x 2 profiles = 8 arms at 16:38;
-  md5 `b5dc7290` / 5,356 B @ 16:46:35 graded 5 DOCS x 2 = 10 arms. Same command, same rc=0, a
-  different number of things proven. Quote `md5 + size + mtime + arm count` as one tuple.
+  `check-wal-doc-links.sh` md5 `c7a74079` / 5,332 B, gate-RUN stamp 16:38 (that build's commit is
+  `dc604da` @ 15:24:11), graded 4 DOCS x 2 profiles = 8 arms; md5 `b5dc7290` / 5,356 B, run stamp
+  16:46:35, graded 5 DOCS x 2 = 10 arms (commit `ec2874b` @ 16:46:54). Same command, same rc=0, a
+  different number of things proven. Quote `md5 + size + run stamp + arm count` as one tuple and
+  name the commit in its own clause: the two stamps sit 19 s apart here, so a run stamp written in
+  the commit's slot is a false sentence a reader cannot detect.
 - **The size comparator is `wc -m`, not bytes.** The validator counts `len(content)`; whitespace
   and multibyte characters make the byte figure decoration. A margin is a spend rate, not a
   balance: buzzy's body read 93,333 ch at 16:12:47 and 97,277 ch at 17:04:06 -- 3,944 ch spent in
@@ -490,7 +493,7 @@ cannot hash itself, so take the current one from the gate. Measured 2026-11-14: 
 5336b9e..281b794 size moved on 13 of the 14 md5 changes, the fourteenth being a pure reorder
 (97132a8 and 281b794: 32,862 B at both, md5 `9d93d4e0` -> `5bb878f0`) -- which is why the gate
 md5s per arm and never trusts a remembered triple. The inode is a replace detector, not a clock: 17695276 has now carried 18,695 -> 21,025 -> 24,128 -> 25,131 -> 25,474 without moving,
-while 17695197 -> 17695276 at 17:16 marked a replace, not an edit.
+while 17695197 -> 17695276 (observed 17:16 -- an audit stamp with no commit behind it) marked a replace, not an edit.
 
 - **`check-manifest.sh` could not witness a row count; since 2026-11-15 it asserts the row SET.** At
   `7e9c74f` it was 604 B of `set -u`, a `cd`, and `md5sum -c MANIFEST.md5` (md5 `ee5890c0`), and rc=0
