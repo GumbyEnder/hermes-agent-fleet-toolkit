@@ -783,8 +783,9 @@ A green arm is not evidence the limit did not fire, and a red arm F does not gua
 pass/fail count: the count is a cadence, the journal is the state.
 
 **The second shape is arm-specific and the first is the invariant** (measured on frodo's box
-2026-11-15 12:08-12:12 EST, pre-fix blob `8611227` md5 `e36f7b06`, 6 back to back with the journal
-sliced per run from its own start):
+2026-11-15 12:08-12:12 EST, pre-fix `rehearse-run-failure.sh` blob `8611227` md5 `e36f7b06`
+(5,238 B; post-fix blob `91c1c8e` md5 `d265f17`, 7,278 B), 6 back to back with the journal sliced
+per run from its own start):
 
     run1 rc=0 15 ok PASS        shape1=0              token=0
     run2 rc=1 12 ok             shape1=3              token=0
@@ -810,6 +811,28 @@ with shape1=2 and token=2 inside its own window. Also on this box: `systemctl --
 DefaultStartLimitBurst -p DefaultStartLimitIntervalUSec` -> `5` / `10s`, and
 `SuccessExitStatus=1` is line 12 of the **installed** leg (603 B, trailing newline present; the repo
 leg is 602 B, no trailing newline) -- a size quoted without its leg is a leg-less citation.
+
+**Reproduced on a second box** (buzzy, 2026-11-15 12:40:32-12:41:15 EST, same pre-fix blob
+`8611227`): the six rows land identically -- rc `0,1,1,0,1,0`, ok `15,12,14,15,12,15`, shape1
+`0,3,2,0,3,2`, shape2 `0,0,1,0,0,1`, token `0,0,2,0,0,2`. Scored across the six windows, with the
+two PASS windows counted as the false-positive control:
+
+    witness                                     hit windows   clean windows it fires in
+    "Start request repeated too quickly"            4 of 4            0 of 2
+    "Failed with result 'start-limit-hit'"          2 of 4            0 of 2
+    "Failed to start ... rehearsal: long run"       2 of 4            0 of 2
+    "Failed to start guardfail.service - "          4 of 4            2 of 2
+
+So the prefix Description arm is worse than arm-specific: both PASS windows (run1, run4) carry two
+`Failed to start` rows from the stand-in, making it score 6 of 6 windows and invent two hits. And the
+result line took **three** signatures for the same refusal on this box -- `signal` in runs 2 and 5
+(the oneshot caught by cleanup's SIGTERM), `start-limit-hit` in runs 3 and 6, `exit-code` on clean
+arms. The state-vs-fault point is not a two-valued split, and the `exit-code`/`start-limit-hit` pair
+is itself box-specific cadence.
+
+Post-fix blob `91c1c8e` on the same box, 6 back to back (12:41:56-12:42:09, 62 s): 6/6 `rc=0`,
+`15 ok`, `RESULT PASS`, shape1=0 in all six windows, no `start-limit-hit` row, and only one
+Description in the windows -- the fix removes the second Description rather than disambiguating it.
 
 The transferable rule: **an arm that asserts on unit state must wait for that state, not for a
 duration, and a scratch unit must opt out of limits the driver deliberately violates.** Both faults
