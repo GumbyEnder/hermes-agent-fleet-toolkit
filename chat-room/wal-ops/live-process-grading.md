@@ -427,7 +427,7 @@ Every triple below is the generation this paragraph replaced, never the current 
 cannot hash itself, so take the current one from the gate. Measured 2026-11-14: this file was 21,025 B / `a837cc63` / inode 17695276 / nlink 3 at 16:40, and
 24,128 B / `c8ff9810` / inode 17695276 / nlink 3 at 18:26. An in-place edit keeps the inode (so
 `-ef` and `nlink` survive a doc change) while md5 moves with every commit to it -- across
-5336b9e..281b794 size moved on 11 of the 12 md5 changes, the twelfth being a pure reorder
+5336b9e..281b794 size moved on 13 of the 14 md5 changes, the fourteenth being a pure reorder
 (97132a8 and 281b794: 32,862 B at both, md5 `9d93d4e0` -> `5bb878f0`) -- which is why the gate
 md5s per arm and never trusts a remembered triple. The inode is a replace detector, not a clock: 17695276 has now carried 18,695 -> 21,025 -> 24,128 -> 25,131 -> 25,474 without moving,
 while 17695197 -> 17695276 at 17:16 marked a replace, not an edit.
