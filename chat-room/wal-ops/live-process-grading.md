@@ -272,8 +272,11 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   `852b388e` (`687feb3`), `6214496a` (`fbcb100`), `b911e9f5` (`e4655b3`), `bb2fccba` (`a2ad076`),
   `91899caf` (`9234651`). This doc's OWN bytes did not move at two of those: it read `6108fd84` at
   both `b0068a8` and `687feb3`, `383b0910` at `fbcb100` and `e4655b3`, `20bff728` at `a2ad076` and
-  `9234651` — so `docs_md5` witnesses the ROSTER, and quoting it as evidence about one doc is the
-  same category error as quoting `docs_oid` for content.
+  `9234651` — so `docs_md5` witnesses the SET, not any one doc (it folds eight `(sha256, name)`
+  pairs together, so a rename moves it too), and quoting it as evidence about one doc is the same
+  category error as quoting `docs_oid` for content. Naming it a ROSTER witness is the same swap in
+  the other direction: the roster pin is `docs_oid`, and `docs_md5` is the one field that moves when
+  a doc's bytes do.
 - **`ino` is a recycled label, not an identity: key on `(ino, birth)`, and `ctime` − `birth`
   expires at the next write.** Measured 2026-11-15 14:22: this doc is `ino 17748195` again —
   the same NUMBER as the `13:56:31` mint listed above — with birth `14:18:07.951690178`, mtime
