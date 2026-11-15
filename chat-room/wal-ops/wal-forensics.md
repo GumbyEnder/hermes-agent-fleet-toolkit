@@ -237,9 +237,14 @@ Read with the ladder above, because a file can walk the whole ladder more than o
     **frames = Σ pages dirtied over all committed transactions** — one frame per dirty page per commit,
     nothing for a commit that dirtied none. The ladder's `+1` is the database header page (page 1) that
     the schema-creating commit dirties, and it appears exactly once because the WAL records it once;
-    it is not a structural constant. (The 400-row commit above writes page 1 *again*, `[1…52]`, because
-    it moves the change counter — a commit that dirties N pages appends N frames, page 1 included when
-    this commit is one of them.)
+    it is not a structural constant. (A page dirtied three times inside one transaction still appends
+    **one** frame — 3 `UPDATE`s of one row: frames 3 → 4. And page 1 reappears whenever one of its own
+    *header* fields moves, and only then: the 400-row commit above writes it again as `[1…52]` with
+    `dbsize_pages` **2 → 52** while the **change counter stays 2**; a `DELETE` that frees pages writes
+    page 1 with `freelist_trunk` 0 → 3 and `freelist_count` 0 → 38; one plain single-row commit after a
+    `TRUNCATE` writes `[2]` alone. Over one db's whole life here (CREATE, 300-row growth, DELETE-all,
+    10-row refill) the change counter read 2 and `version_valid_for` 2 in **every** page-1 frame, so it
+    is not the mechanism — schema cookie, in-header page count and the freelist pointers are.)
   **Why a Python fixture's ride arm silently does not ride:** `sqlite3`'s legacy transaction control
   (`isolation_level=''`, the default) emits the implicit `BEGIN` only before `INSERT`/`UPDATE`/
   `DELETE`/`REPLACE` — **DDL runs in autocommit**, so `CREATE TABLE` commits on its own and the "ride"
