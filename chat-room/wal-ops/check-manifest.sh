@@ -77,5 +77,34 @@ if tracked=$(git ls-files . 2>/dev/null) && [ -n "$tracked" ]; then
 fi
 rm -rf "$rs_tmp"
 
-echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing rc=$rc"
+# --- MIRROR LEGS -------------------------------------------------------------
+# The roster hashes the REPO worktree. Some of these files are also published at a
+# path a unit execs or a room post cites as "installed at ...", and the rowset
+# assertion above says nothing about that path. Measured 2026-11-15 09:38: commit
+# 6158258 moved grade-slot.sh in the tree, in the roster AND in ~/.local/bin, while
+# /mnt/nas/host-ops/agent-chat/grade-slot.sh kept the pre-fix bytes (a1b524e9,
+# 15,606 B) for 25 minutes and this gate read green throughout. A green row count is
+# a fact about the set the gate reads; the published legs are the set that runs.
+#
+# The leg table lives in install-mirror-legs.sh, so the gate asks the WRITER what it
+# would do rather than carrying a second copy of the table that can drift from it.
+# A missing or erroring writer is a FAIL, never a skip: an unread contract cannot pass.
+m_ok=0; m_drift=0; m_skip=0; m_state=measured
+if [ -x ./install-mirror-legs.sh ]; then
+  m_out=$(./install-mirror-legs.sh --dry 2>&1); m_rc=$?
+  m_ok=$(printf '%s\n' "$m_out" | grep -c '^ok   ')
+  m_drift=$(printf '%s\n' "$m_out" | grep -c '^dry  would write')
+  m_skip=$(printf '%s\n' "$m_out" | grep -c '^skip ')
+  if [ "$m_drift" -gt 0 ]; then
+    printf '%s\n' "$m_out" | grep '^dry  would write' \
+      | sed 's|^dry  would write |FAIL mirror drift (published leg is stale): |'
+    rc=1
+  fi
+  [ "$m_rc" -eq 0 ] || { printf '%s\n' "$m_out" | grep '^FAIL' ; rc=1 ; }
+else
+  m_state=nowriter; rc=1
+  echo "FAIL mirror legs: ./install-mirror-legs.sh is not executable -- the published-leg contract is not readable"
+fi
+
+echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip rc=$rc"
 exit $rc
