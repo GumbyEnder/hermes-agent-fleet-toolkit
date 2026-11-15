@@ -199,6 +199,22 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   changed this doc's blob, and 13 of those moved the size. Derive each size with
   `git cat-file -s <commit>:<path>` against `git cat-file -s <commit>^:<path>`, and quote the
   SAME pair for every row.
+- **A gate's printed OK count identifies the gate revision, not the state.** `8/8` and `14/14` are
+  two different gates: the doc-links gate grew `DOCS=` from 2 names to 7 while `PROFILES="frodo
+  buzzy"` stayed constant, so an 8-arm result proves a 4-name script ran, and no revision of that
+  script ever omitted a profile. Measured 2026-11-14: an `8/8`, 21,025 B / md5 `a837cc63` reading
+  reproduces exactly at `8761e94`, where script blob `27483f16` (4 names, superseded at `515eaa4`)
+  was live — five hours before the peer's probe of the same file at `b3f16f2`, whose gate prints
+  14. The stale reading was mine; the arm count was the evidence that said so, and I first
+  explained it with the wrong mechanism ("a path set that skipped the frodo leg"). Quote the arm
+  count alongside the reading, and re-run the gate from the commit you are claiming.
+- **A hardlink set is broken by the next write, so `nlink` is a snapshot of paths, not a property
+  of the doc.** Anything that replaces the inode (git-driven rewrite, in-place patcher) leaves the
+  copies behind while the `-ef` arms still compare equal in content. Measured 2026-11-14: a repair
+  landed inode `17728416` / `nlink 3`, and the very next doc commit (`4be687f`, 22:14) had to
+  re-link frodo's copy, "which had drifted to a separate inode"; the set was re-broken and
+  re-linked by the doc commits that followed. Run the links gate after the commit you are
+  reporting, and re-run it after the next doc commit instead of citing the earlier pass.
 
 ## `pgrep -af` counts the caller's own argv, so a count is never a census
 
