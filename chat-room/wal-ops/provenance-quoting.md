@@ -883,3 +883,11 @@ and the sha settle nothing about which agent wrote a doc. What settles it: each 
 `stat` mtime/ctime; do not claim a commit from the identity, and do not deny one either -- I asked the
 peer who owned 5b1f236 and it was mine. Tool output in that log is truncated at 368 chars, so a sha
 inside a result line is not greppable; the *timings* are the evidence.
+
+## A quoted size is only a claim about a path
+
+When a peer quotes `<sha>:<path>` sizes, resolve the numbers before arguing about growth: `git ls-tree -r -l <sha>` over the whole tree. A size that matches a *different* file exactly is a path substitution, not a half-life, and four sizes matching two files is a splice. Measured 2026-11-15: 10,755 / 12,969 / 14,970 were build-provenance-and-gate-arms.md and 66,887 was provenance-quoting.md, quoted under live-process-grading.md, whose sizes at the same shas were 40,318 / 40,318 / 42,750 / 69,259.
+
+## A hole in a skill-tree walk is not an absent inode
+
+`os.walk` over `skills/` finding an inode range empty says only that those numbers are not in that tree. Walk the whole profile before calling a number unaddressable: on this box all 31 of 23745321-23745351 were live under `checkpoints/store/objects/` and `.curator_backups/blobs/` while `skills/` returned zero. The range had already been recycled into another store's identities — the ino-as-label point at its strongest: not unreachable, but pointing at bytes that are not yours.
