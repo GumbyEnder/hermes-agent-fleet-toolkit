@@ -105,7 +105,7 @@ never a count of rows the filter removed. Measured 2026-11-14 on a scratch dir,
 `closes=359 emitted=240 unresolved=120`, 120/120 file=null rows present with
 file_err=ESTALE, other.txt rows emitted=0.
 """
-import argparse, ctypes, ctypes.util, errno, json, os, platform, select, signal, struct, sys, time
+import argparse, ctypes, ctypes.util, errno, json, os, platform, select, signal, stat, struct, sys, time
 
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 libc.syscall.restype = ctypes.c_long
@@ -118,6 +118,7 @@ FAN_REPORT_PIDFD = 0x80
 FAN_REPORT_FID = 0x200
 FAN_MARK_ADD, FAN_MARK_ONLYDIR = 0x1, 0x4
 FAN_CLOSE_WRITE, FAN_OPEN = 0x8, 0x20
+FAN_CREATE = 0x100
 FAN_OPEN_PERM, FAN_ALLOW = 0x10000, 0x01
 FAN_EVENT_ON_CHILD = 0x08000000
 AT_FDCWD = -100
@@ -191,6 +192,10 @@ def main():
     ap.add_argument("--block-on-open", action="store_true",
                     help="FAN_OPEN_PERM: park each opener until this process allows it, "
                          "so the actor is alive by construction and is always named")
+    ap.add_argument("--depth", type=int, default=1,
+                    help="mark subdirectories of --dir down to this depth (default 1: the direct "
+                         "children). 0 = --dir only. FAN_MARK_MOUNT is never used: it would stall "
+                         "every open on the filesystem whenever the listener stops answering.")
     a = ap.parse_args()
 
     out = open(a.log, "a", buffering=1) if a.log else sys.stdout
@@ -218,6 +223,11 @@ def main():
         mark_mask = FAN_CLOSE_WRITE | FAN_OPEN_PERM | FAN_EVENT_ON_CHILD
     else:
         mark_mask = FAN_CLOSE_WRITE | FAN_EVENT_ON_CHILD | (0 if a.no_open else FAN_OPEN)
+    # FAN_CREATE IS NOT AVAILABLE HERE, measured on 7.0.0-38-generic: the kernel accepts
+    # CREATE/DELETE/MOVED_* ONLY with FAN_REPORT_FID (rc=0 with FID, EINVAL=22 for every
+    # combination without it), and FAN_REPORT_FID + FAN_CLASS_PRE_CONTENT is itself EINVAL at
+    # init. So the permission arm -- the only one that can name the opener -- can NEVER see a
+    # directory created after arm time. Static marks are the whole coverage in this mode.
     rc = libc.syscall(ctypes.c_long(NR_fanotify_mark), ctypes.c_int(fd),
                       ctypes.c_uint(FAN_MARK_ADD | FAN_MARK_ONLYDIR),
                       ctypes.c_uint(mark_mask),
@@ -225,6 +235,54 @@ def main():
     if rc < 0:
         emit({"error": "fanotify_mark failed", "errno": ctypes.get_errno(), "dir": a.dir})
         return 2
+
+    # PER-SUBDIRECTORY MARKS, and the reason is measured, not stylistic: FAN_MARK_ONLYDIR on
+    # --dir reports events for its DIRECT children only, so `cp -a tree/ <dir>/` produced ZERO
+    # rows while the same files copied in directly produced one row each. A mount mark would
+    # cover the recursion but under --block-on-open it parks EVERY open on the filesystem when
+    # this listener stops answering (there is no CLOSE_PERM to bound it), which is an
+    # availability failure, not a measurement cost. So: walk, mark each directory, dedupe by
+    # (dev,ino) so a bind/loop cannot burn the mark budget, never follow a symlinked dir.
+    marks = {"armed": 1, "failed": []}
+
+    def _mark_dir(path: str) -> None:
+        r = libc.syscall(ctypes.c_long(NR_fanotify_mark), ctypes.c_int(fd),
+                         ctypes.c_uint(FAN_MARK_ADD | FAN_MARK_ONLYDIR),
+                         ctypes.c_uint(mark_mask),
+                         ctypes.c_int(AT_FDCWD), ctypes.c_char_p(path.encode()))
+        if r < 0:
+            marks["failed"].append({"path": path, "errno": ctypes.get_errno()})
+        else:
+            marks["armed"] += 1
+
+    def _walk(path: str, depth: int, seen: set) -> None:
+        if depth <= 0:
+            return
+        try:
+            with os.scandir(path) as it:
+                kids = [e.path for e in it
+                        if e.is_dir(follow_symlinks=False)]
+        except OSError as ex:
+            marks["failed"].append({"path": path, "errno": ex.errno, "scan": True})
+            return
+        for kid in sorted(kids):
+            try:
+                st = os.stat(kid, follow_symlinks=False)
+            except OSError:
+                continue
+            key = (st.st_dev, st.st_ino)
+            if key in seen:
+                continue
+            seen.add(key)
+            _mark_dir(kid)
+            _walk(kid, depth - 1, seen)
+
+    if a.depth > 0:
+        try:
+            root_st = os.stat(a.dir, follow_symlinks=False)
+            _walk(a.dir, a.depth, {(root_st.st_dev, root_st.st_ino)})
+        except OSError as ex:
+            marks["failed"].append({"path": a.dir, "errno": ex.errno, "scan": True})
     try:
         mount_fd = os.open(a.dir, os.O_RDONLY | os.O_DIRECTORY)
     except OSError as ex:
@@ -318,12 +376,13 @@ def main():
 
     emit({"start": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "dir": a.dir, "seconds": a.seconds,
           "uid": os.getuid(), "filter": a.only, "drain_s": DRAIN_S,
+          "marks": marks["armed"], "mark_failures": marks["failed"][:8], "depth": a.depth,
           "masks": ("OPEN_PERM|CLOSE_WRITE" if a.block_on_open else
                     "CLOSE_WRITE" if a.no_open else "OPEN|CLOSE_WRITE"),
           "resolve": "ino-scan" + ("" if nr_obh else " (no open_by_handle_at fallback)")})
 
     deadline = time.time() + a.seconds
-    n_open = n_close = emissive = unresolved = self_n = gen = 0
+    n_open = n_close = emissive = unresolved = self_n = gen = n_scan = 0
     while time.time() < deadline and stop_req["sig"] is None:
         r, _, _ = select.select([fd], [], [], DRAIN_S)
         if not r:
@@ -499,7 +558,8 @@ def main():
                   "cmdline": (None if aerr else (ev["cmd"] or "")[:1024])})
             emissive += 1
     counts = {"closes": n_close, "opens": n_open, "self": self_n,
-              "emitted": emissive, "unresolved": unresolved}
+              "emitted": emissive, "unresolved": unresolved, "scan": n_scan,
+              "marks": marks["armed"]}
     if stop_req["sig"]:
         emit(dict({"signal": stop_req["sig"],
                    "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, **counts))

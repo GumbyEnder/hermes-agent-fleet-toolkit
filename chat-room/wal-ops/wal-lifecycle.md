@@ -1073,4 +1073,24 @@ actor), so this instrument belongs in a system unit, not beside the two inotify 
   0.2 ms apart (the wal, the `-shm` and the db of one transaction) all labelled `expect:
   room.db-wal`. The filter must run on the resolved basename; events it cannot name are emitted
   with `file: null` and counted in the `stop` line's `unresolved`.
+- **Coverage is per-DIRECTORY, and the permission arm cannot hook a directory that appears after arm
+  time.** `FAN_MARK_ONLYDIR` on `--dir` reports its DIRECT children only: measured 2026-11-15T01:03 with
+  `--block-on-open`, a file copied into a subdirectory that existed at arm time gave **0 rows at
+  `--depth 0`** and **2 rows at `--depth 1`** (1 named `OPEN_PERM`, 1 `CLOSE_WRITE` actor GONE), the
+  `marks` count going 1 -> 2. So the arm walks `--dir` at arm time and marks every directory
+  (`--depth N`, default 1, dedupe by (dev,ino), symlinked dirs never followed), and prints `marks` in
+  the `start`/`stop` lines with `mark_failures`, because a mark that failed silently is
+  indistinguishable from a quiet directory. `FAN_CREATE` is not available to close the gap: on
+  7.0.0-38-generic the kernel accepts `CREATE`/`DELETE`/`MOVED_*` only with `FAN_REPORT_FID` (mark
+  rc=0 with FID, errno 22 for every combination without it), and `FAN_REPORT_FID |
+  FAN_CLASS_PRE_CONTENT` is itself errno 22 at `fanotify_init`. A tree copied in AFTER arm time
+  therefore yields **0 rows, not a short window** (measured: `cp -a tree dir/`, `marks=1`, 0 events) —
+  that coverage needs a second, notify-class arm, and the permission arm must not be described as
+  covering it.
+- **The units are `hermes-seeder-watch-{frodo,buzzy}.service`; their logs live in
+  `<profile>/logs/seeder-watch-<p>.jsonl`.** Not `seeder-watch-*` — a check of the short name gets
+  "no such unit" and concludes the arm is gone — and never `cache/scratch/`: that dir is pruned at 24 h
+  while the arm runs 86400 s, so the witness expires before the window it describes closes. The buzzy
+  arm also wrote into FRODO's scratch dir until 2026-11-15T01:09; one profile naming another's evidence
+  is the same defect as a peer headroom subtracted from a fresh stat.
 - **A verdict branch pinned to an arm's POSITION dies the moment the grid moves; pin it to the arm's NAME and print the offset you measured.** `witness-split-pair-v2.sh`'s `ORDERED, NOT CONTENTED` branch required BOTH arms inside one 7 s window and read the window's first line as "the first arm". Since the janitor offset change the arms are 58 s apart (measured 2026-11-14: backup `20261114T152835.534068` → janitor `20261114T152933.816930`), so the branch was unreachable from any live capture and every slot fell through to `NO COLLISION in window WITH FRAMES` — true, and read in a ledger as "same instrument, quieter hour" rather than "the branch you are relying on cannot fire". On a reversed window it would have gone further: it would have named the backup POST as the first arm and asserted the pre-offset order. Replacement (commit 4289214, 2026-11-14): `SINGLE-ARM at the offset` fires when exactly one named `src` arm is in the window, reads that arm's own pre/post pair, and prints the arm offset measured from `bus-checkpoint.log` slot tokens labelled **latest slot pair**, because an offset read from the newest pair is not the capture's own hour; `SPLIT-WINDOW` treats both arms in one window as news (offset gone, or a stale/duplicated capture), never as a health grade. **Corollary — a graded cell whose window can no longer hold the shape it was written for must be retired in the same commit that notices it**, and the proof of the replacement must run the SHIPPED gate, not a copy: the script therefore carries `--grade <stored capture>`, which replays a real artifact through the same code path without an hour's wait (`--grade` on the 2026-11-14 12:28/13:28 captures → `SINGLE-ARM`, on a synthetic both-arms fixture → `SPLIT-WINDOW`, on 15:28 → exit 4 unchanged).

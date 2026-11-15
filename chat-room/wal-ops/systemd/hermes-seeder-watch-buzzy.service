@@ -1,10 +1,12 @@
 [Unit]
-Description=Name the writer that closes files in the buzzy agent-chat-bus references dir (fanotify CLOSE_WRITE actor)
+Description=Name the writer that closes files in the buzzy agent-chat-bus references dir (fanotify OPEN_PERM + CLOSE_WRITE actor)
 Documentation=file:/home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit/chat-room/wal-ops/fanotify-close-actor.py
+# The real unit name is hermes-seeder-watch-buzzy.service. "seeder-watch-*" is not a unit; a check
+# that greps for the short name reports "no such unit" and concludes the arm is gone.
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit/chat-room/wal-ops/fanotify-close-actor.py --dir /home/gumbyender/.hermes/profiles/buzzy/skills/agent-chat-bus/references --seconds 86400 --log /home/gumbyender/.hermes/profiles/frodo/cache/scratch/seeder-watch-buzzy.jsonl
+ExecStart=/usr/bin/python3 /home/gumbyender/Agents/Projects/hermes-agent-fleet-toolkit/chat-room/wal-ops/fanotify-close-actor.py --dir /home/gumbyender/.hermes/profiles/buzzy/skills/agent-chat-bus/references --seconds 86400 --block-on-open --depth 1 --log /home/gumbyender/.hermes/profiles/buzzy/logs/seeder-watch-buzzy.jsonl
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
@@ -12,6 +14,9 @@ NoNewPrivileges=yes
 # --seconds 86400 is a daily recycle, NOT a lifetime: Restart=always re-arms 5 s later and
 # appends a fresh `start` line. Under Restart=on-failure the script's own clean exit (status 0)
 # is Result=success, which systemd does not restart -- the arm dies silently at the deadline.
+# The log lives in <profile>/logs/, never in cache/scratch: scratch is pruned at 24 h and the arm
+# runs 86400 s, so a scratch log expires while the window it describes is still open. The buzzy
+# arm also used to write into FRODO's scratch dir -- one profile naming another's evidence.
 
 [Install]
 WantedBy=multi-user.target
