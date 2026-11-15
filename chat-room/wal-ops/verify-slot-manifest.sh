@@ -45,6 +45,19 @@
 #             reported as FOLD-THEN-COPY: this arm folded the frames itself and
 #             then copied the empty sidecar (proven live 2026-11-14 00:48:32).
 #
+# SLOT PAIRING (measured 2026-11-14). The row's slot token and a log line's
+# `slot=` FIELD share the slot's SECOND but not its microsecond: pre-phasing
+# both checkpoint arms wrote one token (072758.761913 backup / 072758.763499
+# janitor), post-phasing the janitor's token is a full minute ahead
+# (102833.760681 / 102933.764448). The leading wall stamp is a THIRD clock
+# (072758's janitor logs at wall 07:27:59 under slot ...072758.763499), so a
+# substring match on the wall second silently drops that arm -- do not use it.
+# Pair on the `slot=` field truncated to the second, and pair backup@P with the
+# first src=janitor whose token lands in [P, P+61s). Classes: pre (both arms in
+# P), post (janitor inside the window), restart (only src=shutdown in P),
+# unknown otherwise. Every delta prints the prefix that supplied the janitor:
+# a delta without its supplying prefix is a number with no referent.
+#
 # Usage: verify-slot-manifest.sh [slot-prefix]      (default: newest row)
 set -u
 BACKUP_DIR=${AGENT_CHAT_BACKUP:-/mnt/nas/agent-chat}
@@ -55,7 +68,7 @@ export AGENT_CHAT_BACKUP_KEEP=${AGENT_CHAT_BACKUP_KEEP:-24}
 
 python3 - "$MAN" "$BACKUP_DIR" "$BUSLOG" "$SLOT_FILTER" <<'PY'
 import hashlib, json, os, re, sys
-from datetime import datetime
+from datetime import datetime, timedelta
 # The ROLLED reference below is the NEWEST manifest row, which moves every slot
 # (3600 s). A citation of that slot alone silently expires: every older row
 # prints the same token, and an hour later it names a different slot. Stamp the
@@ -103,7 +116,8 @@ def newer_artifacts(base, slot):
     return len(after)
 print('row slot=%s pid=%s src=%s main=%s wal=%s%s' %
       (row['slot'], row['pid'], row['src'], row['main'], row['wal'],
-       '' if newest else ' (not newest; %d newer)' % newer))
+       '' if newest else ' (not newest; %d newer rows as of read %s)'
+       % (newer, READ_AT)))
 
 fails = 0
 def leg(name, ok, detail=''):
@@ -180,15 +194,56 @@ for base, state in (('room.db.bak', row['main']), ('room.db-wal.bak', row['wal']
             'live=%d row=%s' % (os.stat(src_db).st_ino, meta.get('src_ino')))
 
 s = row['slot']
-second = '%s-%s-%sT%s:%s:%s' % (s[0:4], s[4:6], s[6:8], s[9:11], s[11:13], s[13:15])
-pre = {}
+def slot_sec(tok):
+    """'20261114T072758.761913-0500' -> '20261114T072758' (truncate to second)."""
+    return tok[:8] + 'T' + tok[9:15]
+
+def slot_dt(tok):
+    return datetime.strptime(tok[:8] + tok[9:15] + tok[16:22] + tok[-5:],
+                             '%Y%m%d%H%M%S%f%z')
+
+P_sec, P_dt = slot_sec(s), slot_dt(s)
+events = []          # every checkpoint-pre line that carries a slot field
 for line in open(buslog, errors='replace'):
-    if second in line and 'checkpoint-pre' in line:
-        if m := re.search(r'src=(\w+)', line):
-            log = re.search(r'log=(-?\d+)', line)
-            fold = re.search(r'folded=(-?\d+)', line)
-            pre[m.group(1)] = (int(log.group(1)), int(fold.group(1)))
-info('slot second %s checkpoint-pre' % second, str(pre or 'none'))
+    if 'checkpoint-pre' not in line:
+        continue
+    sm = re.search(r'\bslot=(\S+)', line)
+    gm = re.search(r'\bsrc=(\w+)', line)
+    if not (sm and gm):
+        continue
+    try:
+        dt = slot_dt(sm.group(1))
+    except ValueError:
+        continue                     # malformed slot; not this prefix's arm
+    log = re.search(r'\blog=(-?\d+)', line)
+    fold = re.search(r'\bfolded=(-?\d+)', line)
+    events.append((dt, sm.group(1), gm.group(1),
+                   int(log.group(1)) if log else 0, int(fold.group(1)) if fold else 0))
+in_P = [e for e in events if slot_sec(e[1]) == P_sec]
+pre = {e[2]: (e[3], e[4]) for e in in_P}
+jan = [e for e in events
+       if e[2] == 'janitor' and P_dt <= e[0] < P_dt + timedelta(seconds=61)]
+srcs = {e[2] for e in in_P}
+if 'backup' in srcs and 'janitor' in srcs:
+    cls, ref = 'pre', [e for e in in_P if e[2] == 'janitor'][0]
+elif 'backup' in srcs and jan:
+    cls, ref = 'post', jan[0]
+elif srcs and srcs <= {'shutdown'}:
+    # restart: the row is a shutdown row, there is no backup arm in P, so the
+    # backup->janitor lag the delta expresses does not exist. Report the
+    # janitor's own prefix and n/a, never a number with no pair behind it.
+    cls, ref = 'restart', None
+else:
+    cls, ref = 'unknown', (jan[0] if jan else None)
+if ref is not None:
+    info('slot pair', 'class=%s delta=%.4f janitor_prefix=%s'
+         % (cls, (ref[0] - P_dt).total_seconds(), slot_sec(ref[1])))
+elif jan:
+    info('slot pair', 'class=%s delta=n/a janitor_prefix=%s arms_in_P=%s'
+         % (cls, slot_sec(jan[0][1]), sorted(srcs) or 'none'))
+else:
+    info('slot pair', 'class=%s delta=n/a no janitor in [P, P+61s) | arms in P=%s'
+         % (cls, sorted(srcs) or 'none'))
 
 m = re.match(r'copy:(\d+)', row['wal'])
 if m:
