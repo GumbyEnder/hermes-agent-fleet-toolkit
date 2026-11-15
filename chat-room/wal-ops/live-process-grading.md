@@ -507,10 +507,13 @@ while 17695197 -> 17695276 (observed 17:16 -- an audit stamp with no commit behi
   against the index: rows == `git ls-files` in wal-ops minus the `DOCS` names (parsed out of
   `check-wal-doc-links.sh`, so the two gates read one contract) minus `MANIFEST.md5` and `README.md`.
   Both directions fail -- a tracked file with no row, and a row with no tracked file -- and the verdict
-  line carries `rowset=asserted unrostered=N missing=N`. Negative tests at this build: delete a row ->
-  `FAIL unrostered ... check-grade-timer.sh`, rc=1; tracked script with no row -> rc=1; row for a file
+  line carries `rowset=asserted unrostered=N missing=N`. Negative tests at the 44-row build: delete a
+  row -> `FAIL unrostered ... check-grade-timer.sh`, rc=1; tracked script with no row -> rc=1; row for a file
   the tree does not carry -> `FAIL stray row`, rc=1; one corrupted byte -> rc=1; clean ->
-  `rows=44 rowset=asserted unrostered=0 missing=0 rc=0`. Without a git index (a tarball) it prints
+  `rows=44 rowset=asserted unrostered=0 missing=0 rc=0` **at the build that measured it — the number is
+  not portable, and quoted bare it goes stale on the next row added**. The same clean run at `f9b196b`
+  (45 rows) reads `rows=45 rows_seen=45 ok=45 fail=0 rowset=asserted unrostered=0 missing=0 rc=0`.
+  Without a git index (a tarball) it prints
   `rowset=nogit` and asserts nothing rather than claiming a set it never checked.
   The same patch closed the one real exception to "rows are scripts only": `rehearse-per-slot-backup.py`
   was tracked with no row and no mention in this doc, which is byte-for-byte indistinguishable from a
