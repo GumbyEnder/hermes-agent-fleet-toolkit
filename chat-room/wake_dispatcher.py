@@ -153,6 +153,7 @@ _rejected_full = 0
 _retried = 0
 _abandoned = 0
 _skipped_answered = 0
+_answered_in_room = 0   # no captured reply, but the room already holds one
 _gate_busy = 0
 _inqueue = set()        # seqs currently in _work (one copy each)
 
@@ -739,8 +740,24 @@ def _run_one(profile, payload, lock_fd=-1):
     started = time.time()
     message_id = payload.get("message_id") or 0
     text, text_src = _mention_text(payload)
+    # The envelope is the mention's identity, not decoration. The duplicate check on
+    # re-entry (_already_answered) looks for a reply whose parent_id IS this id, so a
+    # turn that answers without naming it looks unanswered and is re-run -- measured
+    # 2026-11-15: 5463 (dur 1350.4 s, rc -9) and 5495 were both re-spilled after their
+    # answers had already landed, because the prompt carried `from` and `topic` and no id.
+    # parent_id is the mention that spawned THIS one (a reply wake), which is how an
+    # agent can tell "answer the message I was handed" from "answer its parent".
+    mid_env = message_id if message_id else "none"
+    pid_env = payload.get("parent_id") or "none"
+    wake_ts = round(time.time(), 3)
     prompt = (f"[Agent Chat Room — you were @mentioned by {payload.get('from')} "
-              f"in topic '{payload.get('topic')}']\n\n{text}")
+              f"in topic '{payload.get('topic')}']\n"
+              f"[envelope message_id={mid_env} parent_id={pid_env} wake_ts={wake_ts}]\n"
+              f"{text}\n\n"
+              f"[envelope] When you post your answer to the room, set reply_to={mid_env}.\n"
+              f"The dispatcher's duplicate check re-runs a turn whose mention has no reply\n"
+              f"parented to it, so an answer posted without reply_to reads as an unanswered\n"
+              f"mention and comes back as a second turn under the same message.")
     budget = timeout_for(profile)
     hard = hard_cap_for(profile)
     rc, reply, err = None, "", ""
@@ -811,8 +828,34 @@ def _gate_for(profile):
         return _gates.setdefault(profile, threading.Lock())
 
 
+def _retry_after_turn(profile, mid, out):
+    """Should a finished turn be re-spilled? The room is the better witness than the pipe.
+
+    "No captured reply" is a fact about the wrapper's stdout, not about the room. A
+    hard-cap kill (rc=-9) takes the client's stdout with it while the turn has already
+    posted -- measured 2026-11-15: 5463 (dur 1350.4 s, rc -9, reply_chars 0, posted_id 0)
+    and 5495 read as total failures and were re-spilled, and each had already answered
+    in the room. So before spilling, ask whether the room holds a reply parented to this
+    mention; if it does, the turn did its job and a re-run would only double-post.
+    rc=0 with empty stdout stays an answer (a model that chose silence).
+    """
+    global _answered_in_room
+    if out.get("reply"):
+        return False
+    if not (out.get("err") or out.get("rc") != 0):
+        return False
+    if _already_answered(profile, mid):
+        with _lock:
+            _answered_in_room += 1
+        log(evt="wake_answered_in_room", profile=profile, message_id=mid,
+            rc=out.get("rc"),
+            note="room holds a reply parented to this mention; not re-spilled")
+        return False
+    return True
+
+
 def _worker():
-    global _active, _rejected_full, _skipped_answered, _gate_busy
+    global _active, _rejected_full, _skipped_answered, _gate_busy, _answered_in_room
     while True:
         profile, payload, seq = _work.get()
         with _lock:
@@ -889,7 +932,7 @@ def _worker():
                 # under the turn) and a budget kill (rc None) both leave a turn
                 # with no reply; neither is an answer. rc=0 with empty stdout is
                 # a model that chose silence, and that is allowed.
-                retry = bool(not out["reply"] and (out["err"] or out["rc"] != 0))
+                retry = _retry_after_turn(profile, mid, out)
         finally:
             with _lock:
                 _active -= 1
@@ -1001,6 +1044,10 @@ class H(BaseHTTPRequestHandler):
                     "partition": partition,
                     "retried": _retried, "abandoned": _abandoned,
                     "skipped_answered": _skipped_answered,
+                    # Distinct from skipped_answered: that one skips a turn BEFORE it
+                    # runs (the reply was already there); this one is a turn that ran
+                    # and died with nothing captured while its answer was in the room.
+                    "answered_in_room": _answered_in_room,
                     "gate_busy": _gate_busy,
                     "retry_max": RETRY_MAX,
                     "spill_path": SPILL,
