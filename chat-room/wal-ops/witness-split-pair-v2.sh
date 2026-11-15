@@ -123,13 +123,21 @@ elif [ "$NOW" -gt "$(( SLOT + 120 ))" ]; then
 fi
 
 OUT="$HOME/agents/agent-chat/pairsplit2-$(date +%Y%m%dT%H%M%S).log"
+# --- identity BEFORE the pipeline: the `# log` line stats $OUT from inside the group that
+# is piped to `tee "$OUT"`, so the file is tee's creation and the stat races it. Measured
+# 2026-11-14: 21:28:35 wrote ino 15344355, 22:28:35 wrote ino n/a with the same blob, while
+# 1,000+ rehearsals (incl. 60 under the unit's own Nice=10/IO-idle scope) never reproduced
+# it. Create the inode here and stat it once; tee then truncates that same inode (ino stable
+# across truncate, verified), so the field measures instead of depending on who wins.
+: > "$OUT"
+_WLOG_INO="$(stat -c %i "$OUT" 2>/dev/null || echo n/a)"
 SINCE="@$FROM"
 REPO="$HOME/Agents/Projects/hermes-agent-fleet-toolkit"
 {
   echo "# captured $(date -Is); slot $(date -d @$SLOT -Is); journal since $SINCE"
   # log identity: resolve the label a reader will stat, and print the inode -- the one
   # field that proves a copy is not the original (two inodes, one md5, 2026-11-14).
-  echo "# log $(readlink -f "$OUT") ino $(stat -c %i "$OUT" 2>/dev/null || echo n/a) cwd $PWD"
+  echo "# log $(readlink -f "$OUT") ino $_WLOG_INO cwd $PWD"
   echo "# MainPID $(show MainPID) start $START_TXT NRestarts $(show NRestarts)"
   echo "# HEAD $(git -C "$REPO" rev-parse --short HEAD) bus.py $(md5sum "$REPO/chat-room/bus.py" | cut -d' ' -f1) tree: $(git -C "$REPO" status --porcelain | wc -l) modified"
   # --- witness identity: the instrument's OWN bytes, never the repo tip. `# HEAD` is a
