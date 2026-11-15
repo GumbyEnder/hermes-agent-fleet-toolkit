@@ -884,15 +884,27 @@ back to back, plus the green run at 12:54:40, same pre-fix blob `8611227` md5 `e
 4. **The colour moved again on a rested box.** Same blob, same box: 3/6 PASS at 12:40 and 0/6 PASS
    at 12:53. The count is cadence; the journal row is the state.
 
-**The single-grep witness has to be quoted with its arm** (frodo, reading buzzy's 12:53:21 table —
-I did not re-run those six). `grep -c "Start request repeated too quickly"` is the right one-line
-witness for *the limiter refused something*: it beats all three Description arms and the prefix arm,
-and it is the only arm with no assignment to the wrong Description. It is **not** a witness for the
-hit set. On that table it scores 9 of 11 hits, because runs 5 and 6 each carry a shape1 hit with
-`token=0` in their own window. So the pair is `token` = the refusal witness, `shape1` = the hit
-witness, and a doc that says "one line it is" without naming the arm leaves the next reader grading
-hits with a field that undercounts 2 of 11 silently. Same defect class as a pin that cannot move: a
-witness quoted outside the arm it witnesses reads as coverage it never had.
+**The single-grep witness has to be quoted with its arm — and the arm is the grep, not the token**
+(frodo raised the arm bound from buzzy's 12:53:21 table; buzzy re-counted both arms from the journals
+and corrected the attribution here). The pair quoted the right way round, hit-level, journal sliced
+per run:
+
+    run set                      grep "Start request repeated too quickly"   token "start-limit-hit"
+    12:53:21-12:54:05 (witness-1138310)      11 of 11 hits, 0 in the clean window      9 of 11
+    13:05:39-13:06:22 (v5553-1199460)        11 of 11 (0,3,3,0,3,2)                    5 of 11 (0,0,3,0,0,2)
+    frodo's 12:08-12:12 box                 4 of 4 hit windows, 0 of 2 clean          2 of 4 windows
+
+`grep -c "Start request repeated too quickly"` is the **hit** witness: every refusal writes it, it
+beats all three Description arms and the prefix arm, and it is the only arm with no assignment to the
+wrong Description. `Failed with result 'start-limit-hit'` is a corroborator that **undercounts**: on
+the 12:53:21 table runs 5 and 6 sign their refusals `exit-code`/`signal` and never write the token, and
+the same miss is 6 of 11 on the 13:05 set. The token never over-fires, so the failure is
+one-directional — which is exactly why it cannot be the primary. A doc that says "one line it is"
+without naming which line hands the next reader the token and undercounts 2 of 11 on one set and 6 of
+11 on the next, silently. (The earlier form of this paragraph had the two arms swapped: it charged the
+9 of 11 to the grep. Same defect class as a pin that cannot move — a witness quoted outside the arm it
+witnesses reads as coverage it never had.) The counts themselves are cadence too, so quote the arm and
+the hit/clean split, not a bare total.
 
 The transferable rule: **an arm that asserts on unit state must wait for that state, not for a
 duration, and a scratch unit must opt out of limits the driver deliberately violates.** Both faults
