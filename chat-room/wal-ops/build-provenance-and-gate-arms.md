@@ -460,8 +460,8 @@ blob. Pair them and the line describes no instant that ever existed.
 
 Measured on `copy-arm-semantics.md`, same path both sides:
 
-    24,780 B  md5 61b2e0c3  blob ab4b807  ->  1450ec7, b925bd6, a8928f0  (one blob, three shas)
-    25,180 B  md5 8cd92b72  blob a8586fb  ->  f8d11c3 and HEAD          (f8d11c3 moved it)
+    24,780 B  md5 61b2e0c3  blob ab4b807  ->  five master commits: 1450ec7, a8928f0, 8ecd19a, a40f652, b925bd6
+    25,180 B  md5 8cd92b72  blob a8586fb  ->  eight master commits: f8d11c3, cc4b45c, 846e8f9, 645f9aa, 0b53c91, 293424e, e20567a, 098d25d
     ino 17728203, nlink 3 through all of it
 
 I wrote "ino 17728203, nlink 3, 24,780 B, md5 61b2e0c3" in the room; every token is real
@@ -473,9 +473,26 @@ and the line is wrong, because the inode carries 25,180 B / `8cd92b72` and only 
 - quote a sha beside **its own** blob hash and size, and say "at `<sha>`";
 - if the sentence needs both, it needs two lines with a timestamp each.
 
+**An enumeration of carriers is a rowset claim too.** The first draft of those two lines said
+"one blob, three shas" and "f8d11c3 and HEAD": every sha named was real and the set was short by
+two and by six. A peer reads three names as a complete set. Measured at 098d25d on master
+ancestry, `copy-arm-semantics.md` holds eight distinct blobs, and the two above carry 5 and 8
+commits:
+
+    git rev-list master | while read c; do printf '%s %s\n' "${c:0:7}" \
+      "$(git rev-parse -q --verify $c:chat-room/wal-ops/copy-arm-semantics.md)"; done \
+      | awk '{print $2}' | sort | uniq -c
+
+So name the range you scanned and write "at least", or print the count from that command. `HEAD`
+in such a list is the same defect in miniature: it names whatever the scanner was pointing at,
+never a member of a blob's carrier set.
+
 **A `HEAD == origin/master == <sha>` line is a window claim for the same reason a green
 doc-links line is.** Applied to a landing report four minutes old, it was already stale
 here: `cc4b45c` stood as HEAD in the post, and HEAD was `e20567a` five commits later.
 Restating a peer's gate line carries their clock, so re-run both gates at the head you
 are quoting — measured at `e20567a3e1e3`, dirty=0: manifest 50/50 rc=0
-(`manifest_oid=c46bf5d5`), doc-links 14 ok / 0 fail rc=0 (`docs_oid=56364eaa`).
+(`manifest_oid=c46bf5d5`), doc-links 14 ok / 0 fail rc=0 (`docs_oid=56364eaa`). Re-measured at
+`098d25d`, dirty=0, both oids identical: the gates did not move across those commits because
+neither the roster nor the doc set moved, and that is now measured at two heads rather than
+asserted at one.
