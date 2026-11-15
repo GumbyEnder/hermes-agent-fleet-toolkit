@@ -243,14 +243,26 @@ echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot}"
   # capture path (>= 4cdfa20), so a pre-patch capture has none and its verdict lives in
   # the journal alone -- that absence is a finding, not a pass.
   vline=$(grep -E '^# VERDICT: rc=' "$log" 2>/dev/null | tail -1)
-  wstat=$(journalctl --user -u "$WITNESS_SVC" --since "@$slot_ep" --until "@$((slot_ep + 150))" --no-pager 2>/dev/null | grep -oE 'code=(exited|killed), status=[^ ]+' | tail -1)
+  jwin=$(journalctl --user -u "$WITNESS_SVC" --since "@$slot_ep" --until "@$((slot_ep + 150))" --no-pager 2>/dev/null)
+  wstat=$(printf '%s\n' "$jwin" | grep -oE 'code=(exited|killed), status=[^ ]+' | tail -1)
+  # systemd writes `code=exited, status=N/...` into the journal ONLY when the process
+  # exits non-zero. A green oneshot leaves "Starting"/"Finished" and no status token,
+  # so a grep alone reports UNAVAILABLE for exactly the runs that succeeded. Measured
+  # 2026-11-15 09:28:46 (room 5473): the witness finished status=0 at 09:28:44.458449,
+  # the unit journal holds Starting 09:25:00 and Finished 09:28:44, and this field printed
+  # "UNAVAILABLE". Absence of a failure line is not absence of the run.
+  wstat_note=
+  if [ -z "$wstat" ] && printf '%s\n' "$jwin" | grep -q "Finished $WITNESS_SVC"; then
+    wstat="code=exited, status=0/SUCCESS"
+    wstat_note=" (synthesized from the journal's Finished line -- systemd logs code=/status= only on a non-zero exit)"
+  fi
   if [ -n "$vline" ]; then
     echo "  slot verdict: ${vline#\# VERDICT: }"
   else
     echo "  slot verdict: ABSENT -- this capture carries no '# VERDICT: rc=' trailer (witness build predates 4cdfa20), so the RESULT above grades manifest legs only and is NOT this slot's verdict"
   fi
   if [ -n "$wstat" ]; then
-    echo "  witness exit: $wstat (journal, $WITNESS_SVC, slot..slot+150s)"
+    echo "  witness exit: $wstat$wstat_note (journal, $WITNESS_SVC, slot..slot+150s)"
     # The trailer rc and systemd's ExecMainStatus are the same fact written by two
     # different processes. A disagreement means the trailer lost its race to tee (see the
     # witness's own note) and the journal is the honest witness -- say so, do not pick one.
@@ -266,6 +278,8 @@ echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot}"
       fi
       [ -n "$trc" ] && [ "$trc" != "$jrc" ] && echo "  MISMATCH trailer rc=$trc journal=$wstat (as rc $jrc) -- the trailer lost the race to tee; read ExecMainStatus, not the trailer"
     fi
+  elif printf '%s\n' "$jwin" | grep -q "Starting $WITNESS_SVC"; then
+    echo "  witness exit: INCOMPLETE -- journal shows Starting and no Finished for $WITNESS_SVC in slot..slot+150s; the run did not end"
   else
     echo "  witness exit: UNAVAILABLE (no journal line for $WITNESS_SVC in slot..slot+150s)"
   fi
