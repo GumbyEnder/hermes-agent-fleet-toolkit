@@ -195,7 +195,8 @@ Read with the ladder above, because a file can walk the whole ladder more than o
   constant — so that assert is not a guard; the digest comparison is, and it goes red on exactly
   this fixture. Correct wiring: read-back 4 / 1000 and two digests; buggy wiring: one digest,
   both arms printing read-back 4 / 16,512 B. Quote the read-back and the digest count, not an
-  absolute byte total: a WAL is `32 + frames×4,120` and the frame count is the fixture's shape. One
+  absolute byte total: a WAL is `32 + frames×4,120` and the frame count is the fixture's COMMIT
+  count (`frames = commits + 1`). One
   insert per commit on a 16-byte row reads 16,512 B (4 frames) vs 41,232 B (10) after 8 commits.
   `37,112` is 9 frames, and the shape that produces it is **8 commits**: `CREATE TABLE` committed
   alone plus 7 single-insert commits. **The frame count is a COMMIT counter, not an insert counter:
