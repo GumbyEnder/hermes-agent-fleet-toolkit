@@ -5,7 +5,7 @@ a2e25caa9a224f3e8088ab5ccab33d5a  check-wal-doc-links.sh
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
 6e0cbf95fad2405a3ac9759c7f6a8b40  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
-25638c8adf38ea5efd3f780d98460e62  grade-slot.sh
+a1b524e9723f17014a1fe46a2586a319  grade-slot.sh
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 18b7941f28ac505f29e5e92a046226bd  manifest-truncation-2026-11-14.md
 2defb57c2bfa3bded2703aa1364caf52  probe-f1.py

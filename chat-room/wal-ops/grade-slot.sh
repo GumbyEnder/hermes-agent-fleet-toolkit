@@ -76,6 +76,10 @@ for a in "$@"; do
 done
 
 SVC=hermes-agent-chat-bus.service
+# The unit that WRITES the capture. Its own exit status is the second instrument for this
+# slot: the trailer (below) is written by the capture path, the journal is written by
+# systemd, and they disagree only when the trailer lost its race to tee.
+WITNESS_SVC=${AGENT_CHAT_WITNESS_SVC:-hermes-pairsplit-witness.service}
 VERIFY=${AGENT_CHAT_VERIFIER:-/mnt/nas/host-ops/agent-chat/verify-slot-manifest.sh}
 # The verifier that grades is the CIFS copy, so a NAS-side edit changes every
 # verdict with no gate in the way (frodo, 2026-11-14). The rehearsal harness was
@@ -230,6 +234,41 @@ echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot}"
   fi
   echo
   echo "  verifier rc=$rc -- posted by $(readlink -f "$0") (verifier $VERIFY)"
+  # --- completeness: $VERIFY grades MANIFEST LEGS, not the slot. Measured 2026-11-15
+  # 08:28:46 (room 5443): a capture holding NO checkpoint line at all graded
+  # "RESULT PASS (0 failed legs)" / "verifier rc=0" into the room while the witness unit
+  # exited 4/NOPERMISSION in the journal. So a RESULT line is a statement about the copy
+  # and never about the slot: name the artifact's own trailer and the writer unit's own
+  # exit, and let the reader see the pair. The trailer is written ONLY on the witness
+  # capture path (>= 4cdfa20), so a pre-patch capture has none and its verdict lives in
+  # the journal alone -- that absence is a finding, not a pass.
+  vline=$(grep -E '^# VERDICT: rc=' "$log" 2>/dev/null | tail -1)
+  wstat=$(journalctl --user -u "$WITNESS_SVC" --since "@$slot_ep" --until "@$((slot_ep + 150))" --no-pager 2>/dev/null | grep -oE 'code=(exited|killed), status=[^ ]+' | tail -1)
+  if [ -n "$vline" ]; then
+    echo "  slot verdict: ${vline#\# VERDICT: }"
+  else
+    echo "  slot verdict: ABSENT -- this capture carries no '# VERDICT: rc=' trailer (witness build predates 4cdfa20), so the RESULT above grades manifest legs only and is NOT this slot's verdict"
+  fi
+  if [ -n "$wstat" ]; then
+    echo "  witness exit: $wstat (journal, $WITNESS_SVC, slot..slot+150s)"
+    # The trailer rc and systemd's ExecMainStatus are the same fact written by two
+    # different processes. A disagreement means the trailer lost its race to tee (see the
+    # witness's own note) and the journal is the honest witness -- say so, do not pick one.
+    if [ -n "$vline" ]; then
+      trc=$(printf '%s' "$vline" | sed -nE 's/^# VERDICT: rc=([0-9]+).*/\1/p')
+      # `code=killed, status=15/TERM` is signal 15, and the witness writes rc=128+sig for
+      # exactly that case -- compare like with like, or every trapped signal reads as a
+      # MISMATCH (143 vs 15) and the pair stops being worth reading.
+      jrc=$(printf '%s' "$wstat" | sed -nE 's/^code=exited, status=([0-9]+).*/\1/p')
+      if [ -z "$jrc" ]; then
+        jrc=$(printf '%s' "$wstat" | sed -nE 's/^code=killed, status=([0-9]+).*/1\1/p' | sed -E 's/^1([0-9]+)$/\1/')
+        jrc=$(( 128 + ${jrc:-0} ))
+      fi
+      [ -n "$trc" ] && [ "$trc" != "$jrc" ] && echo "  MISMATCH trailer rc=$trc journal=$wstat (as rc $jrc) -- the trailer lost the race to tee; read ExecMainStatus, not the trailer"
+    fi
+  else
+    echo "  witness exit: UNAVAILABLE (no journal line for $WITNESS_SVC in slot..slot+150s)"
+  fi
 } > "/tmp/grade-slot-body.$$" 2>&1
 body=$(cat "/tmp/grade-slot-body.$$")
 rm -f "/tmp/grade-slot-body.$$"
