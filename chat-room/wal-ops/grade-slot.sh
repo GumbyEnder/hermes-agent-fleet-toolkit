@@ -195,11 +195,32 @@ if [ "$FORCE" = 0 ] && [ "$DRY" = 0 ] && [ -e "$GUARD_DIR/$slot_tag" ]; then
 fi
 
 # The witness runs every 5 min and captures a WINDOW, so the log covering this
-# slot is written up to ~5 min AFTER the slot second. Pick the newest log whose
+# slot is written up to ~5 min AFTER the slot second. Pick the OLDEST log whose
 # "# captured" is >= the slot, and wait for it.
+# Why oldest and not newest: the test is one-sided (captured >= slot_ep), so in a
+# backfill EVERY later capture satisfies it and `ls -1t | head -6` handed back the
+# newest one. Measured 2026-11-15 11:49: SLOT_EP=1794752913 (slot
+# 20261115T092844.082424-0500) graded against pairsplit2-20261115T112835.log and
+# printed THAT capture's trailer -- rc=0 GRADED late=11.874 -- as the 09:28 slot's
+# verdict, while the slot's own capture (092835) says rc=0 VACUOUS_STRUCTURAL
+# late=11.082. A verdict about an hour, taken from a window two hours later, with
+# nothing on the line saying so. Oldest-covering is identical to newest-covering on
+# the live path (only one capture is >= the slot second yet) and correct for every
+# backfill inside the usable-read window. The capture's own `slot=` token is also
+# read: if it names a different slot, the trailer is refused, never relabelled.
+# Scan from the filename, not from the head of the directory: names are
+# timestamped, so a capture made before slot-300s cannot cover the slot.
 log=""
+cap_slot=""
+cutoff_tag=$(date -d "@$((slot_ep - 300))" +%Y%m%dT%H%M%S)
 for i in $(seq 1 90); do
-  for cand in $(ls -1t "$WITNESS_DIR"/pairsplit2-*.log 2>/dev/null | head -6); do
+  for cand in $(ls -1 "$WITNESS_DIR"/pairsplit2-*.log 2>/dev/null | sort); do
+    cname=${cand##*/}; cname=${cname#pairsplit2-}; cname=${cname%.log}
+    case "$cname" in
+      [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+      *) continue ;;
+    esac
+    [ "$cname" \< "$cutoff_tag" ] && continue
     cap=$(sed -n 's/^# captured \([^;]*\);.*/\1/p' "$cand" | head -1)
     cap_ep=$(date -d "$cap" +%s 2>/dev/null || echo 0)
     if [ "$cap_ep" -ge "$slot_ep" ]; then log="$cand"; break; fi
@@ -207,7 +228,8 @@ for i in $(seq 1 90); do
   [ -n "$log" ] && break
   sleep 4
 done
-echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot}"
+[ -n "${log:-}" ] && cap_slot=$(grep -oE 'slot=[0-9]{8}T[0-9]{6}\.[0-9]+' "$log" 2>/dev/null | tail -1 | cut -d= -f2)
+echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot} capture_slot=${cap_slot:-ABSENT}"
 
 {
   echo "slot $slot_tag (derived $(date -d "@$slot_ep" +%Y%m%dT%H%M%S) = start $start_txt $offs_txt), graded automatically"
@@ -256,9 +278,22 @@ echo "slot_ep=$slot_ep slot_tag=$slot_tag log=${log:-NONE-covering-slot}"
     wstat="code=exited, status=0/SUCCESS"
     wstat_note=" (synthesized from the journal's Finished line -- systemd logs code=/status= only on a non-zero exit)"
   fi
+  refused=0
+  case "${cap_slot:-}" in
+    "") verdict_slot="${slot_tag}" ;;   # capture carries no token -- nothing to refuse on
+    *) case "$slot_tag" in
+         "$cap_slot"*) verdict_slot="${slot_tag}" ;;
+         *) verdict_slot="REFUSE" ;;
+       esac ;;
+  esac
+  if [ -n "$vline" ] && [ "$verdict_slot" = REFUSE ]; then
+    echo "  slot verdict: REFUSED -- this slot has no capture; ${log##*/} carries slot=$cap_slot's trailer (${vline#\# VERDICT: }), which is that slot's verdict and not this one's"
+    vline=""
+    refused=1
+  fi
   if [ -n "$vline" ]; then
     echo "  slot verdict: ${vline#\# VERDICT: }"
-  else
+  elif [ "$refused" = 0 ]; then
     echo "  slot verdict: ABSENT -- this capture carries no '# VERDICT: rc=' trailer (witness build predates 4cdfa20), so the RESULT above grades manifest legs only and is NOT this slot's verdict"
   fi
   if [ -n "$wstat" ]; then
