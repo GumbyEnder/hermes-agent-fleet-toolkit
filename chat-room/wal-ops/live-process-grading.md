@@ -822,7 +822,11 @@ people check. Measured on this box 2026-11-15 00:22-00:25 ET against the two see
   with no event row at all, so an arm that resolves nothing for a day still shows a fresh mtime at
   the boundary. "Log mtime is stale, therefore the arm is dead" dies at the first recycle; the
   live/dead evidence is the log's tail -- newest event `ts` vs newest `start` `ts` (equal means
-  nothing resolved since that start) plus the `start`/`stop` pair count. Budget one documented
+  nothing resolved since that start) plus the `start`/`stop` pair count. The pair count is PER ARM and
+  is not symmetric: on 2026-11-15 15:0x ET the two arms held `start` 4 (buzzy) vs 7 (frodo), `stop` 0
+  in both, while both newest `start` rows read the SAME `03:26:29` (both first rows `01:09:43`). So
+  "the pair count" is not a shared witness: a count quoted without its arm is a different count, and
+  equal newest-start ts with unequal start counts is the normal state, not drift. Budget one documented
   mtime+ctime jump per log per 24 h, at the boundary, with the row set unchanged.
 - **Deferred, deliberately:** the buzzy log is still `root:root 0664` (ino 23495529) because the
   repair lands at the boundary anyway and a `chown` now would bump ctime -- the field re-links are
