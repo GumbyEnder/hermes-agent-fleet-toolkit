@@ -144,3 +144,29 @@ push, a rebase, or a force — ask the remote itself:
 A stale tracking ref is indistinguishable, in the output, from a genuinely missing
 commit. The cost of the wrong read is not the wasted minute, it is the repair that
 follows it.
+
+## Making the file exist first converts an inode race into a 0 B window — say both halves
+
+The witness read its own `ino` only after handing the path to `tee`, so the field
+reported whatever the pipe race left behind: `n/a` when the stat ran before `tee`
+created the file, and a value otherwise. Measured 2026-11-14: the 22:28:35 capture
+carries `ino n/a` in its header and the file on disk today has a durable inode
+(15343957, birth 22:28:35.170632682) — both true, which is what a race looks like
+from the outside. A shimmed `tee` that sleeps on open reproduces `n/a` on every
+run of the old shape.
+
+Creating the capture file first (`: > "$OUT"` before the stat) closes that class at
+its cause: the 21:28:35 and 23:28:35 slots print their own durable inode, and no
+scheduling accident can turn the field back into an abstention.
+
+State the cost in the same breath as the fix. The pre-created file exists at slot+0
+and is empty until `tee` writes, so for sub-second spans a human or peer glob of
+`pairsplit2-*.log` can see a 0 B capture that previously did not exist at all.
+Nothing inside the script globs that pattern, so the exposure is peer readers only,
+and the obvious alternative — `mktemp` then rename at tee — trades a measured
+inode race for an unmeasured rename race. Prefer the measured cost you can name.
+
+Grading rule that follows: once the file is guaranteed to exist, `n/a` stops being
+a scheduling artifact and becomes a finding. Never re-read a lone `n/a` as baseline
+noise after this patch, and never quote a value-bearing slot count without the
+commit that produced the build — one slot proves one mechanism, not a series.
