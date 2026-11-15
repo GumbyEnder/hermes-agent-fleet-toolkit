@@ -60,8 +60,17 @@ for a in "$@"; do
   esac
 done
 NAS=${NAS:-/mnt/nas/host-ops/agent-chat}
+# run-gate-logged.sh sits one level ABOVE the agent-chat share root
+# (/mnt/nas/host-ops/run-gate-logged.sh), because it wraps any gate in the repo, not
+# just the agent-chat ones. Its leg root is therefore derived from NAS's parent rather
+# than pinned to /mnt/nas/host-ops: pinning it would keep the wrapper leg on the real
+# share while a rehearsal (NAS=<scratch tree>) moved every other leg, so an absent-leg
+# drill would write the production dir -- the "trustworthy 4/0 for the wrong root" hazard
+# this table exists to kill, re-armed. One knob (NAS) still moves every leg.
+HOSTOPS=${HOSTOPS:-$(dirname "$NAS")}
 LEG_TABLE="
 grade-slot.sh|$HOME/.local/bin:$NAS
+run-gate-logged.sh|$HOSTOPS
 witness-split-pair-v2.sh|$NAS
 verify-slot-manifest.sh|$NAS
 "

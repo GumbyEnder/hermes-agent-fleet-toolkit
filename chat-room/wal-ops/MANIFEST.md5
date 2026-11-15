@@ -6,7 +6,7 @@ e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
 1b7d9a5b1c7058b4605cf7ce17248985  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 ca3ce404fc1cebac0f4dc48292365b4a  grade-slot.sh
-1256a203ada6f7448bb25ca468894183  install-mirror-legs.sh
+0ed272593f2c16241519002529aca4e6  install-mirror-legs.sh
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 18b7941f28ac505f29e5e92a046226bd  manifest-truncation-2026-11-14.md
 2defb57c2bfa3bded2703aa1364caf52  probe-f1.py
@@ -21,6 +21,7 @@ d265f17dd557ab5387596786460b2d67  rehearse-run-failure.sh
 81cd467620e85398422f8095aaf2d005  relink-wal-docs.sh
 5fc43fd95e68382b8987b73e3d56abde  restart-dispatcher-when-no-turns.sh
 afaef597b3d62b29e2248bfcd800d0d6  ro-open-audit.py
+75fd7664a9dfdf7956d84932d8172fab  run-gate-logged.sh
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 45dfad832e8c773f49e3eea1622a8bfc  systemd/check-grade-timer.timer
 e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
