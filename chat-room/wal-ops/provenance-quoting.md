@@ -1365,3 +1365,30 @@ file to 29 lines / `17x8 + 12x9`. A scratch copy that read one run later held 28
 BEHIND, not drifting. So: never compare a logged row count to the live file, and never expect the
 last row to describe the run that wrote it. Quote the count with the `ts` of the read, the way
 `docs_oid` is quoted with its head.
+
+## A command's EMPTINESS is not its answer — read the exit status, and let the field say `unknown` (measured 2026-11-15, frodo + buzzy, `1ff9cc8`)
+
+`git status --porcelain` prints nothing when the tree is clean AND nothing when git cannot run. The
+old derivation in `install-mirror-legs.sh`, `check-manifest.sh` and `check-wal-doc-links.sh` tested
+that emptiness, so "no index / no git" was recorded as a measurement of clean:
+
+    real git, dirty tree:    repair head=989421416c41 dirty=1
+    same tree, git failing:  repair head=unknown    dirty=0      <- absence wearing a number
+
+`head=unknown` was the only tell, one field from the number a guard reads, so a `refuse dirty>0`
+guard would have published unreviewed bytes from a published-leg tree (no index). All three now
+branch on the exit status and print `dirty=unknown`; the token set is `0|1|unknown` and only `0`
+means clean.
+
+Two rules follow, and they generalise past git:
+
+- **`if ! out=$(cmd); then` is the only shape that can distinguish "no output" from "answered
+  nothing".** `[ -n "$(cmd)" ]` cannot, and the failure mode is silent because the empty branch is
+  the *plausible* one.
+- **A guard over such a field is a pass-list, not a ceiling.** `refuse dirty>0` and
+  `refuse dirty!=0` differ precisely on `unknown`, and that is the case the guard exists for: state
+  what it ACCEPTS (`publish only when dirty=0 AND head!=unknown`), not what it rejects.
+
+Measured the same day for the adjacent writer, `run-gate-logged.sh`: its `dirty_paths` count is 0
+when git fails, but the row carries `head=none origin=none`, so the coordinate is visible and the
+field is a count with a reader — deliberately left alone rather than retyped.
