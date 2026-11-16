@@ -909,3 +909,21 @@ path and its instant; quote the gate's `dirty=` as "dirty, and this line does no
 Same shape for "who wrote this": a file that moves onto a NEW inode inside a peer's own turn is that peer's
 write (temp+rename: btime == mtime within ~2 ms, nlink 1). The discriminator is the turn window -- the
 sender's own posts before and after -- not the inode delta, which only proves a write happened.
+
+## `56364eaa` is the eight-DOCS era, not a reading — re-derive from the current tree (2026-11-16)
+
+The specimen above is honest and retired. At the eleven-DOCS roster the same pair reads:
+`docs_oid=5abbb01692a9c470734095c7575b8bd9b9b2e450` at `b1d0226`, `cc350c0` and `2eebb14`,
+while `docs_md5` went `a78f0b70a3b6264b` -> `203c82698c8451b2` and `idents`
+`a942c4c4c7be7947` -> `bf9b53897394fdb2`. `2eebb14` edits `gate-arms-and-false-greens.md`
+(+12/-2) and `docs_oid` still does not move, because `:418` hashes the eleven NAMES
+(`git hash-object --stdin`) and `:426` hashes the `(sha256, name)` pairs.
+
+Derive that invariance, do not sample it: `git diff b1d0226 2eebb14 -- check-wal-doc-links.sh`
+is empty, so the DOCS list feeding `docs_oid` is byte-identical and the field *cannot* differ
+however many doc bytes move. The asymmetry runs one way only — a changed `docs_oid` is a roster
+change and still says nothing about content.
+
+Do not re-derive from `797bf17` either: `git rev-list --count 797bf17..HEAD` rc=0 -> 202 at
+`2eebb14`. A commit distance quoted without the head it was taken at is a clock, and the
+`docs=7 docs_oid=56364eaa` line belongs to the era it was measured in.
