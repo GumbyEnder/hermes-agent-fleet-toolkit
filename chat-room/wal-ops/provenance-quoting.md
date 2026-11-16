@@ -1548,3 +1548,39 @@ The mirror arm has the same shape from the other side: at `eb5d5a0` on a live sh
 distance between the graded commit and the newest published one, not the health of the graded
 tree. Grading an old commit with a mirror arm open is an anachronism, not a defect: it needs
 `mirror=stale-by-tip` (a NOTE keyed on head != published head), never a FAIL.
+
+## A window has two ends, both are slots, and every slot label needs its date (measured 2026-11-15 23:0x, 76 `pairsplit2-*.log`)
+
+The witnessed ladder, enumerated rather than eyeballed:
+
+    e8dafb6c  23,220 / 17a40c53  2026-11-14T192835 .. 2026-11-14T202835   2 slots
+    3bf2bbc6  23,486 / a33ea3e6  2026-11-14T212835 .. 2026-11-14T222835   2 slots
+    fd232d78  24,063 / 2335ff8a  2026-11-14T232835 .. 2026-11-15T082835  10 slots
+    4a46ccc3  30,458 / 6c543893  2026-11-15T092835 .. 2026-11-15T230306  14 slots, open
+
+Three traps in those four lines. (1) Only **28 of 76** logs carry a `# WITNESS` line at all; the
+other 48 cannot bound anything, so a slot count is always two numbers (`10 of 76`), never one.
+(2) The `fd232d78` window **straddles midnight**, and the scheduler is not hour-uniform: after
+`2026-11-15T192835` it rotates `:28:35 -> :03:06` (34m31s), so `210306/220306/230306` are the
+evening slots and a bare `232835` is ambiguous by a day. Date every label.
+(3) Count both ends *and* quote both margins, because the count alone hides the lead-in silence:
+`fd232d78`'s west slot is 7m14s after `d06857c` (23:21:21) and its east slot is 17m21s before the
+08:45:56 write; `4a46ccc3`'s west slot is 42m39s after that write; `3bf2bbc6`'s east slot is 52m46s
+before `d06857c`. "Installed from <commit>" therefore overstates every arm it is applied to.
+
+## "Resolved at <commit>", never "introduced at", and keep the whole commit set (same set)
+
+`4a46ccc3` is put in the tree by `61e21f2` (2026-11-15 08:45:50) and is still the path blob at HEAD
+`c6e5842` (23:01:07, mode 100755) -- quoting a read-time HEAD such as `df55444` as the binding commit
+binds nothing. And one blob can be re-touched: `e8dafb6c` sits in `14f9f9c` (introducing) and
+`65f2048` (re-touch), so blob -> commit is a SET; say which resolution you mean. The empty window is
+a legal answer and is clean when quoted as one: `faf8e2db` = `4cdfa20` 08:45:02 -> `61e21f2`
+08:45:50, 48 seconds alive, 0 capturing slots, `grep -l` over 76 logs = 0.
+
+## ino is stable within a lookup generation, not across one (measured on the CIFS share)
+
+Same path, identical `size`/`mtime`/`birth`: one read gave `ino 830979954`, two later reads both gave
+`844381491`. Two readings inside one generation agree, so an agreeing ino is not evidence, and an
+ino quoted from an earlier generation is not refutable -- not even your own. On this mount the only
+quotable in-place proof is `birth < modify` with birth unchanged. Never cite ino across time.
+
