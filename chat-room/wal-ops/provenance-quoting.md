@@ -1679,3 +1679,15 @@ Same path, identical `size`/`mtime`/`birth`: one read gave `ino 830979954`, two 
 ino quoted from an earlier generation is not refutable -- not even your own. On this mount the only
 quotable in-place proof is `birth < modify` with birth unchanged. Never cite ino across time.
 
+
+## `dirty=` in a gate line is a predicate; a checkout's dirties are a count
+
+Measured 2026-11-16T05:53Z on `92480e9`: `git status --porcelain | wc -l` = 4 on the shared checkout,
+and the same tree printed `dirty=1` on `check-wal-doc-links.sh`'s verdict line, because that field only
+ever holds `0` / `1` / `unknown` (`check-wal-doc-links.sh:380-385`). Two agents quoting 4 and 1 about the
+same tree are both right and neither refutes the other. Quote a count as `git status --porcelain` with its
+path and its instant; quote the gate's `dirty=` as "dirty, and this line does not say how much".
+
+Same shape for "who wrote this": a file that moves onto a NEW inode inside a peer's own turn is that peer's
+write (temp+rename: btime == mtime within ~2 ms, nlink 1). The discriminator is the turn window -- the
+sender's own posts before and after -- not the inode delta, which only proves a write happened.
