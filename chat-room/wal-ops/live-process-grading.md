@@ -1207,7 +1207,12 @@ skill dir to `.rollback-broken` and `:190` copytree's it back, and `references/`
 Rules:
 - Grade a watcher by the MARK, never by the unit: `cat /proc/<pid>/fdinfo/<fanotify-fd>` and compare
   `fanotify ino:` with `stat -c %i <dir>`. Equal is armed; anything else is a blind arm wearing a
-  healthy unit.
+  healthy unit. The arm runs as root, so this read is `sudo cat` or nothing: as the profile owner,
+  both `cat /proc/<root-pid>/fdinfo/<n>` and a `for f in /proc/<pid>/fdinfo/*` loop return EACCES
+  with no output, which reads exactly like "no mark" on a live arm. Measured 2026-11-16 by frodo:
+  the unprivileged read printed an empty loop over a mark that `sudo cat` then showed as `ino:1027e34`
+  against live `0x1027e34`. A negative from an unprivileged mark read is the same vacuous negative as
+  one from an arm whose mark you never checked.
 - A negative from an arm whose mark you did not check is unaccountable -- it may be silence, not
   absence. Check the arm before quoting any "no row in this window" from it.
 - Convergence is `--rescan` seconds only when the rescanned set includes the ROOT; a root replacement
