@@ -125,7 +125,7 @@ def main():
     stamp = time.strftime("%Y%m%dT%H%M%S")
     snap = os.path.join(STATE, f"wake-spill-pre-receiver-leg-{stamp}.jsonl")
     md5 = hashlib.md5()
-    recs = []
+    recs, data = [], b""
     if os.path.exists(SPILL):
         with open(SPILL, "rb") as fh:
             data = fh.read()
