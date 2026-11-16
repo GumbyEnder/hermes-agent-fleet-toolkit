@@ -2,7 +2,7 @@
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 86731b2196c0e53863652c9f9698ada1  check-index-rows.sh
 de356dd9abbe981f75cb68d7118f86ec  check-manifest.sh
-a0fcda5fe445fbb7d0838ba85966b12a  check-wal-doc-links.sh
+631a02017ce2526f340938bab9efc25f  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 73c6748ca4d9b910099cebca70c941e2  enumerate-exec-set.sh
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py

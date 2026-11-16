@@ -160,6 +160,22 @@ GATE_TMP=$(mktemp) || exit 2
 # in-place append costs none. ino alone would not do it -- inode numbers recycle, so the
 # pair (ino, btime) is the identity, and btime is the field that makes a recycled ino
 # distinguishable from a surviving one.
+# PORTABILITY, because a correct gate on one filesystem is a false one on another:
+# (ino, btime) is the identity pair on ext4, where an inode number is stable for the life of a
+# mount. It is NOT a portable recipe. On the CIFS shares the kernel synthesises inode numbers per
+# mount session: frodo's first production run of check-exec-copies.sh saw four files nothing had
+# written renumber in one group, one direction -- 841874229/841874009/841873966/841874026 ->
+# 844381460..844381463 -- with md5 and btime untouched on all four (2026-11-15). There ino is a
+# COORDINATE, not an identity, and the pair is (md5, btime); a gate that FAILs on the number fails
+# clean files, and the reader's repair is --record, the one act that destroys the witness.
+# This gate is scoped to a LOCAL checkout and safe only there: WALOPS derives from
+# `readlink -f $0` and both the recorded objects and the roster resolve under it, so they share
+# one root -- either both local or both remote, never one of each. Do not port --record-idents
+# onto a share; and note that the same self-rooting is why a rehearsal against a COPY of this
+# tree writes the copy's DOC-IDENTS.tsv, measured 2026-11-15 (repo md5 6f4791ae / ino 17748506
+# unchanged; the copy recorded its own c10a83a3). A roster path that does NOT share the recorded
+# objects' root -- the shape check-exec-copies.sh has, with absolute NAS/live COPIES and one repo
+# roster -- is the shape that needs an env override before it can be drilled.
 IDENTS_FILE="$WALOPS/DOC-IDENTS.tsv"
 idents_now() {
   for d in $DOCS; do
