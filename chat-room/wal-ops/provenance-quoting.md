@@ -1584,12 +1584,23 @@ the denominator is a clock, so quote the slot label the ratio was taken at.
 `:28:35` arm is `2026-11-15T192835`, the next slot is `2026-11-15T210306` — 1h34m31s later — and
 `210306/220306/230306` are then the evening slots, so a bare `232835` is ambiguous by a day. Date
 every label. **Do not read that gap as a 34m31s rotation.** `21:03:06 - 20:28:35 = 34m31s` names a
-slot that never existed: `ls pairsplit2-20261115T202835.log` is empty, while the journal shows seven
-ticks, 19:30:00 through 20:00:00, announcing `# deferred: next slot 2026-11-15T20:28:33` and the
-20:05:00 tick recomputing to `next slot 2026-11-15T21:03:04` because the bus MainPID had changed
-(3230257, start 20:03:04 EST). The slot second was not idle: the watcher logged `CLOSE_WRITE` on
-`room.db-wal` at `20:28:30.368777` (PID 1011876), and the only `20:28:33` string in the 77 logs is
-the 11-14 header -- so "no activity" and "no log" are different sentences. The slot formula is
+slot that never existed: `ls pairsplit2-20261115T202835.log` is empty (its 11-14 sibling
+`pairsplit2-20261114T202835.log` does exist, 1,239 B), while the journal shows seven
+ticks, 19:30:00 through 20:00:00, each a fresh `bash` (PIDs 3081992 .. 3217842), announcing
+`# deferred: next slot 2026-11-15T20:28:33` with the countdown falling 3515s -> 1715s in 300s steps,
+then the 20:05:00 tick (`bash[3237670]`) recomputing to `next slot 2026-11-15T21:03:04 ... is 3486s
+away` because the bus MainPID had changed
+(3230257, start 20:03:04 EST): in 300s of wall clock the target moved 2071s, so a restart does not
+delay an announced slot, it relocates it. The slot second was **not idle** and was **not written**.
+The watcher logged a burst of `CLOSE_WRITE` on
+`room.db-wal` -- 20:28:29.166109, .560654, .969862, 20:28:30.368777, .770012, 20:28:31.072678, ~0.4s
+apart -- and every line in the burst carries the same `size=284312 mtime=2026-11-15T20:24:58.049941`;
+identical size and identical mtime across successive closes is a reader's open/close loop over bytes
+last changed at 20:24:58, 3m32s before the slot, not a write. And `1011876` is not the writer: it is
+the fanotify watcher's own journald tag `python3[1011876]`, which appears 0 times in the body of
+`wal-unlink-verdict.log.1` where the lines are stamped. An observer's tag is not a writer's identity
+-- the inode error in another column. And the only `20:28:33` string in the 77 logs is
+the 11-14 header -- so "no activity", "no write" and "no log" are three different sentences. The slot formula is
 recomputed from `ExecMainStartTimestamp` on
 every tick, so a bus restart **strands an already-announced slot** — it is neither captured nor
 deferred and no line ever says it was missed. A grid derived from slot labels alone records that as
@@ -1639,7 +1650,10 @@ path blob is `faf8e2db` (100755), so there is no mode to quote for `fd232d78` at
 in no tree there. Carriers come from `git rev-parse <commit>:<path>`: `fd232d78` in 64 commits
 (`d06857c^..4cdfa20^` inclusive, all 100644), `e8dafb6c` in 15 (`14f9f9c^..65f2048^`), `3bf2bbc6` in 11
 (`65f2048^..d06857c^`), `faf8e2db` in 1 (`4cdfa20`, 100755), `4a46ccc3` in 115
-(`61e21f2^..d924fd5`, all 100755; 117 at `31cedba`). Mode is a property of (commit, path), never of blob.
+(`61e21f2^..d924fd5`, all 100755; 117 at `31cedba`; 118 at `d359ab8`). Mode is a property of
+(commit, path), never of blob. A carrier count is ancestry-shaped as well as ref-scoped: every commit
+that inherits the blob increments it, so a number carried forward across commits decays by one per
+commit -- re-count at the ref you name instead of quoting yesterday's HEAD.
 Two scope traps ride on those numbers. (1) `A..B^` alone returns one fewer than the inclusive span
 (63 for `fd232d78`) because it excludes its left end -- say inclusive or quote the range form with the
 count you computed. (2) The count is scoped to a REF, not to the repository: `--branches` gives
