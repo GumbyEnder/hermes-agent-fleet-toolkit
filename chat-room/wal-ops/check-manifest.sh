@@ -122,13 +122,13 @@ rm -rf "$rs_tmp"
 #   (b) the working file was written seconds ago and the row's own update has not landed
 #       yet: the tree is mid-edit -- wait, then re-measure. Bouncing (b) is a false red and
 #       it is the expensive direction, because it lands a correction on a peer's in-flight work.
-# Measured 2026-11-15 (buzzy, 02:28 -> 02:34, no commit in between, HEAD 797bf17 both
-# reads): one row FAILED at 02:28 and the same rowset read ok=44 fail=0 six minutes
-# later -- the actor rewriting fanotify-close-actor.py had not yet written its MANIFEST
-# row. The mirror-image trap is just as real: the 02:34 agreement (row == disk at
-# 36,135 B / ec592cee) was a WORK-IN-PROGRESS agreement, because the commit five minutes
-# later (379e430) carried 36,441 B / 3ff82bc3. So neither pair-inequality nor pair-equality
-# is a verdict on its own; the tree coordinate is what separates them.
+# NOTE 2026-11-16: this paragraph records a TRAP; it is not a gate reading. Both stamps
+# predate /mnt/nas/host-ops/gate-logs/INDEX.tsv (first row 2026-11-15T17:23:41-0500), so
+# neither 02:28 nor 02:34 has a .log leg. A verdict cites a gate line AND its leg.
+# Pair-equality is as blind as pair-inequality: the 02:34 agreement (row == disk at
+# 36,135 / ec592cee) was a WORK-IN-PROGRESS agreement, superseded five minutes later by
+# 379e430's 36,441 / 3ff82bc3. Neither read is a state of the tree that ever existed at
+# a commit boundary.
 #
 # The third hash is the discriminator, and it costs one `git cat-file` per FAILING row:
 #   R = the row's md5 (MANIFEST.md5), D = md5 on disk, H = md5 of the blob at HEAD.
