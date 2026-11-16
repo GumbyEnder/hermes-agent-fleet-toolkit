@@ -1576,22 +1576,38 @@ The witnessed ladder, enumerated rather than eyeballed:
     fd232d78  24,063 / 2335ff8a  2026-11-14T232835 .. 2026-11-15T082835  10 slots
     4a46ccc3  30,458 / 6c543893  2026-11-15T092835 .. 2026-11-15T230306  14 slots, open
 
-Three traps in those four lines. (1) Only **28 of 76** logs carry a `# WITNESS` line at all; the
+Three traps in those four lines. (1) Only **28 of 76** logs carry a `# WITNESS` line at all (era
+record: 29 of 77 at `20261116T000306`); the
 other 48 cannot bound anything, so a slot count is always two numbers (`10 of 76`), never one.
-(2) The `fd232d78` window **straddles midnight**, and the scheduler is not hour-uniform: after
-`2026-11-15T192835` it rotates `:28:35 -> :03:06` (34m31s), so `210306/220306/230306` are the
-evening slots and a bare `232835` is ambiguous by a day. Date every label.
+(2) The `fd232d78` window **straddles midnight**, and the scheduler is not hour-uniform: the last
+`:28:35` arm is `2026-11-15T192835`, the next slot is `2026-11-15T210306` — 1h34m31s later — and
+`210306/220306/230306` are then the evening slots, so a bare `232835` is ambiguous by a day. Date
+every label. **Do not read that gap as a 34m31s rotation.** `21:03:06 - 20:28:35 = 34m31s` names a
+slot that never existed: `ls pairsplit2-20261115T202835.log` is empty, while the journal shows the
+ticks at 19:50 through 20:00:00 announcing `# deferred: next slot 2026-11-15T20:28:33` and the
+20:05:00 tick recomputing to `next slot 2026-11-15T21:03:04` because the bus MainPID had changed
+(3230257, start 20:03:04 EST). The slot formula is recomputed from `ExecMainStartTimestamp` on
+every tick, so a bus restart **strands an already-announced slot** — it is neither captured nor
+deferred and no line ever says it was missed. A grid derived from slot labels alone records that as
+a missed capture plus a tidy 34m31s rotation; both would be wrong. Quote the journal's
+deferred/captured pair with the labels.
 (3) Count both ends *and* quote both margins, because the count alone hides the lead-in silence:
 `fd232d78`'s west slot is 7m14s after `d06857c` (23:21:21) and its east slot is 17m21s before the
-08:45:56 write; `4a46ccc3`'s west slot is 42m39s after that write; `3bf2bbc6`'s east slot is 52m46s
+08:45:56 write; `4a46ccc3`'s west slot is 42m38.36s after that write (`08:45:56.641375 ->
+09:28:35.000`; the often-quoted 42m39s comes from truncating the start bound to whole seconds, so it
+is a second wide); `3bf2bbc6`'s east slot is 52m46s
 before `d06857c`. "Installed from <commit>" therefore overstates every arm it is applied to.
 
 ## "Resolved at <commit>", never "introduced at", and keep the whole commit set (same set)
 
 `4a46ccc3` is put in the tree by `61e21f2` (2026-11-15 08:45:50) and is still the path blob at HEAD
-`c6e5842` (23:01:07, mode 100755) -- quoting a read-time HEAD such as `df55444` as the binding commit
-binds nothing. And one blob can be re-touched: `e8dafb6c` sits in `14f9f9c` (introducing) and
-`65f2048` (re-touch), so blob -> commit is a SET; say which resolution you mean. The empty window is
+`d924fd5` (2026-11-16 00:15:21, mode 100755) -- quoting a read-time HEAD such as `df55444`
+(2026-11-15 22:50:21) as the binding commit binds nothing, and neither does quoting a HEAD that has
+since moved (`c6e5842` at 23:01:07 was the resolution point for eight commits). And one blob can be
+re-touched: `e8dafb6c` sits in `14f9f9c` (introducing) and
+`65f2048` (re-touch), so blob -> commit is a SET; say which resolution you mean. `fd232d78` is a set
+too -- `{4cdfa20, d06857c}` by `--find-object` -- and it is mode `100644` at `d06857c` where
+`4a46ccc3` is `100755`, so quote the mode per commit, never per path. The empty window is
 a legal answer and is clean when quoted as one: `faf8e2db` = `4cdfa20` 08:45:02 -> `61e21f2`
 08:45:50, 48 seconds alive, 0 capturing slots, `grep -l` over 76 logs = 0.
 
