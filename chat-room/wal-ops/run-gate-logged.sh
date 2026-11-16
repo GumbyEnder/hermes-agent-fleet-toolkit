@@ -82,6 +82,12 @@ ORIGIN_SHA=$(git rev-parse --verify -q origin/master 2>/dev/null || echo none)
 #       part that can be intersected with a commit's scope. Attribution still does not
 #       exist here -- no git command names who wrote an uncommitted path -- so this field
 #       is evidence for a human/peer check, never a verdict.
+# SCOPE: this count is `git status --porcelain` (untracked INCLUDED), while a gate's own
+# `dirty=` token is usually `git status --porcelain --untracked-files=no` (tracked-only).
+# One untracked path moves this number and cannot move that boolean. Measured 2026-11-15T22:47:54
+# -0500 in a single journalled row: dirty_count=4 beside the gate's dirty=1, the difference being
+# chat-room/test-bus-mention-ts.py -- scope, not drift. Quote either number with its scope; the
+# path set below is the discriminator (a path in dirty_paths and not in `git ls-files`).
 if ! DIRTY_RAW=$(git status --porcelain 2>/dev/null); then
   DIRTY=unknown
   DIRTY_SET='<unknown>'

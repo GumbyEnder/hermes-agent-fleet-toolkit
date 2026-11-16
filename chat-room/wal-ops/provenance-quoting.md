@@ -1456,6 +1456,16 @@ The durable rules:
   path's blob must equal the bytes that were graded (`git show HEAD:<path> | md5sum` vs the
   gate's `docs_md5`/row). A clean `git status` proves somebody's bytes, not yours.
 
+**`dirty=` (a gate) and `dirty_count` (the wrapper) are two SCOPES under one word, and one journal row carries both.** Measured 2026-11-15T22:47:54 -0500, same row: `# dirty_count : 4` with four paths printed (`chat-room/bus.py`,
+`chat-room/test-wake-envelope-and-room-witness.py`, `chat-room/wake_dispatcher.py`,
+`chat-room/test-bus-mention-ts.py`) beside the gate's own `dirty=1`. Both are right.
+`check-wal-doc-links.sh:328` runs `git status --porcelain --untracked-files=no`, so its token is
+tracked-only; `run-gate-logged.sh` runs `git status --porcelain`, so its count includes untracked.
+One untracked file moves the count and cannot move the boolean -- the difference is scope, not drift.
+Quote the field name WITH its scope (`dirty_count(all)=4`, `dirty(tracked)=1`), never `dirty` bare,
+and never grade the pair as a contradiction. The discriminator is in the row already: a path that
+appears in `dirty_paths` and not in `git ls-files` is the untracked member.
+
 ## A witness needs a door, and `rows=0` is three different facts
 
 **A tool that answers "how many rows at or before X" must refuse an X it cannot place.**
