@@ -1560,3 +1560,72 @@ asserts the derivation still sends the one cause a commit DOES fix to the commit
 `test-gate-head-vocabulary.sh` holds 25 assertions over three gates x three trees
 (sha / none / unknown) plus the repair lines on the two trees where committing cannot work.
 Measured RED at b0ac1fc: 17 failed arms. Measured GREEN on the fix: 0.
+
+## The mtime cell is a RECORD, and a record nobody compares is decoration (landed 2026-11-16)
+
+`DOC-IDENTS.tsv` has always carried four cells per doc -- name, ino, btime, mtime -- and
+through `9698889` the gate graded the first three. The fourth was emitted by `idents_now`,
+written by `--record-idents`, published in the verdict as `idents=`, and read by nothing.
+That is worse than an absent column: the row reads as coverage.
+
+The case it leaves blind is measured, and it is the only case any other arm cannot see
+(frodo, 2026-11-16, one inode in scratch):
+
+    before  ino=16929530 btime=...T23:59:04.349928307 mtime=...T23:59:04.350858399
+    after   ino=16929530 btime=...T23:59:04.349928307 mtime=...T23:59:04.363169203
+    ino same: True | mtime moved: True | bytes same: True
+
+An in-place rewrite of IDENTICAL bytes (`r+b`/`write`, `dd conv=notrunc`, a restore that
+keeps mtime out of it) or a bare `utimensat`. `docs_md5` is green because the bytes are
+equal, `-ef` is green, ino is green, btime is green, and mtime is the only field that
+moves. Same defect class as the unrecorded inode the identity arm already fails closed on:
+a witness you can choose not to record is not a witness.
+
+Why it costs nobody a step: every write this gate cares about lands via
+`patch`/`write_file` -> `os.replace`, so btime moves and `IDENTITY REPLACED` is already red
+on an ordinary edit; `--record-idents` is already mandatory. The compare closes only the
+ino-AND-btime-preserved case, and it costs zero extra workflow.
+
+It is a THIRD record, deliberately not folded into the restored-time arm. That arm grades
+the file's own clock against its live btime, and btime survives a re-record, so it is the
+one arm poking `DOC-IDENTS.tsv` cannot launder. The new one grades the RECORD -- the cell
+in the roster -- and a re-record clears it. Two records, two questions.
+
+Direction, not inequality, because the repair differs:
+
+    FAIL identities/<doc>: WRITTEN SINCE THE RECORD: mtime <rec> -> <live>, ino and btime
+      unchanged; a same-byte in-place write or a utimensat is invisible to md5, -ef and
+      the identity arm. Name the writer and re-record in this commit.
+    FAIL identities/<doc>: MTIME MOVED BACKWARDS: <rec> -> <live>, ino and btime
+      unchanged -- a clock set on a live inode. Content, -ef and btime cannot see it.
+
+Both cells come out of `stamp()` (idents_now and `--record-idents` share it), so this is a
+string compare with no second formatter and no precision drift. It skips when either cell is
+`-` (a filesystem with no btime), the same guard the restored-time arm carries. The FAIL
+prints both stamps, so the repair is one visible diff line with a named writer, which is the
+workflow this document already states for the identity row.
+
+`test-mtime-record-arm.sh` is the arm set. Each arm builds its own drill under `$TMPDIR`,
+copies the docs with plain `cp` (so btime==mtime on the copy rather than a preserved-time
+copy), then points a FAKE `$HOME` at the copy through hardlinks so the `-ef` arm is really
+satisfied, and makes the copy a git repo so `head=`/`dirty=` and the N3 diff are real. The
+canonical farm is never written: the gate self-roots at `readlink -f $0`, so the copy records
+its own roster.
+
+| arm | shape | pre-fix | on the fix |
+|---|---|---|---|
+| N1 | in-place same-byte rewrite on a clean drill tree; asserts bytes, `docs_md5`, ino and btime all UNCHANGED | `rc=0 fails=0` | `FAIL ... WRITTEN SINCE THE RECORD`, `rc=1`, and no backwards message |
+| N2 | mtime backdated strictly inside (btime, recorded) on a row with a wide window; asserts the backwards message and NOT the restored-time message | `rc=0 fails=0` | `FAIL ... MTIME MOVED BACKWARDS`, `rc=1`, no restored-time, no written-since |
+| N3 | same-byte rewrite, then `--record-idents` | green | green, roster diff exactly one changed line, `idents=` unchanged across the record |
+
+A fresh copy has a half-millisecond window (btime and mtime are the same write), so arm N2
+manufactures the wide window the honest way -- a forward write, then a re-record -- which is
+exactly how `wal-forensics.md` got its real row (btime 06:47:59, recorded 22:27:27). A
+backdate on a half-millisecond window would land below btime and fire the restored-time arm
+instead, i.e. the arm would be false.
+
+Measured 2026-11-16: RED at `5403789`'s gate -- N1 `rc=0 fails=0`, N2 `rc=0 fails=0`,
+17 PASS / 3 FAIL, `RESULT FAIL`. GREEN on the fix -- 20 PASS / 0 FAIL, `RESULT PASS`. The
+`wal-lifecycle.md` mtime cell recorded by `9698889` is already the correct baseline, so the
+re-record this change needs does not touch that row. Timer wiring and `VACUOUS_STRUCTURAL`
+remain open and are not argued here.

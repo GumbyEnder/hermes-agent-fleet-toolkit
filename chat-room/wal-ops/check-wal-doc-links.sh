@@ -326,6 +326,33 @@ for d in $DOCS; do
       echo "FAIL identities/$d: RESTORED-TIME COPY -- mtime $lm is OLDER than btime $lb, so these bytes were planted with someone else's clock. Content and -ef cannot see this; only this column can. Name the writer and re-record only if the replacement was intended: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
       rc=1
     fi
+    # The RECORD arm: the live mtime cell against the RECORDED one, DIRECTIONAL, and only
+    # while ino and btime are unchanged. Distinct from the restored-time arm above and
+    # deliberately not folded into it: that arm grades the file's own clock against its
+    # btime, and btime survives a re-record, so it is the one arm a re-record cannot
+    # launder. This arm grades the RECORD -- the cell in DOC-IDENTS.tsv -- and a re-record
+    # clears it. Two records, two questions.
+    # Why it is free: patch/write_file land via os.replace, so btime moves and the
+    # identity arm above is already red on every ordinary edit; the re-record is already
+    # mandatory, so comparing this cell adds no step to anyone's workflow. It closes the
+    # one case nothing else sees -- a same-byte in-place rewrite (r+b/write,
+    # dd conv=notrunc, a restore that keeps mtime out of it) or a bare utimensat: ino,
+    # btime, md5 and -ef all stay green, so the write leaves no trace anywhere while the
+    # column reads as coverage. A witness you can choose not to record is not a witness.
+    # Both cells come from idents_now/stamp(), so this is a string compare with no second
+    # formatter and no precision drift. Skips "-" (no-btime filesystem), the same guard
+    # the restored-time arm carries. The FAIL prints both stamps: the repair is one
+    # visible diff line, not a silent re-record.
+    rmt=${R_MT[$d]:-}
+    if [ "${R_INO[$d]}" = "$li" ] && [ "${R_BT[$d]}" = "$lb" ] \
+       && [ -n "$rmt" ] && [ "$rmt" != "-" ] && [ "$lm" != "-" ] && [ "$rmt" != "$lm" ]; then
+      if [[ "$lm" > "$rmt" ]]; then
+        echo "FAIL identities/$d: WRITTEN SINCE THE RECORD: mtime $rmt -> $lm, ino and btime unchanged; a same-byte in-place write or a utimensat is invisible to md5, -ef and the identity arm. Name the writer and re-record in this commit: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
+      else
+        echo "FAIL identities/$d: MTIME MOVED BACKWARDS: $rmt -> $lm, ino and btime unchanged -- a clock set on a live inode. Content, -ef and btime cannot see it. Name the writer and re-record in this commit: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
+      fi
+      rc=1
+    fi
   fi
 done
 for n in "${!R_INO[@]}"; do
