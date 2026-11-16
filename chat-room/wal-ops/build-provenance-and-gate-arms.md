@@ -645,7 +645,8 @@ byte-identical. One of seven moved, the roster did not, and the field never chan
 
 Quote `docs_oid` as the roster/contract pin only — never as "the doc set: unchanged". Since
 `9e978c5` the verdict line also prints `docs_md5`, one sha256 over the seven (sha256, name) pairs in
-DOCS order, because relabelling the pin does not give the reader a field that carries the claim:
+DOCS order -- eight since `f833d9b` joined `provenance-quoting.md`, which is why the pair is quoted
+only from the verdict line and never hand-counted, because relabelling the pin does not give the reader a field that carries the claim:
 
     docs_oid  56364eaa…  at 6478004 and 9e978c5       <- roster unchanged (true)
     docs_md5  8ddf5c8f9004b9bc -> 351e477e23521e83   <- doc set moved (one of seven)
