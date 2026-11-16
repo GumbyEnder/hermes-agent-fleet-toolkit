@@ -947,3 +947,58 @@ moved inode, a new birth, an unrecorded doc, or a stale row. The re-record is
 nothing and a whole-file rewrite costs a line someone can read. Record the inode only if you can
 name the writer that replaced it — `ino` alone would not do, since inode numbers recycle and
 `(ino, btime)` is the identity.
+
+## Published copies get the same witness, and the roster is the only thing that sees a swap
+
+`MANIFEST.md5` pins the REPO file of every script; `LEG_TABLE` in `install-mirror-legs.sh`
+pins four other published paths. Neither set covered the five copies `enumerate-exec-set.sh`
+returned as UNWITNESSED (four under `$NAS`, plus the live leg a unit executes). Measured
+2026-11-15: all five were byte-identical to their repo files and appeared in no table at
+all, so the day one of them is edited in place or renamed over, every gate in the tree
+stays green while the path a unit executes carries bytes nobody recorded.
+
+So the same shape as `DOC-IDENTS.tsv`, applied to code: `EXEC-IDENTS.tsv` records one row
+per copy -- `name<TAB>root<TAB>md5<TAB>size<TAB>ino<TAB>btime` -- and
+`check-exec-copies.sh` grades it. Two claims, two arms:
+
+- **bytes**: the copy's md5 must equal the repo file's md5. Any difference is `drift=`.
+  cc21043's snapshot measured the whole class byte-identical, so drift is news, not noise.
+- **identity**: the copy's `(ino, btime)` must equal the recorded pair. Bytes cannot see a
+  rewrite that reproduced identical content -- a temp-file-and-rename writer keeps the md5
+  and replaces the inode, which is why a md5-only witness graded a swap green on the doc
+  pair until `DOC-IDENTS.tsv` existed.
+
+`copies_idents=<8hex>` is one digest over the `(name, ino, btime)` triplets, so a room
+post carries the identity claim in one field the way `docs_md5` carries the content claim.
+It moves on a re-record, never on a byte edit.
+
+**All-moved is not one-moved.** These copies sit on a CIFS mount, where the kernel
+synthesises inode numbers and a remount can renumber every file at once. The verdict
+carries `moved=<n>` against `copies=<n>` on purpose: one row moved is a write, all rows
+moved together is the remount signature. Both FAIL (fail-closed), because a guard that
+guessed would be a guard that silently accepted the write -- but the printed fix differs,
+and a reader who only saw `RECORDED STATE REPLACED` would repair the wrong thing.
+
+**A --record is the one destructive act, so a drill must redirect it.** Measured the hard
+way in the rehearsal for this gate: a scratch-root drill (`NAS=`/`LIVE=` overrides) ran
+`--record` against the fixed roster path and wrote five scratch inodes into the repo
+table -- the drill destroyed the witness it was rehearsing. The roster path is therefore
+`EXEC_IDENTS_FILE` overridable, and the rehearsal sets it. Four arms were exercised on an
+isolated roster before this landed: one appended byte -> `drift=1`; a temp-file-and-rename
+over the live leg with identical bytes -> `moved=1`; a removed copy -> `MISSING`; a row
+for a copy no longer in `COPIES` -> `stale row`. A fifth: re-record and the same state
+grades green, which is exactly why the re-record has to be a line someone can read.
+
+**Correction, measured 30 minutes after the paragraph above: on CIFS an inode NUMBER is a
+coordinate, not an identity.** The first production run of `check-exec-copies.sh` graded
+all four NAS copies as `moved` while their md5 and btime were unchanged and nothing had
+written to the qtree: inos `841874229/841874009/841873966/841874026` ->
+`844381460..844381463`, one group, one direction, no other field touched. The kernel
+synthesises ino per mount session, so a roster that FAILs on ino alone would fail clean
+files -- and the reader's repair would be `--record`, the one act that destroys the
+witness. So the identity pair recorded and graded is `(md5, btime)` (btime is carried by
+the server: it survived the renumber), ino is recorded LAST and graded as
+`ino_renumbered=<n>` in a NOTE that does not move rc, and the whole-file-rewrite arm still
+bites -- an atomic swap changes btime even when it preserves bytes. Both shapes were
+rehearsed on an isolated roster: identical bytes through a temp-file-and-rename ->
+`moved=1` on the live leg; roster ino perturbed alone -> `ino_renumbered=1`, `rc=0`.

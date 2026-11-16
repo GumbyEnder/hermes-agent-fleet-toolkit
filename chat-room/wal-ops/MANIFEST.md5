@@ -1,6 +1,7 @@
+5ba17b22c9e74ff9e799a9cb463c254f  check-exec-copies.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 86731b2196c0e53863652c9f9698ada1  check-index-rows.sh
-8a666cd74076bbe5bb7cb7b8981dd8d0  check-manifest.sh
+de356dd9abbe981f75cb68d7118f86ec  check-manifest.sh
 a0fcda5fe445fbb7d0838ba85966b12a  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 73c6748ca4d9b910099cebca70c941e2  enumerate-exec-set.sh
