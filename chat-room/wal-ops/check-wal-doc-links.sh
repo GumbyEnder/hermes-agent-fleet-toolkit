@@ -79,7 +79,8 @@ set -u
 #   A FAILED batch materialises every file in the skill dir (copytree of the dir snapshot).
 #   Relink is therefore part of every edit, success or failure -- never only after a fail.
 #   On ANY failure inside an operations=[...] batch -- even one op, even a failed old_string
-#   match, even an over-cap body refused pre-write -- _restore_snapshot copytree's the whole
+#   match, even an over-cap body refused pre-write -- `_restore_snapshot` in
+#   `tools/skill_manager_batch.py` copytree's the whole
 #   skill dir back: every reference gets a fresh inode at nlink=1 with identical bytes and its
 #   own earlier mtime, including refs no op touched. Signature: birth new, mtime = that file's
 #   earlier mtime, ctime on the failing call's second. Reproduced 2026-11-15T16:42:46 ET on a
@@ -92,12 +93,27 @@ set -u
 #     only when the body is short -- measured 2026-11-15T16:43 ET: frodo 22 wrapper hits / 1
 #     with `batch aborted`, buzzy 56 / 2, max payload 200 in both):
 #       grep 'Tool skill_manage returned error.*operations\[' <profile>/logs/agent.log*
-#   UNWINDOW -- a third defect class in the same function: _restore_snapshot :188 renames the
-#   skill dir to `<name>.rollback-broken` and :190 copytree's the snapshot back, so between
-#   those two calls the skill directory does not exist. Writers do not race it (a batch holds
-#   skill_file_lock, a cross-process flock), but LOCK-FREE READERS do: skill_view, the curator
-#   walk, and anything calling find_skill can see a missing skill, not a stale one. Sub-second;
-#   it is a visibility hole, not a corruption path.
+#   UNWINDOW -- a third defect class, in `tools/skill_manager_batch.py`: `_restore_snapshot`
+#   (:158; :186 `aside = name + ".rollback-broken"`, :188 `post_dir.rename(aside)`, :190
+#   `shutil.copytree(snap, pre_dir)`). NOT the module that owns the cap above -- :188 there is
+#   the size validator, and a reader who takes these numbers to `skill_manager_tool.py`
+#   concludes the window is imaginary. Between :188 and the end of that copytree the path holds
+#   neither the old tree nor a complete new one. Writers do not race it (a batch holds
+#   skill_file_lock, a cross-process flock), but LOCK-FREE READERS do -- skill_view, the curator
+#   walk, and anything calling find_skill see THREE states, not one: (1) no directory at all;
+#   (2) a directory with no SKILL.md yet, because copytree mkdir's first and fills after; (3) a
+#   SKILL.md from the snapshot sitting beside a still-incomplete references/ set. States 2 and 3
+#   are partial materialisation, and quoting the window as "a missing skill" understates it.
+#   Measured 2026-11-16 on a throwaway skill through the running module's own _restore_snapshot
+#   (one 64 MB file to hold the copy open): 378 samples, 55 distinct runs, 1 absent, refs
+#   appearing 0/1/4/6/9/11/.../22 in a dir whose SKILL.md still raised FileNotFoundError, then
+#   SKILL.md readable at 121 and 123 of 124 entries.
+#   An fd opened BEFORE the arm is safe and stays pinned: :188 RENAMES, so the old inodes
+#   survive under `.rollback-broken` until the success path rmtree's them, and a handle keeps
+#   whatever it opened (measured: fd ino 16925852 read b'HALF-APPLIED-VALUE\n' after the call
+#   while the path's new ino 16925859 read b'SNAPSHOT-VALUE\n'). Only PATH lookups fail -- the
+#   same inode-vs-name distinction the success arm turns on, so it belongs in this sentence and
+#   not as a caveat. Sub-second; a visibility hole, not a corruption path.
 #   Durable fix: keep SKILL.md well under the 100,000-character cap. The cap is len(content)
 #   in Python characters (skill_manager_tool.py:110 / :188), NOT bytes -- a file can read
 #   100,010 bytes and still pass, so a byte-based margin panics 10 bytes early. Quote the rule
@@ -112,13 +128,13 @@ set -u
 #   The 4 root docs and the 2 wal-ops docs outside DOCS (README.md,
 #   manifest-truncation-2026-11-14.md) have no reference in the frodo, buzzy, aragorn or sam
 #   profile dirs, so they have no drift path. Everywhere else this gate is blind by
-#   construction: 38 reference docs in frodo's dir and 35 in buzzy's -- 73 profile-local docs
+#   construction: 39 reference docs in frodo's dir and 37 in buzzy's -- 76 profile-local docs
 #   against 8 graded -- are neither in DOCS nor in the repo. Coverage is exhaustive for the 8
 #   DOCS names x 2 profiles and for nothing else. Never restate it as "exhaustive for drift".
-#   (Counts re-measured 2026-11-15T16:43 ET at 3a3a3c5 + this commit: `git ls-files`, `ls` in
-#   each references dir. The previous line read 27/24/51, which was already stale by 10 docs
-#   before provenance-quoting.md was added -- a count in a comment decays silently, so re-count
-#   it in the same edit, never carry it.)
+#   (Counts re-measured 2026-11-15T22:38 ET at c262ac0 + this commit: `git ls-files`, `ls` in
+#   each references dir. Both counts moved inside one evening (38->39, 35->37); the cause of a
+#   delta is a claim about someone else's turn, so state the count and not where it went. A
+#   count in a comment decays silently -- re-count it in the same edit, never carry it.)
 #
 # Docs covered. Every entry here is repo-canonical in chat-room/wal-ops/ and symlinked into
 # each profile's references/. Add a doc here in the same commit that adds its symlinks, or the
