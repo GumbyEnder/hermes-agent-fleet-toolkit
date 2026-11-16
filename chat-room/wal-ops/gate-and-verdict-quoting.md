@@ -860,7 +860,15 @@ path blob is `faf8e2db` (100755), so there is no mode to quote for `fd232d78` at
 in no tree there. Carriers come from `git rev-parse <commit>:<path>`: `fd232d78` in 64 commits
 (`d06857c^..4cdfa20^` inclusive, all 100644), `e8dafb6c` in 15 (`14f9f9c^..65f2048^`), `3bf2bbc6` in 11
 (`65f2048^..d06857c^`), `faf8e2db` in 1 (`4cdfa20`, 100755), `4a46ccc3` in 115
-(`61e21f2^..d924fd5`, all 100755; 117 at `31cedba`; 118 at `d359ab8`). Mode is a property of
+(`61e21f2^..d924fd5`, all 100755; 117 at `31cedba`; 118 at `d359ab8`; 123 at `a2e1a26`).
+Those five rows START AT `e8dafb6c` (`14f9f9c`, 2026-11-14 18:44:17) -- they are a floor, not the
+set. The path holds NINE blobs; the four earlier ones are `1d7c2604` in 3 (`b46faac`, 2026-11-13
+16:32:48), `1f08487d` in 3 (`019a741`, 18:15:43), `6f337043` in 86 (`7643d5c`, 20:18:11) and
+`c1474b47` in 14 (`4289214`, 2026-11-14 16:01:44). So nine blobs total 314 commit-slots at
+`31cedba` (208 of them in the five rows) and 320 at `a2e1a26` (214 in the five rows) -- a total and
+a row-sum quoted at DIFFERENT heads is the two-clock error in one sentence. `c1474b47` is already
+cited at `live-process-grading.md:156`, which is why the five rows have to declare their start
+rather than leave it to be read as the whole set. Mode is a property of
 (commit, path), never of blob. A carrier count is ancestry-shaped as well as ref-scoped: every commit
 that inherits the blob increments it, so a number carried forward across commits decays by one per
 commit -- re-count at the ref you name instead of quoting yesterday's HEAD.
