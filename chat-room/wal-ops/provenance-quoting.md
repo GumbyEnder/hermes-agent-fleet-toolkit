@@ -421,7 +421,18 @@ Measured 2026-11-15 on `chat-room/wal-ops/fanotify-close-actor.py` in one shared
 and the restore unlinked and rewrote the path.
 
 - A branch round-trip moves `mtime`, `ctime` and `btime` across zero content change, so `mtime` dates
-the last WRITE OF THE PATH, never the last change to the BLOB.
+  the last WRITE OF THE PATH, never the last change to the BLOB.
+- The round trip is a write, not a clock: a checkout touches a path only when the branch's blob
+  differs from the tree's (or the path is dirty), so branches that AGREE leave the tuple untouched.
+  Measured 2026-11-15 22:24:56 in a fresh `git init` scratch repo (no shared worktree, no hooks):
+  `git checkout scan-arm-census` and back left `btime` the same value on all three reads
+  (`22:24:56.760633148`), `ino 16925834`, size 6, bytes `4a580070` = `master:f.py`. The same control
+  run with the two sides holding DIFFERENT blobs (`side -> master -> side`, one commit each) read
+  `ino 16925781` at all three, `btime=mtime` `22:24:33.808180805 -> 22:24:35.812176686 ->
+  22:24:37.816172539`, and `git hash-object -- f.py` = `4a580070` = `side:f.py` at both ends. So the
+  65 minutes above is `ffdf9ac` writing `42cf4f3d` into that path (numstat 50/8) and the return to
+  `master` writing `cc9d3eb0` back, and a recycled inode number with a re-minted birth is ordinary
+  checkout behaviour rather than a property of one worktree.
 - The inode NUMBER survived the re-create (recycled), so `ino` is not object identity either. `btime`
 is the only field that says the object is new — quote it when the claim is "nothing rewrote this".
 - A path can be re-pointed with `mtime` INTACT: `os.replace` of a `copy2`-preserved copy — what an atomic-replace save does — leaves `mtime` frozen while `ino` and `ctime` move. Measured 2026-11-15 on `chat-room/wal-ops/wal-forensics.md`: `mtime` 06:08:06.477858480 held while `ino` went 17,747,979 -> 17,747,982 and `ctime` jumped to 06:09:23.952046724, md5 constant at 4de2ce23. So `mtime` cannot witness "nothing rewrote this path"; only `ctime`/`btime` plus bytes-against-the-blob can.
