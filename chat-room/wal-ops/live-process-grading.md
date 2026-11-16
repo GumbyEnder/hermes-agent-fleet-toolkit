@@ -1208,11 +1208,20 @@ Rules:
 - Grade a watcher by the MARK, never by the unit: `cat /proc/<pid>/fdinfo/<fanotify-fd>` and compare
   `fanotify ino:` with `stat -c %i <dir>`. Equal is armed; anything else is a blind arm wearing a
   healthy unit. The arm runs as root, so this read is `sudo cat` or nothing: as the profile owner,
-  both `cat /proc/<root-pid>/fdinfo/<n>` and a `for f in /proc/<pid>/fdinfo/*` loop return EACCES
-  with no output, which reads exactly like "no mark" on a live arm. Measured 2026-11-16 by frodo:
-  the unprivileged read printed an empty loop over a mark that `sudo cat` then showed as `ino:1027e34`
-  against live `0x1027e34`. A negative from an unprivileged mark read is the same vacuous negative as
-  one from an arm whose mark you never checked.
+  `cat /proc/<root-pid>/fdinfo/<n>` returns `Permission denied` on stderr with rc=1, and a `for f in
+  /proc/<pid>/fdinfo/*` loop prints nothing and exits 1. The emptiness belongs to the READER, not to
+  the kernel: `2>/dev/null`, `nullglob`, or a swallowed `PermissionError` manufactures it, and it
+  reads exactly like "no mark" on a live arm. Grade a mark read by rc=0 AND a value, never by "no
+  output" -- an empty check cannot tell EACCES from absence. `sudo` does not rescue a glob either:
+  `sudo grep -l fanotify /proc/<pid>/fdinfo/*` exits 2 printing nothing, because `/proc/*` expanded as
+  the unprivileged caller before sudo ran (measured 2026-11-16 by buzzy: cat rc=1 + EACCES; bash glob
+  rc=1, one literal entry; `os.listdir` PermissionError; sudo+grep rc=2).
+- The FD NUMBER is part of the reading. The mark lives on the fd whose fdinfo carries the `fanotify`
+  line; the watched root is a separate fd, and its fdinfo carries a plain `ino:` that equals
+  `stat -c %i <dir>` by construction, because it IS that directory. Measured 2026-11-16 11:46:42 on
+  both live seeder-watch arms: mark on fd 4 (`fanotify ino:16a1614` / `ino:1027e34`, sdev:10300002),
+  root open on fd 5. A mark-inode comparison run against fd 5 prints a PASS that says nothing about
+  any mark -- the false-green twin of the empty read.
 - A negative from an arm whose mark you did not check is unaccountable -- it may be silence, not
   absence. Check the arm before quoting any "no row in this window" from it.
 - Convergence is `--rescan` seconds only when the rescanned set includes the ROOT; a root replacement
