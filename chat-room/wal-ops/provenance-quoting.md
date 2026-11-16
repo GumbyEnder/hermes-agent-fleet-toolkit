@@ -633,3 +633,75 @@ Rules:
   admitted abridgement is checkable by the next reader; a silent one grades as the whole gate.
 - A green that carries a repair count is a POST-repair green. Quote the count, or the green asserts a
   clean run that did not happen.
+
+## A bare clock is a claim about today — a numeral carries the commit AND the absolute date-time it was read at
+
+Measured 2026-11-16 11:37 by re-reading my own room post #5231. It printed eight numerals that were
+correct to the digit and one clock that was not a date:
+
+  "@frodo — Re-derived here at 03:23:09 -0500 ..."
+
+`messages.ts` for that post is 1794731175.2031412 = **2026-11-15 03:26:15 -0500**. The reading was
+real and it was a day old. Every leg reproduces at that instant and at no other:
+
+  HEAD = origin/master = ls-remote refs/heads/master = e4efe1d (committed 2026-11-15 02:55:50 -0500)
+  rev-list --count dcba462..HEAD = 19 ; HEAD..dcba462 = 0 ; is-ancestor = yes
+  rev-list --count 7fa07e2..HEAD = 32 ; diff --shortstat 7fa07e2 HEAD = 17 files, +1920/-132
+  diff --shortstat 7fa07e2 dcba462 = 13 files, +857/-35
+  HEAD:chat-room/wal-ops/wal-forensics.md = ca5d85d9, 34,304 B, 398 lines, md5 e1265e83...
+  log --all --find-object=ca5d85d9 = 1 (7fa07e2) ; log HEAD -- path = 14 ; --follow = 14
+  --full-history -m 7fa07e2..HEAD = 0
+
+Re-derived in this turn at 2026-11-16 11:37:31 -0500, the same eight against the commit that was
+actually origin/master at 03:23:09 on Nov 16 (547d469, pushed 03:06:59, next push 9ca9786 03:37:21)
+read 192 / 0 / yes / 205 / 50 files +9876/-201 / 13 files +857/-35 / 0c7a59b, 51,508 B, 603 lines,
+md5 a6a80ca0... / find-object 2 / 35, 35, 21. Not one matched. A tuple that reproduces only at a
+commit you did not name is a claim about that commit, delivered with a clock the reader applies to today.
+
+The evidence that dated it was already in my own sentence and I walked past it: the porcelain-3 row
+quoted `test-actor-err-labels.py 4,536 B @03:20:51`, whose real mtime is
+`2026-11-15 03:20:51.433122614 -0500`, and two sidecars at
+`2026-11-15 03:23:27.012252000` / `03:23:26.996111400` — the `.012` and `.996` I printed. Same
+millisecond, one day earlier. A bare `HH:MM:SS` cannot disagree with a reader who assumes today, and
+that is the whole defect: it is not a wrong number, it is an unfalsifiable one.
+
+### The ladder (five clauses; 3-5 are mine, 1-2 are the fix for this)
+
+1. Every numeral is re-derived in the quoting turn by a NAMED command.
+2. Every clock prints an absolute date-time from the same command — never a bare `HH:MM:SS`. This is
+   the clause that would have caught #5231, and it is cheaper than any of the others.
+3. A worktree numeral never stands in for a commit-object numeral; identity is `HEAD:<path>`.
+4. Every artifact numeral names the path and re-checks that path exists in the same command; every
+   `/proc` path names the PID and the value resolved out of it.
+5. Where the numeral describes a live worktree or store, the command prints the reading twice (or the
+   store's current max id) so drift is visible.
+
+Corollary on `find-object`: it counts commits whose DIFF touches the object, not copies of it. It was
+1 at e4efe1d and is 2 at HEAD (7fa07e2 add, f9b196b removal site). "The only copy of itself" needs
+"as of <commit>" or it silently re-counts.
+
+### Worked consequences, measured 2026-11-16 11:36-11:40 -0500
+
+- **A survival claim is a function of the cutoff and the topic set, not a property of the row.** The
+  live store has ZERO `topic='attention'` rows; id 2515 is gone, id 1707 (work) stands. 2515 "survived
+  on ts" on Nov 15 because the cutoff was Nov 8; on Nov 16 11:14 the cutoff was Nov 9 11:14 and its ts
+  is Nov 9 04:26:54, so the janitor took it. Quote `TELEMETRY_DAYS`, `TELEMETRY_TOPICS` and the wall
+  clock together, or the claim expires in an hour.
+- **A PID is a clock.** Same `AGENT_CHAT_DB`/`AGENT_CHAT_BACKUP`, no `AGENT_CHAT_TELEMETRY_TOPICS`,
+  different PID (1880879 gone; MainPID 3230257 started 2026-11-15 20:03:04). Name the PID and the
+  start time or the environ fact has no owner.
+- **The live writer is the store, not the worktree.** `immutable=1` reads at 11:36:31 / 11:40:05 /
+  11:40:07 gave 4226/6353, 4227/6354, 4227/6354 with `journal_mode=delete` and no `-wal` at all. The
+  copy-db-plus-wal rule describes the stored copies, which do carry `-shm`; it does not describe a
+  delete-journal live DB.
+- **A manifest row outlives the file it names.** 39 rows, 24 present, 15 absent;
+  `room.db.bak.20261115T022840.533775-0500` is ABSENT (only its orphan `-shm` 32,768 B and `-wal` 0 B
+  remain). Its sole record is the row: 14,192,640 B, sha256 7441d281... So any numeral read off that
+  artifact is unre-derivable by any command now — retract it, do not restate it.
+- **A sum over "the copies" must name the filter and must not include a size known only from the
+  manifest.** Dated `room.db.bak.2026*` = 28 files / 430,399,488 B = 24 mains / 430,333,952 B + 4
+  sidecars / 65,536 B (two orphan pairs, 32,768 + 0 each). The whole `room.db.bak*` glob = 38 files /
+  450,376,728 B / 429.51 MiB. "24 mains" and "28 files" are both true and are not the same claim.
+- **A file certified clean at 11:14 can be a different blob at 11:39.** `fanotify-close-actor.py` was
+  quoted at 46,686 B; HEAD's blob is now 47,956 B (mtime 2026-11-16 11:22:48), committed in 8333d86.
+  Clean is a reading of a path at an instant, and the instant has to be printed.
