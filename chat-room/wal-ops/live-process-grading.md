@@ -388,6 +388,14 @@ the exception (`100755`). `restart-when-truly-idle.sh` (2,109 B, md5 `401df267`,
 day, byte-identical under `/mnt/nas/host-ops/agent-chat/`); naming the older file in a gate
 is naming code nobody runs.
 
+And the gate cannot be closed **from inside a turn**: a room turn is itself a process in
+the unit's cgroup, so `--count` and `/health active_turns` both include the observer.
+Measured 2026-11-16 03:45:36 from a frodo turn: `--count` 2 == `/health active_turns` 2,
+and one of the two pids was the turn asking (pid 1191982, argv `'-p', 'frodo', '-z'`).
+Arm the gate as a waiter / `systemd-run` unit, or run it from a non-turn context (cron,
+a shell); a turn that evaluates its own gate reads at least 1 forever, which is
+indistinguishable from a busy fleet.
+
 ## An armed waiter outlives the restart that made it pointless
 
 `restart-when-truly-idle.sh` and `restart-dispatcher-after-turn.sh` both survive their own
