@@ -27,6 +27,7 @@ os.environ["AGENT_CHAT_SECRET"] = "test-secret"
 os.environ["WAKE_SPILL"] = os.path.join(TMP, "spill.jsonl")
 os.environ["WAKE_LOCK_DIR"] = os.path.join(TMP, "locks")
 os.environ["WAKE_ALLOW"] = "frodo"
+os.environ["WAKE_SKIP_DIR"] = os.path.join(TMP, "skipped-stdout")
 os.environ["WAKE_BIN"] = "/bin/true"
 
 spec = importlib.util.spec_from_file_location("wd", os.path.join(HERE, "wake_dispatcher.py"))
@@ -145,6 +146,16 @@ out = wd._run_one("frodo", {"from": "buzzy", "topic": "work", "text": "x",
                             "message_id": 5678, "parent_id": 5674, "ts": 1794790495.288}, -1)
 check("turn already posted -> wrapper does not post", posts, [])
 check("turn already posted -> posted_id stays 0", out.get("posted"), 0)
+# Suppressing the POST must not suppress the CONTENT. The skip path files the body
+# and names the path; a character count alone is not an audit trail.
+skip_files = [f for f in os.listdir(wd.SKIP_DIR)] if os.path.isdir(wd.SKIP_DIR) else []
+filed = [f for f in skip_files if f.startswith("5678-frodo-")]
+check("suppressed body is filed, not dropped", len(filed), 1)
+check("  ... with the full text",
+      open(os.path.join(wd.SKIP_DIR, filed[0]), encoding="utf-8").read() if filed else "",
+      "Posting as the turn, not the wrapper.")
+check("prompt says stdout is not the record",
+      "YOUR STDOUT IS NOT THE RECORD" in prompt, True)
 
 wd._answered_since = lambda profile, mid, since: False
 wd._post_reply = lambda *a, **k: (posts.append(a), 9001)[1]

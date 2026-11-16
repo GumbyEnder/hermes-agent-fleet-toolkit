@@ -35,6 +35,10 @@ Env:
                          always marked in the prompt
   WAKE_SPILL             JSONL file holding accepted-but-unfinished wakes
                          (default ~/agents/agent-chat/wake-spill.jsonl)
+  WAKE_SKIP_DIR          where the stdout of a turn that already posted under
+                         its mention is FILED instead of posted (default
+                         ~/agents/agent-chat/skipped-stdout). The duplicate is
+                         suppressed; the narrative is not deleted.
   WAKE_GATEWAY_HOME      hermes home whose gateway answers the turn gate
                          (default ~/.hermes; a profile's own home is also asked).
                          The gate is the gateway's `active-work` answer, because
@@ -91,6 +95,13 @@ SPILL = os.path.abspath(os.path.expanduser(
     os.environ.get("WAKE_SPILL", "~/agents/agent-chat/wake-spill.jsonl")))
 LOCK_DIR = os.path.abspath(os.path.expanduser(
     os.environ.get("WAKE_LOCK_DIR", "~/agents/agent-chat/locks")))
+# The stdout of a turn that already posted under its mention is a duplicate POST,
+# but its CONTENT is often the only record of what the turn verified. Suppressing
+# the post must not suppress the narrative: the body goes here, and the log line
+# names the path. A character count is not an audit trail (measured 2026-11-16:
+# 447 second-sibling posts, the second carrying the verification prose).
+SKIP_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get("WAKE_SKIP_DIR", "~/agents/agent-chat/skipped-stdout")))
 
 
 def _parse_overrides(raw):
@@ -540,6 +551,26 @@ def _claim(key):
         return True
 
 
+def _file_skipped_body(profile, message_id, started, reply):
+    """File a suppressed wrapper post so its content survives the suppression.
+
+    Returns the path written, or None. Never raises: a failed filing must not turn
+    a successful turn into a failed one, but it must be logged, because a silent
+    None here is the exact failure this function exists to prevent.
+    """
+    try:
+        os.makedirs(SKIP_DIR, exist_ok=True)
+        path = os.path.join(
+            SKIP_DIR, f"{message_id}-{profile}-{int(started)}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(reply)
+        return path
+    except Exception as e:  # noqa: BLE001
+        log(evt="reply_skip_body_write_failed", profile=profile,
+            message_id=message_id, dir=SKIP_DIR, error=str(e)[:200])
+        return None
+
+
 def _answered_since(profile, message_id, since):
     """True when this turn has already posted its answer under the mention.
 
@@ -796,7 +827,11 @@ def _run_one(profile, payload, lock_fd=-1):
               f"[envelope] When you post your answer to the room, set reply_to={mid_env}.\n"
               f"The dispatcher's duplicate check re-runs a turn whose mention has no reply\n"
               f"parented to it, so an answer posted without reply_to reads as an unanswered\n"
-              f"mention and comes back as a second turn under the same message.")
+              f"mention and comes back as a second turn under the same message.\n"
+              f"[envelope] YOUR STDOUT IS NOT THE RECORD. If you post under this mention\n"
+              f"yourself, the wrapper does NOT publish your returned text as a second reply --\n"
+              f"it files the body under skipped-stdout/ and logs only a length and the path.\n"
+              f"Put everything you want on the record inside the message you post.")
     budget = timeout_for(profile)
     hard = hard_cap_for(profile)
     rc, reply, err = None, "", ""
@@ -845,9 +880,10 @@ def _run_one(profile, payload, lock_fd=-1):
         # The turn may have posted through the room API already. Then the wrapper's
         # write is a duplicate under the same mention -- skip it, and say so.
         if _answered_since(profile, message_id, started):
+            body_path = _file_skipped_body(profile, message_id, started, reply)
             log(evt="reply_skipped_already_posted", profile=profile,
-                message_id=message_id, reply_chars=len(reply),
-                note="turn posted through the room API; wrapper write skipped")
+                message_id=message_id, reply_chars=len(reply), body_path=body_path,
+                note="turn posted through the room API; wrapper write skipped, body filed not dropped")
         else:
             posted = _post_reply(profile, payload.get("topic", "general"), reply,
                                  message_id if isinstance(message_id, int) and message_id else None)
