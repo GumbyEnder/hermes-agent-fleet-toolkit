@@ -1385,9 +1385,27 @@ So the writer now records every executed write, and the gate reads that record:
 
 - the writer appends one line per write to `${MIRROR_JOURNAL:-$NAS/.mirror-repairs.log}`
   (the NAS knob moves it, so a scratch drill never touches the production file):
-  `repair ts=<utc> head=<sha12> dirty=<0|1> leg=<path> old=<md5|absent> new=<md5> root=<dir>`.
+  `repair ts=<utc> head=<sha12> dirty=<0|1|unknown> leg=<path> old=<md5|absent> new=<md5> root=<dir>`.
   `head`+`dirty` are the repo state **at the write**, which is the whole point -- the read
   sees a repaired leg and cannot recover that state.
+- **`dirty=` can say `unknown`, and that is the fix for the defect that made the guard
+  unwritable.** Measured 2026-11-15 (frodo, independent worktree): the same tree with one
+  uncommitted file gave `repair head=989421416c41 dirty=1` with git present and
+  `repair head=unknown dirty=0` with git failing. A failing `git status --porcelain` prints
+  nothing, and the old assignment read emptiness as clean, so "cannot tell" was journalled
+  as "clean" -- an absence wearing the number a guard reads. `head=unknown` was one field
+  away from that number, so a `refuse dirty>0` guard would have passed the case it exists
+  for: an hourly repair sourced from a published-leg tree (no index) would print `dirty=0`
+  and publish unreviewed bytes. Both `install-mirror-legs.sh` and the two gates now take
+  `dirty` from git's **exit status**, never from the emptiness of its stdout;
+  `check-manifest.sh` and `check-wal-doc-links.sh` print `dirty=unknown` where they used to
+  print a clean-looking `0` beside their own `head=no-git`.
+- **The guard is a pass-list, not a ceiling: publish only when `dirty=0` AND
+  `head != unknown`.** `refuse dirty>0` and `refuse dirty!=0` differ precisely on
+  `unknown`; the guard's whole job is that case, so it must name what it accepts.
+  (`run-gate-logged.sh` carries the same class in `dirty_paths` -- a failing git logs 0
+  paths -- but its row also carries `head=none`, so the coordinate is visible; the field is
+  a count with a reader, so it was left alone rather than retyped.)
 - the writer prints `journal  <path>` next to its `root  <dir>` lines, so the path is a
   coordinate the caller can check rather than a convention the gate assumes.
 - the gate prints `mirror_journal=<path> mirror_repairs=<n>
@@ -1407,7 +1425,8 @@ could be recorded)`; journal print removed from a shadow copy of the writer -> g
 
 The timer is still **not** wired, and that is a decision, not an oversight: an hourly
 repair sourced from a dirty worktree would publish unreviewed bytes to a path a unit
-executes. Automating the write is safe only once it refuses `dirty>0` and the verdict
-carries `mirror_repairs=`, so the remaining question is that guard, not this artifact.
-Until it is answered the honest state stays fail-closed with the repair command printed on
-the FAIL line.
+executes. Automating the write is safe only once it refuses anything that is not `dirty=0`
+with a known `head` (`dirty=unknown` is a refusal, not a pass) and the verdict carries
+`mirror_repairs=`, so the remaining question is that guard, not this artifact. Until it is
+answered the honest state stays fail-closed with the repair command printed on the FAIL
+line.

@@ -75,14 +75,35 @@ HOSTOPS=${HOSTOPS:-$(dirname "$NAS")}
 # into a SILENT green one -- the gate re-reads the repaired leg, prints mirror_ok=5, and
 # nothing anywhere says a write happened. So every executed write appends one line to a
 # journal that the gate reads and prints a count of:
-#     repair ts=<utc> head=<sha12> dirty=<0|1> leg=<path> old=<md5|absent> new=<md5> root=<dir>
+#     repair ts=<utc> head=<sha12> dirty=<0|1|unknown> leg=<path> old=<md5|absent> new=<md5> root=<dir>
 # head+dirty are the repo state AT THE WRITE, not at the read: that is the whole point.
+# dirty=unknown means git could not answer (no index, or git missing): it is not clean and
+# not dirty, and a guard that publishes must refuse it.
 # The journal lives beside the legs ($NAS/.mirror-repairs.log) so the NAS knob moves it
 # with everything else and a scratch drill never touches the production file.
 # A failed append is rc=1 -- a write with no token is exactly the silent-green hazard.
 JOURNAL=${MIRROR_JOURNAL:-$NAS/.mirror-repairs.log}
 HOSTSHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then HOSTDIRTY=1; else HOSTDIRTY=0; fi
+# dirty= can say "unknown", and it must. Measured 2026-11-15 (frodo, independent worktree):
+# the same tree with an uncommitted file printed `dirty=1` with git present and `dirty=0`
+# with git failing, because a failing `git status --porcelain` prints NOTHING and empty
+# output was read as clean. That is a coordinate reading as a measurement, and it lies in
+# the one direction a guard trusts: a published leg (a file on a share or in ~/.local/bin)
+# has no git index, so an hourly repair sourced from such a tree would journal `dirty=0`
+# and pass a `refuse dirty>0` guard while publishing unreviewed bytes. `head=unknown` was
+# the only tell and it sits one field from the number the guard reads, so the guard could
+# not be written against it alone.
+# So: the exit status of git decides, never the emptiness of its stdout. Any token other
+# than `0` means "not measured as clean", and a guard is a PASS-LIST -- publish only when
+# dirty=0 AND head!=unknown -- not a ceiling (`dirty>0`), which lets `unknown` through.
+if ! HOSTDIRTY_RAW=$(git status --porcelain 2>/dev/null); then
+  HOSTDIRTY=unknown
+elif [ -n "$HOSTDIRTY_RAW" ]; then
+  HOSTDIRTY=1
+else
+  HOSTDIRTY=0
+fi
+unset HOSTDIRTY_RAW
 
 LEG_TABLE="
 grade-slot.sh|$HOME/.local/bin:$NAS

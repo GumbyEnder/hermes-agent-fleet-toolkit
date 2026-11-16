@@ -253,7 +253,14 @@ ok_n=$(grep -c '^OK ' "$GATE_TMP")
 fail_n=$(grep -c '^FAIL' "$GATE_TMP")
 cat "$GATE_TMP" >&4
 sha=$(git -C "$WALOPS" rev-parse --short HEAD 2>/dev/null || echo no-git)
-dirty=$(git -C "$WALOPS" status --porcelain --untracked-files=no 2>/dev/null | head -c 1 | wc -c)
+# dirty= is 0, 1, or unknown -- see the same three-ending rule in check-manifest.sh: a
+# failing git prints nothing, and emptiness is not a measurement of clean.
+if ! DIRTY_RAW=$(git -C "$WALOPS" status --porcelain --untracked-files=no 2>/dev/null); then
+  dirty=unknown
+elif [ -n "$DIRTY_RAW" ]; then dirty=1
+else dirty=0
+fi
+unset DIRTY_RAW
 docs_n=$(printf '%s\n' $DOCS | wc -l)
 docs_oid=$(printf '%s\n' $DOCS | git hash-object --stdin 2>/dev/null || echo no-git)
 # docs_md5 is the CONTENT witness: sha256 over the eight (sha256, name) pairs in DOCS

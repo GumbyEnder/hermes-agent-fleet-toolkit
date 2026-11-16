@@ -21,7 +21,18 @@ set -u
 cd "$(dirname "$(readlink -f "$0")")" || exit 2
 
 sha=$(git rev-parse --short HEAD 2>/dev/null || echo no-git)
-dirty=$(git status --porcelain --untracked-files=no 2>/dev/null | head -c 1 | wc -c)
+# dirty= has three endings, not two: 0, 1, and unknown. The old one-liner read the
+# EMPTINESS of `git status --porcelain` as clean, but a failing git also prints nothing --
+# so "no index / no git" was reported as a measurement of clean (measured 2026-11-15 on a
+# published-leg tree, frodo: same dirty tree -> dirty=1 with git, dirty=0 with git
+# failing). `head=no-git` said so and `dirty=0` contradicted it on the same line, and a
+# guard reads the number. The exit status decides now, never the emptiness.
+if ! DIRTY_RAW=$(git status --porcelain --untracked-files=no 2>/dev/null); then
+  dirty=unknown
+elif [ -n "$DIRTY_RAW" ]; then dirty=1
+else dirty=0
+fi
+unset DIRTY_RAW
 rows=$(grep -c '[^[:space:]]' MANIFEST.md5)
 moid=$(git hash-object MANIFEST.md5 2>/dev/null || md5sum MANIFEST.md5 | awk '{print $1}')
 
