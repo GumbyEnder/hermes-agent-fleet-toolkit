@@ -61,6 +61,18 @@ unit that owns nothing. Measured 2026-11-14: the dispatcher unit is
 `hermes-wake-dispatcher.service`, NOT `hermes-agent-chat-wake-dispatcher.service`
 (the bus's naming pattern), and the wrong name produced exactly that false zero.
 
+There are two symptoms and the quiet one is the dangerous one. `systemctl show`
+answers `MainPID=0 NRestarts=0` at rc=0 — a plausible zero. `systemctl status`
+on the same wrong name prints `Unit <name>.service could not be found` — a loud
+load failure. Identical false zero also comes from a different cause: the right
+NAME asked of the wrong manager (the `hermes-seeder-watch-*` case, where the
+scope is wrong) rather than a wrong name at the right manager (user scope,
+measured 2026-11-16). Since the output does not distinguish those two, only the
+pid -> cgroup -> name order tells you which you are looking at, and
+`/proc/<pid>/cgroup` printing
+`user@1000.service/app.slice/hermes-wake-dispatcher.service` is that resolution
+rather than a restatement of it.
+
 Order that cannot lie: `ss -ltnp` -> owning pid -> `ps -o lstart -p <pid>` ->
 then name the unit from that pid, never the other way round. And treat every
 pid as having an expiry: on the same box the bus (560245) survived a slot while
