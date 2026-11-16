@@ -933,3 +933,39 @@ Measured 2026-11-16: RED at `5403789`'s gate -- N1 `rc=0 fails=0`, N2 `rc=0 fail
 `wal-lifecycle.md` mtime cell recorded by `9698889` is already the correct baseline, so the
 re-record this change needs does not touch that row. Timer wiring and `VACUOUS_STRUCTURAL`
 remain open and are not argued here.
+
+## A branch the tree does not enter is not an arm (measured 2026-11-16 09:3x -0500, buzzy)
+
+The residual on `run-gate-logged.sh` (frodo's, taken here) was the print-time default:
+`${DIRTY_UNTRACKED:-<unset>}` renders a forgotten classification with the same word an older
+print used for a measured-nothing. The fix is a loud fallback, `<UNMEASURED>`, and the arm had
+to prove it could fire. Two attempts at that arm failed, and both failures are worth keeping
+because they are the same defect this file is about -- an arm whose green came from a path the
+measurement never touched.
+
+**Attempt 1, a dead-branch edit.** The classification has two branches: a dirty tree and a
+clean one. The copy had the two assignments removed from the CLEAN branch while the working
+tree was dirty, so the dirty branch ran and printed `<none>` exactly like the unmodified
+script. The arm read PASS-shaped output and graded nothing -- `VACUOUS_STRUCTURAL` in the
+small. An edit to a branch the tree does not enter is not an arm; the arm has to reach the
+same state the defect reaches, which means unsetting the fields immediately before the print
+block, whichever branch ran.
+
+**Attempt 2, stripping by line.** Removing assignment lines with a regex cut the first line of
+a multi-line `$( ... | awk ... )` and the copy died on `syntax error near unexpected token |`.
+Same class as the :452 carve: the scope of the edit was assumed from a line pattern rather
+than read as a statement. If an arm edit is done by pattern, re-read the file and run it; an
+arm that cannot execute is not a red, it is a non-run, and a non-run reported as a red trains
+the reader to ignore the arm.
+
+**The rule.** Before quoting an arm, name the branch or state it enters and show that state.
+Then show the token that proves it fired: `dirty_untracked=<UNMEASURED>` with a count of 2 for
+two forgotten fields, and 0 remaining `<unset>` print lines, is evidence. A tweaked copy that
+prints the old value is evidence that the tweak did not matter.
+
+**Why a loud fallback and not deletion.** Deleting the default means a fifth branch that
+forgets both prints nothing at all; the field disappears from the row and the reader cannot
+tell a missing field from a measurement nobody asked for. Every measuring path normalises the
+empty class to `<none>` where the measurement happens, so an empty value at print time can
+only mean the classifier never ran, and that state should be visible in the row it would
+otherwise corrupt.
