@@ -150,10 +150,40 @@ profile. A successful `skill_manage` writes straight through the inode (patch an
 write_file both verified 2026-11-15T00:08:03 and 00:10:51: one file created, every other
 ref kept ino/nlink, arms stayed nlink=3). On any failure inside an `operations=[...]`
 batch — even one op, even a failed `old_string`, even an over-cap body refused pre-write —
-`_restore_snapshot` copytree's the whole skill directory back: every reference gets a
+`_restore_snapshot` in `tools/skill_manager_batch.py` copytree's the whole skill directory back: every reference gets a
 fresh inode at nlink=1 with identical bytes and its own earlier mtime, **including refs no
 op touched**. Signature: birth new, mtime = that file's earlier mtime, ctime on the
 failing call's second. Identity comes from the log line, never from the stat.
+
+### The window between the rename and the copytree: three reader states, not one
+
+The rollback is two calls in `tools/skill_manager_batch.py` -- `_restore_snapshot` (:158; :186
+`aside = name + ".rollback-broken"`, :188 `post_dir.rename(aside)`, :190
+`shutil.copytree(snap, pre_dir)`). Name that module whenever you cite :188. The cap this file
+spends most of its words on lives in `skill_manager_tool.py`, where :188 is the size validator,
+so a reader who carries these numbers there looks for a window and finds a limit. Between :188
+and the end of the copytree the path holds neither the old tree nor a complete new one, and a
+lock-free reader (`skill_view`, the curator walk, `find_skill`) sees THREE states: (1) no
+directory at all; (2) a directory with no `SKILL.md` yet, because copytree mkdir's first and
+fills after; (3) a `SKILL.md` from the snapshot sitting beside a still-incomplete `references/`
+set. States 2 and 3 are partial materialisation, and "sees a missing skill" is the narrowest of
+the three -- state 2 is a different decision in `find_skill` and in the curator walk than state 1.
+
+Measured 2026-11-16 through the running module's own `_restore_snapshot` rather than a replica
+(throwaway skill, 120 refs plus one 64 MB file to hold the copytree open, sampler thread at
+~2 kHz): run 1 = 378 samples / 55 distinct runs / 1 absent, then a directory present whose refs
+were 0/1/4/6/9/11/.../22 while `SKILL.md` still raised `FileNotFoundError` (state 2); run 2 = 0
+absent samples, `SKILL.md` readable at 121 and 123 of 124 entries (state 3). Writers do not race
+it -- a batch holds `skill_file_lock` per skill (`skill_usage.py:70`), cross-process and for the
+whole batch -- while `skill_view` (`skills_tool.py:613`) takes no lock at all.
+
+An fd opened BEFORE the arm is safe and stays pinned, and the mechanism is stronger than "keeps
+the pre-image": :188 RENAMES rather than replaces, so the old inode is untouched by the restore
+and survives the success path's `rmtree` of `.rollback-broken` for as long as the fd holds it.
+Discriminated, not asserted -- snapshot value `SNAPSHOT-VALUE`, post state `HALF-APPLIED-VALUE`:
+an fd opened before the call, ino 16925852, read `HALF-APPLIED-VALUE` after it, while the path's
+new ino 16925859 read `SNAPSHOT-VALUE`. Only PATH lookups fail, which is the same inode-vs-name
+distinction the success arm turns on -- so it belongs in the same sentence, not as a caveat.
 
 Measured 2026-11-15T09:04:17 -0500 at `6552703`, by replaying the copytree step against the
 buzzy legs only (a replay, not a re-run of the failing tool): all 7 legs became
