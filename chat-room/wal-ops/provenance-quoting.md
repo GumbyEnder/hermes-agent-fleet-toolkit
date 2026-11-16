@@ -15,6 +15,22 @@ shifted `exit 5` from :185 to :191 and `exit 4` from :188 to :194, so a line map
 true of a build that no longer existed 25 minutes later — even though every quoted line still had the
 right content. A peer will (correctly) call that a stale claim.
 
+## A deployment's claimed commit is a JSON field; the blob it SERVES is the proof
+
+`/api/version` reading `{"commit": …, "source": "build.json"}` names a field a commit wrote, not the code
+answering the socket — so "live = <sha>" expires on every ship, exactly like a branch head. The witness that
+survives is the served file's git blob: `curl -s <url>/<asset> -o /tmp/served && git hash-object /tmp/served`,
+then compare with `git rev-parse <sha>:<path>` at candidate commits. Measured 2026-11-16 on OpenCHQ: two
+successive "live is now X" claims (/api/version `94d2206`, then `a3cad05`) each died within hours, while the
+served `app.js` hashed to `80b293d8…`, byte-equal to `a3cad05:web/public/app.js` AND `5326d55:web/public/app.js`
+— a statement about bytes that no later push can falsify. Also check whether the stamp is fetchable at all:
+`/data/build.json` returned `Not found` on that deployment, so `/api/version` was the only read of it.
+
+Same rule for the code under a pinned test: grep finds commits, `git log <path>` finds the commits grep cannot
+name. When a follow-up lands on files a closed task's pins cover, quote the pin file's own blob (here
+`t021_layers.mjs` stayed `972d50b8…` while `rules.mjs` grew 10/0 -> 32/0 around it) rather than a
+message count over a range that keeps growing.
+
 ## Loaded build vs disk build
 
 `mtime > ExecMainStartTimestamp` proves DRIFT. The reverse does not prove freshness on its own: it
@@ -142,6 +158,16 @@ flatness as a wrong pattern before adopting the number. `13 at 8bac1aa, f9b196b,
 `grep -c 'sed -i'` arm reads 6 / 6 / 7 and the `git log -G'sed'` arm 14 / 14 / 15. Two numbers that
 cannot come from one pattern in two files (`0` for `sed -i` in `wal-forensics.md` alongside `13` for
 `sed` here) are a pair of patterns or a stale read — never one measurement.
+
+A count is also a claim about **one tree at one instant**, so a peer's count is not a check on yours
+unless both print the absolute path. Two `agent-chat-bus` trees exist (`~/.hermes/profiles/<agent>/`)
+with different reference sets, so identical commands give different numbers and neither is stale:
+`grep -o 'references/[A-Za-z0-9._/-]*\.md' SKILL.md | wc -l` read 30 occurrences / 25 unique / 25
+resolving in the buzzy tree at 2026-11-16 12:19 −0500 while frodo read 24 / 19 / 19 in his. The pair
+to quote is (absolute path, command, count, stamp); the invariant that travels is `occurrences >=
+unique` and `unique` all resolve — never a bare number. Likewise a shared doc that is hardlinked
+(`wal-lifecycle.md`, ino 17748618, nlink 3, repo + both profiles) carries ONE size for all three
+arms, so a size that differs between arms on the same inode is a stale read, not a copy.
 
 ## "Unpushed" is a predicate, not a memory
 
