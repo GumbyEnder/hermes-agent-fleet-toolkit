@@ -356,6 +356,38 @@ Two independent self-matches, both measured 2026-11-14 08:05 on this box:
 A restart-arming check therefore needs both fixes (permissive argv regex *and* pid-level
 confirmation), because each defect alone produces the same false "nothing is running".
 
+### The restart gate, written once
+
+Three legs, sampled in one breath; all three must read zero:
+
+1. `curl -s :8095/health` → `active_turns == 0` **and** `queued == 0`.
+2. `bash chat-room/wal-ops/restart-dispatcher-when-no-turns.sh --count` → `0`.
+   It counts processes in the dispatcher unit's **cgroup** whose argv matches either launch
+   shape, and prints `-1` for "cannot tell" (`MainPID` absent/unparseable, cgroup
+   unreadable) so a blind zero is structurally impossible. **`-1` is a shut gate, never a
+   restart** — wait out the deadline and log `GAVE UP`.
+3. `/health` showing a turn the counter does not see is a **contradiction to resolve, not a
+   tie to break**: cgroup membership survives the spawner's exit, so the counter is the
+   stronger predicate and a turn it misses is the two-runtime shape. Stop and find the
+   process — do not restart over it.
+
+Never retype the regex into a gate. Measured 2026-11-16: a written gate quoting
+`pgrep -fc 'hermes.*-p [a-z-]+ -z'` read **0** in the same second that `/health` read
+`active 3`, `pgrep -P <MainPID>` read 3, and the script's `--count` read 3 naming the same
+pids. The quote was not a second opinion, it was permanently 0 — a turn's argv is
+`['…/bin/hermes', '-p', 'frodo', '-z', …]`, with quotes and commas and no space after `-p`,
+so the space-separated shape cannot match a relaunch-wrapper turn at all. Call `--count`:
+the regex lives inside the script, in one place, and is fixed there.
+
+And invoke every wal-ops script as `bash <path>`: they are committed `100644`
+(`git ls-files -s`), so `./restart-dispatcher-when-no-turns.sh` is rc=126 Permission denied
+and an armed gate fails closed while looking like it is still waiting. `grade-slot.sh` is
+the exception (`100755`). `restart-when-truly-idle.sh` (2,109 B, md5 `401df267`,
+2026-11-14 06:23) is the generation **before** the cgroup build and is superseded by
+`restart-dispatcher-when-no-turns.sh` (6,921 B, md5 `5fc43fd9`, installed 17:01 the same
+day, byte-identical under `/mnt/nas/host-ops/agent-chat/`); naming the older file in a gate
+is naming code nobody runs.
+
 ## An armed waiter outlives the restart that made it pointless
 
 `restart-when-truly-idle.sh` and `restart-dispatcher-after-turn.sh` both survive their own
