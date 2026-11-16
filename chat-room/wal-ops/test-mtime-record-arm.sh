@@ -11,7 +11,7 @@
 # coverage. Same defect class as the unrecorded inode: a witness you can choose not
 # to record is not a witness.
 #
-# THREE ARMS, and they must be RED on the pre-fix gate or they certify nothing:
+# SIX ARMS, and N1-N3 must be RED on the pre-fix gate or they certify nothing:
 #   N1  in-place same-byte rewrite         -> green before, WRITTEN SINCE after.
 #       The arm also asserts docs_md5, bytes, ino and btime are UNCHANGED, or it
 #       proves nothing about what the mtime cell is for.
@@ -24,6 +24,14 @@
 #       forward write then a re-record -- exactly as the canonical row got it.
 #   N3  re-record                          -> green, and the DOC-IDENTS.tsv diff is
 #       exactly one changed line with idents= moved.
+#   N4/N5  two cells, two UTC OFFSETS      -> the record arm must follow the INSTANT.
+#       N4 (record earlier in time, wall clock later) must read WRITTEN SINCE where a
+#       string compare reads BACKWARDS; N5 is frodo's measured fall-back pair
+#       (live 2026-11-01T01:30-0400 vs record 2026-11-01T01:15-0500) where a string
+#       compare reads FORWARD over a 2700 s backdate and the arm printed NOTHING. Each
+#       offset arm asserts the string compare disagrees on its own fixture, so neither
+#       can pass against a gate that still compares strings.
+#   N6  record cell that will not parse    -> DIRECTION UNMEASURED and rc=1, never a skip.
 #
 # THE DRILL NEVER TOUCHES THE CANONICAL FARM. Each arm builds its own tree under
 # $TMPDIR, copies the docs with plain `cp` (so btime==mtime on the copy, not a
@@ -233,6 +241,100 @@ fi
 ids_c=$(field idents)
 [ "$ids_b" = "$ids_c" ] && P "N3 idents= holds across the re-record ($ids_c) -- a record, not a rewrite" \
   || F "N3 idents= moved across the re-record: $ids_b -> $ids_c"
+
+# ---- the OFFSET arms: two cells, two UTC offsets ------------------------------------
+# A stamp is local time plus an offset, so a lexicographic compare orders WALL CLOCK.
+# When the two cells are spoken in different offsets -- which is what a DST change
+# produces, and what any roster written on the other side of the change carries -- the
+# string compare and the truth disagree, in BOTH directions. N4 and N5 manufacture that
+# disagreement in the roster cell, which is the cell the arm grades, and each asserts
+# (a) the direction the truth has, (b) that the string compare disagrees, so the arm
+# cannot pass against a gate that still compares strings.
+set_row() {
+  local h=$1 d=$2 i=$3 b=$4 m=$5
+  awk -F'\t' -v OFS='\t' -v d="$d" -v i="$i" -v b="$b" -v m="$m" \
+    '$1==d { print d, i, b, m; next } { print }' "$h/wal-ops/DOC-IDENTS.tsv" \
+    > "$h/wal-ops/DOC-IDENTS.tsv.new" && mv "$h/wal-ops/DOC-IDENTS.tsv.new" "$h/wal-ops/DOC-IDENTS.tsv"
+}
+eps() { date -d "$1" +%s 2>/dev/null; }
+
+# ---- N4: recorded 15 min EARLIER in time, spoken in +1100 (wall clock 16h later) ---
+# A string compare reads this as BACKWARDS; the truth is WRITTEN SINCE. False FAIL --
+# noisy and safe -- but wrong, and it is the same defect whose false-PASS half is N5.
+# The offset here is just a legitimate zone name on either side of UTC; no clock is
+# faked and the instant is real.
+H=$WORK/n4
+build "$H" && record "$H" || { F "N4 drill setup"; }
+D4="$H/wal-ops/wal-census.md"
+e4=$(date +%s)
+touch -m -d "@$e4" "$D4"
+ino4=$(stat -c %i "$D4"); bt4=$(stat -c %w "$D4" | fmt); lm4=$(stat -c %y "$D4" | fmt)
+rmt4=$(TZ=Etc/GMT-11 date -d "@$((e4 - 900))" '+%FT%T.%N%z')
+set_row "$H" wal-census.md "$ino4" "$bt4" "$rmt4"
+rr4=$(eps "$rmt4"); rl4=$(eps "$lm4")
+[ "$rl4" -gt "$rr4" ] && P "N4 truth: live is 15 min LATER than the record (epoch $rl4 > $rr4)" \
+  || F "N4 the fixture is not the shape claimed: live $rl4 vs record $rr4"
+if [[ "$lm4" > "$rmt4" ]]; then F "N4 the string compare does NOT disagree here -- the arm proves nothing"; else P "N4 the string compare inverts it (live '$lm4' sorts BELOW record '$rmt4') -- teeth"; fi
+rgate "$H"
+case "$G_OUT" in
+  *wal-census.md*"WRITTEN SINCE THE RECORD"*) P "N4 gate FAILs WRITTEN SINCE THE RECORD (truth, not wall clock)" ;;
+  *wal-census.md*"MTIME MOVED BACKWARDS"*) F "N4 gate said BACKWARDS -- the compare followed the offset, not the instant" ;;
+  *) F "N4 gate printed neither direction (rc=$G_RC fails=$G_FAILS) -- the arm did not run"; printf '%s\n' "$G_OUT" | grep '^FAIL' | sed 's/^/      /' ;;
+esac
+case "$G_OUT" in
+  *"RESTORED-TIME COPY"*) F "N4 also reported RESTORED-TIME COPY -- live mtime is now, after btime; arms overlap" ;;
+  *) P "N4 no restored-time message (live mtime is after btime)" ;;
+esac
+[ "$G_RC" -ne 0 ] && P "N4 gate rc=$G_RC" || F "N4 gate rc=0 with a record cell that is 15 min behind the file"
+
+# ---- N5: frodo's measured DST pair, both cells REAL ---------------------------------
+# live 2026-11-01T01:30:00-0400 (epoch 1793511000) against a record cell
+# 2026-11-01T01:15:00-0500 (epoch 1793513700): the record is 45 min LATER and the wall
+# clock is EARLIER. `[[ $live > $record ]]` reads TRUE while the file was backdated 45
+# minutes. That is the false PASS: the arm designed to see a clock set on a live inode
+# printed nothing across fall-back. The restored-time message is EXPECTED here too --
+# the drill's mtime is 15 days older than its btime -- so it is asserted, not excused.
+H=$WORK/n5
+build "$H" && record "$H" || { F "N5 drill setup"; }
+D5="$H/wal-ops/wal-census.md"
+e5=1793511000
+touch -m -d "@$e5" "$D5"
+ino5=$(stat -c %i "$D5"); bt5=$(stat -c %w "$D5" | fmt); lm5=$(stat -c %y "$D5" | fmt)
+rmt5="2026-11-01T01:15:00.000000000-0500"
+set_row "$H" wal-census.md "$ino5" "$bt5" "$rmt5"
+rr5=$(eps "$rmt5"); rl5=$(eps "$lm5")
+case "$lm5" in
+  *-0400) P "N5 live cell rendered in the pre-transition offset ($lm5)" ;;
+  *) F "N5 live cell did not render -0400 ($lm5) -- this host is not mid-fall-back and the fixture is not the measured pair" ;;
+esac
+[ $((rr5 - rl5)) -eq 2700 ] && P "N5 truth: the record is 2700 s LATER than live (epoch $rr5 vs $rl5)" \
+  || F "N5 epoch gap is $((rr5 - rl5)) s, not 2700 -- not the measured pair"
+if [[ "$lm5" > "$rmt5" ]]; then P "N5 the string compare reads FORWARD on a 45-minute backdate -- the false PASS"; else F "N5 the string compare does not invert this pair; check the fixture"; fi
+rgate "$H"
+case "$G_OUT" in
+  *wal-census.md*"MTIME MOVED BACKWARDS"*) P "N5 gate FAILs MTIME MOVED BACKWARDS across the offset change" ;;
+  *wal-census.md*"WRITTEN SINCE THE RECORD"*) F "N5 gate said WRITTEN SINCE -- direction followed wall clock" ;;
+  *) F "N5 gate printed no direction (rc=$G_RC fails=$G_FAILS) -- FALSE PASS: the backdate is invisible"; printf '%s\n' "$G_OUT" | grep '^FAIL' | sed 's/^/      /' ;;
+esac
+case "$G_OUT" in
+  *"RESTORED-TIME COPY"*) P "N5 restored-time also fires (mtime 15 days before btime) -- expected, different question" ;;
+  *) P "N5 no restored-time message (btime survived the drill's backdate on this fs)" ;;
+esac
+
+# ---- N6: a record cell that will not parse -------------------------------------------
+# `date -d` returning nothing must be UNMEASURED and RED, never a silent skip: a branch
+# the tree does not enter is not an arm.
+H=$WORK/n6
+build "$H" && record "$H" || { F "N6 drill setup"; }
+D6="$H/wal-ops/wal-census.md"
+ino6=$(stat -c %i "$D6"); bt6=$(stat -c %w "$D6" | fmt)
+set_row "$H" wal-census.md "$ino6" "$bt6" "not-a-time"
+rgate "$H"
+case "$G_OUT" in
+  *wal-census.md*"DIRECTION UNMEASURED"*) P "N6 gate FAILs DIRECTION UNMEASURED on an unparseable record cell" ;;
+  *) F "N6 gate did not report DIRECTION UNMEASURED (rc=$G_RC fails=$G_FAILS) -- an unreadable cell passed"; printf '%s\n' "$G_OUT" | grep '^FAIL' | sed 's/^/      /' ;;
+esac
+[ "$G_RC" -ne 0 ] && P "N6 gate rc=$G_RC" || F "N6 gate rc=0 with an unreadable record cell"
 
 echo
 echo "test-mtime-record-arm: PASS=$pass FAIL=$failed gate=$GATE"

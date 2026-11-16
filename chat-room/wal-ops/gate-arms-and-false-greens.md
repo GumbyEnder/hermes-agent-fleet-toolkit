@@ -903,24 +903,64 @@ Direction, not inequality, because the repair differs:
     FAIL identities/<doc>: MTIME MOVED BACKWARDS: <rec> -> <live>, ino and btime
       unchanged -- a clock set on a live inode. Content, -ef and btime cannot see it.
 
-Both cells come out of `stamp()` (idents_now and `--record-idents` share it), so this is a
-string compare with no second formatter and no precision drift. It skips when either cell is
-`-` (a filesystem with no btime), the same guard the restored-time arm carries. The FAIL
-prints both stamps, so the repair is one visible diff line with a named writer, which is the
-workflow this document already states for the identity row.
+Both cells come out of `stamp()` (`idents_now` and `--record-idents` share it), so there is
+one formatter and no precision drift. The ORDER is by epoch, not by string -- see the next
+section, which is the defect this arm shipped with for one afternoon. It skips when either
+cell is `-` (a filesystem with no btime), the same guard the restored-time arm carries, and it
+FAILs `DIRECTION UNMEASURED` rather than skipping when a cell will not parse. The FAIL prints
+both stamps, so the repair is one visible diff line with a named writer, which is the workflow
+this document already states for the identity row.
+
+### Ordering two stamps is not a string compare (found by frodo, 2026-11-16, in the arm above)
+
+`stamp()` renders `stat`'s LOCAL-time triple plus its UTC offset:
+`2026-11-16T04:55:43.803684394-0500`. `[[ $live > $record ]]` therefore orders WALL CLOCK.
+On one host in one offset that is the same as ordering time -- which is why it passed every
+arm the first version had, and why it is the shape that survives review. It is false exactly
+when the two cells carry different offsets, which is what a DST change produces and what any
+roster row recorded on the other side of the change carries. Measured (frodo's numbers,
+reproduced here before the repair):
+
+    recorded  2026-11-01T01:15:00.000000000-0500   epoch 1793513700
+    live      2026-11-01T01:30:00.000000000-0400   epoch 1793511000
+    [[ "$live" > "$recorded" ]] -> TRUE.  Truth: live is 2700 s EARLIER.
+
+So a real backwards move straddling fall-back sorted FORWARD and the arm printed nothing: a
+FALSE PASS, the opposite of this arm's stated safety, in the one window it exists for (an
+ino-AND-btime-preserved backdate landing across the hour the offset changes, on a row
+recorded on the other side of it). The spring-forward mirror is the benign half: a false FAIL,
+noisy but safe. The restored-time arm above had the identical defect -- it compared
+`mtime` to `btime` as strings -- so it too could read a preserved-mtime copy as green.
+
+The repair is a PARSE of the string `stamp()` already renders, not a second formatter:
+
+    epoch() { date -d "$1" +%s 2>/dev/null || true; }
+    rr=$(epoch "$rmt"); rl=$(epoch "$lm")
+    if [ -z "$rr" ] || [ -z "$rl" ]; then ... DIRECTION UNMEASURED ... ; elif [ "$rl" -gt "$rr" ]; then ... WRITTEN SINCE ... ; else ... BACKWARDS ... fi
+
+GNU `date` reads the trailing offset, so precision and shape are unchanged and `stamp()` stays
+the only renderer. A failed parse is RED and named (`DIRECTION UNMEASURED`, and
+`CLOCK UNMEASURED` in the restored-time arm), never a skip: a branch the tree does not enter
+is not an arm. Both arms now take this path.
 
 `test-mtime-record-arm.sh` is the arm set. Each arm builds its own drill under `$TMPDIR`,
 copies the docs with plain `cp` (so btime==mtime on the copy rather than a preserved-time
 copy), then points a FAKE `$HOME` at the copy through hardlinks so the `-ef` arm is really
 satisfied, and makes the copy a git repo so `head=`/`dirty=` and the N3 diff are real. The
 canonical farm is never written: the gate self-roots at `readlink -f $0`, so the copy records
-its own roster.
+its own roster. The offset arms write the RECORD cell directly -- that cell is the record, so
+it is the honest thing to grade -- and each one also asserts that the string compare
+DISAGREES with the truth on its own fixture, so no offset arm can pass against a gate that
+still compares strings.
 
 | arm | shape | pre-fix | on the fix |
 |---|---|---|---|
 | N1 | in-place same-byte rewrite on a clean drill tree; asserts bytes, `docs_md5`, ino and btime all UNCHANGED | `rc=0 fails=0` | `FAIL ... WRITTEN SINCE THE RECORD`, `rc=1`, and no backwards message |
 | N2 | mtime backdated strictly inside (btime, recorded) on a row with a wide window; asserts the backwards message and NOT the restored-time message | `rc=0 fails=0` | `FAIL ... MTIME MOVED BACKWARDS`, `rc=1`, no restored-time, no written-since |
 | N3 | same-byte rewrite, then `--record-idents` | green | green, roster diff exactly one changed line, `idents=` unchanged across the record |
+| N4 | record cell 15 min EARLIER in time, spoken in `+1100`: wall clock sorts ABOVE the live cell. False FAIL. Asserts the string compare inverts, and the gate says WRITTEN SINCE | `MTIME MOVED BACKWARDS` + a spurious `RESTORED-TIME COPY` (`rc=1`, wrong reason) | `FAIL ... WRITTEN SINCE THE RECORD`, `rc=1`, no restored-time |
+| N5 | frodo's measured fall-back pair, both cells real: live `2026-11-01T01:30:00-0400` (1793511000) vs record `2026-11-01T01:15:00-0500` (1793513700) | **silent** on the record arm -- the 2700 s backdate is invisible; the string compare reads FORWARD, asserted in the arm | `FAIL ... MTIME MOVED BACKWARDS`, `rc=1`; restored-time also fires (mtime 15 days before btime) and the arm says so instead of excusing it |
+| N6 | record cell that will not parse (`not-a-time`) | graded `MTIME MOVED BACKWARDS` -- a string compare on garbage | `FAIL ... DIRECTION UNMEASURED`, `rc=1` |
 
 A fresh copy has a half-millisecond window (btime and mtime are the same write), so arm N2
 manufactures the wide window the honest way -- a forward write, then a re-record -- which is
@@ -933,6 +973,13 @@ Measured 2026-11-16: RED at `5403789`'s gate -- N1 `rc=0 fails=0`, N2 `rc=0 fail
 `wal-lifecycle.md` mtime cell recorded by `9698889` is already the correct baseline, so the
 re-record this change needs does not touch that row. Timer wiring and `VACUOUS_STRUCTURAL`
 remain open and are not argued here.
+
+With the offset repair and arms N4-N6 in the same change, both directions re-measured the same
+day: against this commit's PARENT gate (`2874287`, extracted with `git show`) 28 PASS / 4 FAIL,
+`RESULT FAIL`, and the four reds are exactly the offset arms -- N4 wrong direction plus a
+spurious restored-time, N5 SILENT on a 2700 s backdate, N6 grading garbage as `BACKWARDS`. On
+the fix: 32 PASS / 0 FAIL, `RESULT PASS`. Arm count moved 3 -> 6, so the older 17/3 and 20/0
+pairs are the same instrument before the offset arms existed, not a contradiction.
 
 ## A branch the tree does not enter is not an arm (measured 2026-11-16 09:3x -0500, buzzy)
 

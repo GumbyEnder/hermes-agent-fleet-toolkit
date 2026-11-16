@@ -237,6 +237,19 @@ IDENTS_FILE="$WALOPS/DOC-IDENTS.tsv"
 # stat prints "YYYY-MM-DD HH:MM:SS.fffffffff +HHMM"; anything else (notably "-" for a
 # filesystem with no birth time) is emitted as "-" rather than mangled into a timestamp.
 stamp() { awk '{ if (NF == 3) print $1 "T" $2 $3; else print "-" }'; }
+# ORDERING TWO STAMPS. A stamp is LOCAL time with a UTC offset, so a lexicographic
+# compare orders WALL CLOCK, not time: identical offsets make the two agree, and a DST
+# change makes them disagree. Measured 2026-11-16 (frodo, reproduced here before the
+# repair): recorded 2026-11-01T01:15:00.000000000-0500 = epoch 1793513700, live
+# 2026-11-01T01:30:00.000000000-0400 = epoch 1793511000. `[[ $live > $recorded ]]` reads
+# TRUE while live is 2700 s EARLIER -- a real backdate straddling fall-back would print
+# nothing, which is a false PASS in the one direction this gate exists to see. The
+# spring-forward mirror is a false FAIL: noisy, safe, still wrong. epoch() PARSES the
+# string stamp() renders (GNU date reads the trailing offset); it is not a second
+# renderer, so precision and shape do not drift and stamp() stays the only formatter.
+# Every caller must treat an empty result as UNMEASURED and say so: a compare that
+# cannot be made is not a compare that passed.
+epoch() { date -d "$1" +%s 2>/dev/null || true; }
 idents_now() {
   for d in $DOCS; do
     r="$WALOPS/$d"
@@ -321,10 +334,18 @@ for d in $DOCS; do
     fi
     # mtime < btime cannot happen on a live file: a file is not modified before it exists.
     # It is the signature of a preserved-mtime copy -- bytes, -ef and md5 all green, and
-    # the only field that says a write happened is this one.
-    if [ "$lm" != "-" ] && [ "$lb" != "-" ] && [[ "$lm" < "$lb" ]]; then
-      echo "FAIL identities/$d: RESTORED-TIME COPY -- mtime $lm is OLDER than btime $lb, so these bytes were planted with someone else's clock. Content and -ef cannot see this; only this column can. Name the writer and re-record only if the replacement was intended: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
-      rc=1
+    # the only field that says a write happened is this one. Ordered by epoch, not by
+    # string: these two cells can carry different UTC offsets across a DST change (see
+    # epoch()), and a wall-clock compare would read such a copy as green.
+    if [ "$lm" != "-" ] && [ "$lb" != "-" ]; then
+      lm_s=$(epoch "$lm"); lb_s=$(epoch "$lb")
+      if [ -z "$lm_s" ] || [ -z "$lb_s" ]; then
+        echo "FAIL identities/$d: CLOCK UNMEASURED -- mtime $lm / btime $lb did not parse to an epoch, so the restored-time and record arms could not be ordered and neither ran. Do not read this doc as green: re-record it or fix the cell: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
+        rc=1
+      elif [ "$lm_s" -lt "$lb_s" ]; then
+        echo "FAIL identities/$d: RESTORED-TIME COPY -- mtime $lm is OLDER than btime $lb, so these bytes were planted with someone else's clock. Content and -ef cannot see this; only this column can. Name the writer and re-record only if the replacement was intended: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
+        rc=1
+      fi
     fi
     # The RECORD arm: the live mtime cell against the RECORDED one, DIRECTIONAL, and only
     # while ino and btime are unchanged. Distinct from the restored-time arm above and
@@ -339,14 +360,22 @@ for d in $DOCS; do
     # dd conv=notrunc, a restore that keeps mtime out of it) or a bare utimensat: ino,
     # btime, md5 and -ef all stay green, so the write leaves no trace anywhere while the
     # column reads as coverage. A witness you can choose not to record is not a witness.
-    # Both cells come from idents_now/stamp(), so this is a string compare with no second
-    # formatter and no precision drift. Skips "-" (no-btime filesystem), the same guard
-    # the restored-time arm carries. The FAIL prints both stamps: the repair is one
-    # visible diff line, not a silent re-record.
+    # Both cells come out of stamp() (idents_now and --record-idents share it) and are
+    # ORDERED by epoch, not by string: the two cells can be recorded on opposite sides of
+    # a DST change, where the same instant carries a different UTC offset and a
+    # lexicographic compare orders wall clock instead of time (measured example in
+    # epoch()'s comment: a 2700 s backdate sorts FORWARD). Skips "-" (no-btime filesystem),
+    # the same guard the restored-time arm carries, and FAILs UNMEASURED rather than
+    # skipping when a cell will not parse -- a branch the tree does not enter is not an arm.
+    # The FAIL prints both stamps: the repair is one visible diff line, not a silent
+    # re-record.
     rmt=${R_MT[$d]:-}
     if [ "${R_INO[$d]}" = "$li" ] && [ "${R_BT[$d]}" = "$lb" ] \
        && [ -n "$rmt" ] && [ "$rmt" != "-" ] && [ "$lm" != "-" ] && [ "$rmt" != "$lm" ]; then
-      if [[ "$lm" > "$rmt" ]]; then
+      rr=$(epoch "$rmt"); rl=$(epoch "$lm")
+      if [ -z "$rr" ] || [ -z "$rl" ]; then
+        echo "FAIL identities/$d: DIRECTION UNMEASURED -- the record cell $rmt or the live cell $lm did not parse to an epoch, so WRITTEN SINCE and MTIME MOVED BACKWARDS cannot be told apart and neither was printed. The mtime cell is graded by nothing until it is re-recorded: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
+      elif [ "$rl" -gt "$rr" ]; then
         echo "FAIL identities/$d: WRITTEN SINCE THE RECORD: mtime $rmt -> $lm, ino and btime unchanged; a same-byte in-place write or a utimensat is invisible to md5, -ef and the identity arm. Name the writer and re-record in this commit: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
       else
         echo "FAIL identities/$d: MTIME MOVED BACKWARDS: $rmt -> $lm, ino and btime unchanged -- a clock set on a live inode. Content, -ef and btime cannot see it. Name the writer and re-record in this commit: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"

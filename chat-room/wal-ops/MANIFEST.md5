@@ -3,7 +3,7 @@ ac722ea7b2dc8d6d68d8884308f4fc48  check-exec-copies.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 a82a6c56e8e248a9c7deb4a612b5c54a  check-index-rows.sh
 d32cbbdd60f7711bb1797f8b233b2adc  check-manifest.sh
-df80c5fa6184ee634bd16ce86d16c9f5  check-wal-doc-links.sh
+cb6eb5fb26ee31959a5c4414f057bd87  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 73c6748ca4d9b910099cebca70c941e2  enumerate-exec-set.sh
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
@@ -45,7 +45,7 @@ b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 88ab9035620fe2688b84d3d71336c09a  test-grader-mixed-db.sh
 0209449fe9f0d3dbdbc89c8e87a91a75  test-live-turns-cgroup.py
 67bea9f6e570bc503333c2a945e8994e  test-mirror-publish-guard.sh
-1f410ca5b4f06ca92b85b78acdea5f46  test-mtime-record-arm.sh
+3cd79554b2dbc956fb89033ce9a3ff97  test-mtime-record-arm.sh
 d3e37b321c98b707fc066d5c3449618f  test-record-coords.sh
 bcfaae45a7431097906c5ffd2836d1c9  test-verify-skip-path-arm.sh
 78bbb0c2ff292c89a908bb122036dab5  test-waiter-e2e.sh
