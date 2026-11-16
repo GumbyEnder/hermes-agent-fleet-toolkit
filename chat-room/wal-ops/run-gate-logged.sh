@@ -45,7 +45,21 @@ REPO=$(git rev-parse --show-toplevel 2>/dev/null || echo "not-a-repo")
 # exits non-zero: a repo with no `origin` remote journalled ORIGIN_SHA="origin/master",
 # truncated to `origin/maste` -- a sha field carrying a branch NAME, next to head=none that
 # said the lookup failed. Measured 2026-11-15 on a scratch repo (arm B of the dirty test).
-HEAD_SHA=$(git rev-parse --verify -q HEAD 2>/dev/null || echo none)
+#
+# head= carries THREE states, not two. `git rev-parse HEAD 2>/dev/null || echo none`
+# collapsed "there is no repo here" and "git ran and could not resolve HEAD" into one
+# token -- the same two-contradictions-on-one-line shape as the old dirty=0, one field
+# away from the number a reader trusts. `none` means no repo; `unknown` means git ran
+# and failed (no commits yet, corrupt index, git missing). Measured 2026-11-15.
+if ! git --version >/dev/null 2>&1; then
+  HEAD_SHA=unknown            # git itself is missing or failing, so nothing about this tree is known
+elif ! git rev-parse --git-dir >/dev/null 2>&1; then
+  HEAD_SHA=none               # git works; this directory is not inside a repo
+elif ! HEAD_SHA=$(git rev-parse --verify -q HEAD 2>/dev/null); then
+  HEAD_SHA=unknown            # git works, it is a repo, and HEAD does not resolve (no commits, bad index)
+fi
+# `none` for origin is a STATE, not a failure: a repo may simply have no such ref, so
+# origin has two endings (sha | none) while head has three.
 ORIGIN_SHA=$(git rev-parse --verify -q origin/master 2>/dev/null || echo none)
 # dirty= is 0|1|unknown, and the row carries the PATH SET beside the count.
 # Two defects, one line, both measured 2026-11-15 in a shared worktree:

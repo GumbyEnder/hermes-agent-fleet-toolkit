@@ -1400,12 +1400,32 @@ So the writer now records every executed write, and the gate reads that record:
   `dirty` from git's **exit status**, never from the emptiness of its stdout;
   `check-manifest.sh` and `check-wal-doc-links.sh` print `dirty=unknown` where they used to
   print a clean-looking `0` beside their own `head=no-git`.
-- **The guard is a pass-list, not a ceiling: publish only when `dirty=0` AND
-  `head != unknown`.** `refuse dirty>0` and `refuse dirty!=0` differ precisely on
-  `unknown`; the guard's whole job is that case, so it must name what it accepts.
-  (`run-gate-logged.sh` carries the same class in `dirty_paths` -- a failing git logs 0
-  paths -- but its row also carries `head=none`, so the coordinate is visible; the field is
-  a count with a reader, so it was left alone rather than retyped.)
+- **The guard is a pass-list, not a ceiling -- and its premise was wrong.** `refuse
+  dirty>0` and `refuse dirty!=0` differ precisely on `unknown`; the guard's whole job is
+  that case, so it must name what it accepts. But `dirty=0` is the wrong premise twice
+  over: the writer runs from the repo worktree, which is normally dirty for reasons that
+  have nothing to do with the legs, so a tree-clean guard refuses the very repair it
+  exists for -- and `dirty` is the field that can itself read `unknown`. What "publishing
+  the repo bytes" means is blob identity, per source:
+
+      for each leg f:  git hash-object ./$f  ==  git rev-parse HEAD:./$f
+
+  Publish only when HEAD resolves to a sha AND every source blob equals its HEAD blob.
+  That refuses a failing git (there is nothing to compare against), refuses an edited
+  source, and is indifferent to unrelated dirt. Measured at `5c0df4c` on a tree carrying
+  three modified files outside `wal-ops`: all four sources equalled their HEAD blobs
+  (`grade-slot.sh 100c7c38`, `run-gate-logged.sh 8e4cacee`, `witness-split-pair-v2.sh
+  4a46ccc3`, `verify-slot-manifest.sh 0c3e8fea`).
+- **`dirty_paths` was already three-ending, and `none` is not `unknown`.** Field five of
+  `INDEX.tsv` has carried `0|N|unknown` since `111d52b`, with the path SET in the log
+  header; `check-index-rows.sh` reads field NINE and NF and never field five, so no reader
+  contract moved -- it is a count, and `unknown` is its third ending. What was still
+  collapsed is `HEAD_SHA`: `git rev-parse HEAD 2>/dev/null || echo none` made "this
+  directory is not a repo" and "git ran and failed to resolve HEAD" one token, the same
+  two-facts-one-token shape the `dirty=` fix removed, one field away. Three endings now:
+  `unknown` if `git --version` fails (the tool is broken or missing), `none` if git works
+  and `rev-parse --git-dir` fails (not a repo), `unknown` again if it is a repo and HEAD
+  does not resolve (no commits, bad index).
 - the writer prints `journal  <path>` next to its `root  <dir>` lines, so the path is a
   coordinate the caller can check rather than a convention the gate assumes.
 - the gate prints `mirror_journal=<path> mirror_repairs=<n>
@@ -1430,3 +1450,43 @@ with a known `head` (`dirty=unknown` is a refusal, not a pass) and the verdict c
 `mirror_repairs=`, so the remaining question is that guard, not this artifact. Until it is
 answered the honest state stays fail-closed with the repair command printed on the FAIL
 line.
+
+## The publish guard refuses BEFORE the first write (landed 2026-11-16; frodo's counter-example became the arm)
+
+Frodo ran the writer against a scratch root with a failing-git shim and one tampered leg:
+four `wrote` lines, a four-row journal, `rc=0`. The token was honest and the refusal did
+not exist -- `5862`'s "the guard is now writable" was accurate, `5858`'s "the guard is
+written" was not. A pass-list stated in prose is not a guard; the code has to refuse.
+
+`install-mirror-legs.sh` now grades the WHOLE source table before the loop that writes,
+and exits `5` -- a state of its own, because nothing was measured about the published legs
+-- when HEAD is not a sha or any source blob differs from its HEAD blob. Checking and then
+writing would leave a half-published leg set, which is the drift the writer exists to
+remove, so the refusal is all-or-nothing. The lines name the file and both blobs:
+
+    REFUSE grade-slot.sh: disk blob 7c1f... != HEAD blob 9b22... -- the source has
+    uncommitted edits; commit it, then publish
+    REFUSE nothing written (head=unknown); the published legs still carry whatever they
+    carried before this run
+
+`check-manifest.sh` maps `rc=5` to `FAIL mirror publish-refused ...; repair: commit the
+wal-ops source` and prints `mirror=refused`: the repair for rc=5 is the opposite of the
+repair for rc=3, and a reader who sees only "exited 5" re-runs the writer and gets the
+same refusal.
+
+`test-mirror-publish-guard.sh` is the arm set. It builds a scratch git repo from the four
+sources, redirects `HOME` and `NAS` so no leg outside the drill is touched, and asserts on
+BYTES (`md5sum` of every published leg) plus the journal -- never on the absence of a
+`wrote` line, because a refusal that quietly rewrites a leg is the silent-green hazard
+this section is about.
+
+| arm | shape | measured |
+|---|---|---|
+| A | committed sources + one unrelated dirty file + stale legs | `rc=0`, 5 journal rows, `head=<sha12> dirty=1`, legs == sources |
+| B | failing-git shim + stale legs (frodo's counter-example) | `rc=5`, every leg byte-identical before/after, journal rows and mtime unchanged, `head=unknown` |
+| C | edited source, git working, clean legs | `rc=5`, nothing written, both blobs printed |
+| D | tree copied without `.git` | `rc=5`, `head=none`, nothing written |
+| E | `--dry` over stale legs | `rc=3`, nothing written |
+
+The timer is still not wired; what remains for that decision is the cadence and the
+journal-growth evidence, not this guard.

@@ -205,6 +205,18 @@ if [ -x ./install-mirror-legs.sh ]; then
     echo "FAIL mirror skip (writer rc=4: an absent leg directory was tolerated; one or more published legs were never measured)"
     m_state=skipped
     rc=1
+  elif [ "$m_rc" -eq 5 ]; then
+    # THE PUBLISH GUARD REFUSED, before any write: the sources on disk are not the
+    # bytes at HEAD, or HEAD itself does not resolve. Nothing was measured about the
+    # published legs, so no ok/drift/skip line exists to parse -- the writer's REFUSE
+    # lines are the whole evidence. The repair is "commit the wal-ops source", which is
+    # the opposite of what rc=3's repair line says; a reader who sees only "exited 5"
+    # runs the writer again and gets the same refusal.
+    printf '%s\n' "$m_out" | grep '^REFUSE' \
+      | sed 's|^REFUSE |FAIL mirror publish-refused (guard refused before any write): |'
+    echo "FAIL mirror legs: publish guard refused (rc=5) over mirror_root=$m_roots; repair: commit the wal-ops source, then ./install-mirror-legs.sh"
+    m_state=refused
+    rc=1
   elif [ "$m_rc" -ne 0 ]; then
     if [ "$m_absent" -gt 0 ]; then
       printf '%s\n' "$m_out" | grep '^FAIL absent' \

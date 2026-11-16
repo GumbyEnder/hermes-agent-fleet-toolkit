@@ -26,7 +26,10 @@
 #     2 usage;
 #     3 --dry found at least one leg it WOULD write (i.e. drift), nothing written;
 #     4 --allow-absent tolerated an absent leg directory, so at least one leg was
-#       never measured (nothing about that leg is known: not ok, not drift).
+#       never measured (nothing about that leg is known: not ok, not drift);
+#     5 REFUSED before any write: HEAD is not a resolvable sha (no repo, or git ran
+#       and failed) or at least one source blob differs from its blob at HEAD.
+#       Nothing was published. See THE PUBLISH GUARD below.
 # rc=3 exists because a --dry run that prints drift and exits 0 makes the caller's
 # verdict a string match on this script's phrasing: reword "would write" and a gate
 # that greps for it reads green over a stale leg (measured 2026-11-15 11:5x on a
@@ -83,7 +86,23 @@ HOSTOPS=${HOSTOPS:-$(dirname "$NAS")}
 # with everything else and a scratch drill never touches the production file.
 # A failed append is rc=1 -- a write with no token is exactly the silent-green hazard.
 JOURNAL=${MIRROR_JOURNAL:-$NAS/.mirror-repairs.log}
-HOSTSHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+# head= distinguishes THREE states, not two: `none` = this tree is not a git repo,
+# `unknown` = git ran and could not resolve HEAD (no commits, corrupt index, git
+# missing), otherwise the sha. `git rev-parse HEAD 2>/dev/null || echo none` collapsed
+# the first two into one token; they are different facts and the guard below refuses
+# both for different reasons. Same rule as dirty=: the exit status decides, never the
+# emptiness of stdout.
+# The --version probe is what separates "not a repo" from "git itself is broken": a
+# shim or a missing binary fails `rev-parse --git-dir` too, and reading that as `none`
+# would blame the directory for the tool. Measured 2026-11-15 with a failing git shim.
+if ! git --version >/dev/null 2>&1; then
+  GIT_HEAD=unknown
+elif ! git rev-parse --git-dir >/dev/null 2>&1; then
+  GIT_HEAD=none
+elif ! GIT_HEAD=$(git rev-parse --verify -q HEAD 2>/dev/null); then
+  GIT_HEAD=unknown
+fi
+HOSTSHA=$(printf '%s' "$GIT_HEAD" | cut -c1-12)
 # dirty= can say "unknown", and it must. Measured 2026-11-15 (frodo, independent worktree):
 # the same tree with an uncommitted file printed `dirty=1` with git present and `dirty=0`
 # with git failing, because a failing `git status --porcelain` prints NOTHING and empty
@@ -138,6 +157,68 @@ done <<< "$roots"
 # The journal is a second coordinate: it says WHERE the repair token would land, so the
 # gate can read the same file this writer appends to instead of assuming a path.
 echo "journal  $JOURNAL"
+
+# --- THE PUBLISH GUARD --------------------------------------------------------
+# WHY NOT `refuse dirty!=0`: the writer runs from the repo worktree, which is normally
+# dirty for reasons that have nothing to do with the legs (bus.py, wake_dispatcher.py
+# are modified right now). A tree-clean guard refuses the repair that fixes the leg,
+# and it leans on the field (dirty=) that can itself read `unknown`. So assert what
+# "publishing the repo bytes" actually MEANS:
+#
+#     for each leg f:  git hash-object ./$f  ==  git rev-parse HEAD:./$f
+#
+# Pass-list, not ceiling -- publish only when HEAD resolves to a sha (never none,
+# never unknown) AND every source blob equals its HEAD blob. That refuses when git
+# fails (there is nothing to compare against), refuses an edited source (the disk
+# bytes are not the committed bytes), and is indifferent to unrelated dirt (measured
+# 2026-11-15: four sources equal their HEAD blobs at 5c0df4c -- grade-slot.sh
+# 100c7c38, run-gate-logged.sh 8e4cacee, witness-split-pair-v2.sh 4a46ccc3,
+# verify-slot-manifest.sh 0c3e8fea -- on a tree with three modified files outside
+# wal-ops).
+#
+# IT REFUSES BEFORE THE FIRST WRITE. Version one of this guard would have been
+# worthless if it checked and then wrote: a half-published leg set is the drift this
+# script exists to remove. So the whole table is graded here, then the loop below is
+# free of the question.
+#
+# rc=5 is a separate state from rc=1 (a leg is broken) and from rc=3 (a leg would be
+# written): nothing was measured about the published legs at all, because the source
+# was not vouched for.
+guard_rc=0
+if [ "$GIT_HEAD" = none ]; then
+  echo "REFUSE head=none: this tree is not a git repo, so published bytes cannot be tied to a commit" >&2
+  guard_rc=1
+elif [ "$GIT_HEAD" = unknown ]; then
+  echo "REFUSE head=unknown: git ran and could not resolve HEAD (no commits, or git failing), so published bytes cannot be tied to a commit" >&2
+  guard_rc=1
+else
+  while IFS='|' read -r f legs; do
+    [ -n "${f:-}" ] || continue
+    src="./$f"
+    [ -f "$src" ] || continue          # the loop below reports a missing source as rc=1
+    disk_blob=$(git hash-object "$src" 2>/dev/null)
+    if [ -z "$disk_blob" ]; then
+      echo "REFUSE $f: git hash-object failed on $src -- disk bytes unreadable as a blob" >&2
+      guard_rc=1; continue
+    fi
+    head_blob=$(git rev-parse --verify -q "HEAD:./$f" 2>/dev/null)
+    if [ -z "$head_blob" ]; then
+      echo "REFUSE $f: HEAD:./$f does not resolve -- the file is untracked or not in the commit, so the source is not a published byte" >&2
+      guard_rc=1; continue
+    fi
+    if [ "$disk_blob" != "$head_blob" ]; then
+      echo "REFUSE $f: disk blob $disk_blob != HEAD blob $head_blob -- the source has uncommitted edits; commit it, then publish" >&2
+      guard_rc=1
+    fi
+  done < <(printf '%s\n' "$LEG_TABLE" | sed '/^[[:space:]]*$/d')
+fi
+if [ "$guard_rc" != 0 ]; then
+  echo "REFUSE nothing written (head=$GIT_HEAD); the published legs still carry whatever they carried before this run" >&2
+  exit 5
+fi
+n_src=$(printf '%s\n' "$LEG_TABLE" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+echo "guard head=$HOSTSHA sources=$n_src/$n_src match their HEAD blobs"
+
 
 rc=0
 would=0
