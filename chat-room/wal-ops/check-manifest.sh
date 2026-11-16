@@ -274,6 +274,22 @@ if [ -x ./install-mirror-legs.sh ]; then
       # numbers that cannot mean what they say. Measured 2026-11-16 in a fresh worktree at eb5d5a0.
       m_cause=behind
       m_repair="grade and publish from the tree at the published head (mirror_published=$m_pub): this worktree's HEAD $sha is an ancestor of it, so the leg comparison measures the checkout, not the commit -- re-run there, or ALLOW_ROLLBACK=1 for a deliberate rollback"
+    elif grep -q '^REFUSE tree-divergent' <<< "$m_refuse"; then
+      # THE SIBLING THE ANCESTRY TEST MISSES. A branch off a common fork is neither behind
+      # nor ahead, so `--is-ancestor HEAD PUB` is false and a guard built on that one question
+      # publishes its bytes. Measured 2026-11-16 (buzzy, probe-divergent-publish.sh): the side
+      # branch's grade-slot.sh was older than the published leg and the run printed drift, not
+      # a refusal. Distinct token, because the repair is not "go to the tip" -- it is "this
+      # tree is a different line of history; the legs are not yours to write yet".
+      m_cause=divergent
+      m_repair="rebase this branch onto the published head (mirror_published=$m_pub) so its leg sources descend from the published bytes, then re-run; a sibling branch is not ahead of the published legs, it is beside them, so ALLOW_ROLLBACK=1 is the only way to publish from here and it should be a decision, not a default"
+    elif grep -q '^REFUSE tree-unresolvable' <<< "$m_refuse"; then
+      # A COORDINATE THAT CANNOT BE CHECKED IS NOT A GREEN. The journal's newest row names a
+      # commit this tree does not have, so ancestry is unanswerable; the first version skipped
+      # the test silently and printed would-write lines (measured: journal head=deadbeef1234
+      # -> published deadbeef1234, guard passed).
+      m_cause=unresolvable
+      m_repair="fetch the commit the journal names (mirror_published=$m_pub) into this tree, or grade from the tree that published it; the coordinate exists but is not reachable here, so no ancestry claim can be made about this checkout"
     fi
     echo "FAIL mirror legs: publish guard refused (rc=5) over mirror_root=$m_roots; repair: $m_repair"
     m_state=refused

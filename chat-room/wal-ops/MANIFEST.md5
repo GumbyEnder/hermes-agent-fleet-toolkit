@@ -2,7 +2,7 @@ d7da84c654abe1fd0503098dc83c3672  census-recheck.py
 ac722ea7b2dc8d6d68d8884308f4fc48  check-exec-copies.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 a82a6c56e8e248a9c7deb4a612b5c54a  check-index-rows.sh
-cdf3974c390ce9d447a1f1a6bec39882  check-manifest.sh
+d32cbbdd60f7711bb1797f8b233b2adc  check-manifest.sh
 896b1988a43f5cd284385f4d728878f0  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 73c6748ca4d9b910099cebca70c941e2  enumerate-exec-set.sh
@@ -11,7 +11,7 @@ b3fd2ce1c781c9e15ee2eadd17740c5b  fan-mask-probe.py
 1b7d9a5b1c7058b4605cf7ce17248985  fanotify-close-actor.py
 b036297b23c4ea1ef2ec02ff3cc94afd  grade-slot-token.py
 409e19d9b357fb85ba1923cf9bbad291  grade-slot.sh
-838f6dded9dabd29a1ab16e23e71aecd  install-mirror-legs.sh
+d2d782f53ee4ac5cf12d43cee7c024a9  install-mirror-legs.sh
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 18b7941f28ac505f29e5e92a046226bd  manifest-truncation-2026-11-14.md
 2defb57c2bfa3bded2703aa1364caf52  probe-f1.py
@@ -43,7 +43,7 @@ b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 43cefb1002802b675190925a4ae2fb14  test-gate-head-vocabulary.sh
 88ab9035620fe2688b84d3d71336c09a  test-grader-mixed-db.sh
 0209449fe9f0d3dbdbc89c8e87a91a75  test-live-turns-cgroup.py
-c85a3b97a9d95bfcf99e94441ef31030  test-mirror-publish-guard.sh
+67bea9f6e570bc503333c2a945e8994e  test-mirror-publish-guard.sh
 1f410ca5b4f06ca92b85b78acdea5f46  test-mtime-record-arm.sh
 d3e37b321c98b707fc066d5c3449618f  test-record-coords.sh
 bcfaae45a7431097906c5ffd2836d1c9  test-verify-skip-path-arm.sh

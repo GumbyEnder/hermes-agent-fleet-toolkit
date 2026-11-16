@@ -170,16 +170,23 @@ echo "journal  $JOURNAL"
 # `head != published` therefore never means stale; the drift is measured on MD5s of the
 # source bytes, which are commit-independent. The newest `head=` in the journal IS the
 # published coordinate, so print it beside `journal` and let both parties read one number.
-PUB_HEAD=
+# PUB_RAW keeps WHATEVER the newest row says, even when this writer cannot use it.
+# The first version kept only a 12-char hex coordinate and dropped everything else on the
+# floor, so a row written with a full 40-char sha -- or by a tool that spelled it
+# differently -- read as `published none`, i.e. "first publish", and the ancestry test was
+# skipped without a word. That is a field that grades health defaulting to safe, which is
+# the bug this whole guard exists to remove (measured 2026-11-16: journal head=deadbeef1234
+# -> `published deadbeef1234`, guard passed, would-write line printed).
+PUB_HEAD=; PUB_RAW=
 if [ -r "$JOURNAL" ] && [ -s "$JOURNAL" ]; then
   _last_pub=$(sed -n 's/.*[[:space:]]head=\([0-9a-f][0-9a-f]*\).*/\1/p' "$JOURNAL" | tail -n 1)
   case "$_last_pub" in
     ''|*[!0-9a-f]*) PUB_HEAD= ;;
-    *) [ "${#_last_pub}" = 12 ] && PUB_HEAD=$_last_pub ;;
+    *) PUB_RAW=$_last_pub; [ "${#_last_pub}" = 12 ] && PUB_HEAD=$_last_pub ;;
   esac
   unset _last_pub
 fi
-echo "published  ${PUB_HEAD:-none}"
+echo "published  ${PUB_HEAD:-${PUB_RAW:-none}}"
 
 # --- THE PUBLISH GUARD --------------------------------------------------------
 # WHY NOT `refuse dirty!=0`: the writer runs from the repo worktree, which is normally
@@ -252,11 +259,42 @@ fi
 # an ANCESTOR of the published head. If it is, this tree is older than the bytes it
 # would write: refuse, before the first write, exactly like the blob guard.
 # ALLOW_ROLLBACK=1 is the deliberate-rollback escape hatch and is the only one.
-if [ "$guard_rc" = 0 ] && [ -n "$PUB_HEAD" ] && [ "${ALLOW_ROLLBACK:-0}" != 1 ] \
-   && [ "$PUB_HEAD" != "$HOSTSHA" ] \
-   && git rev-parse --verify -q "${PUB_HEAD}^{commit}" >/dev/null 2>&1 \
-   && git merge-base --is-ancestor "$GIT_HEAD" "$PUB_HEAD" 2>/dev/null; then
-  echo "REFUSE tree-behind: HEAD $HOSTSHA is an ancestor of the published head $PUB_HEAD (newest head= row in $JOURNAL) -- this tree is older than the legs it would write, so publishing would roll a published leg BACKWARD to bytes that commit already replaced; grade and publish at the tip (ALLOW_ROLLBACK=1 only for a deliberate rollback)" >&2
+#
+# REACHABILITY IS NOT `--is-ancestor HEAD PUB`. That one question catches a tree BEHIND
+# the published head and misses its sibling: a DIVERGENT tree (two branches off a common
+# fork) is neither an ancestor nor a descendant, so `is-ancestor HEAD PUB` is false and the
+# run publishes. Measured 2026-11-16 on a two-branch scratch repo (probe:
+# cache/scratch/probe-divergent-publish.sh): side=50809a3542d7, published=4f0a0e594c88,
+# merge-base f582486ec2ed -- the guard printed `sources=4/4 match their HEAD blobs` and a
+# `dry would write` line that moved grade-slot.sh ba231ec6 -> de1e3972, rc=3, no REFUSE.
+# The side branch's instruction bytes were OLDER than the published leg and it wrote them.
+# So ask the question in the direction that can be answered: only a tree that DESCENDS from
+# the published coordinate (or IS it) is publishable. Sibling and behind are both "not a
+# descendant" and both refuse, with distinct tokens so the repair sentence stays true.
+PUB_SHA=; PUB_STATE=none
+if [ -n "$PUB_RAW" ]; then
+  if ! PUB_SHA=$(git rev-parse --verify -q "${PUB_RAW}^{commit}" 2>/dev/null); then
+    PUB_STATE=unresolvable      # the journal names a commit this tree cannot see
+  elif [ "$PUB_SHA" = "$GIT_HEAD" ]; then
+    PUB_STATE=same
+  elif git merge-base --is-ancestor "$PUB_SHA" "$GIT_HEAD" 2>/dev/null; then
+    PUB_STATE=ahead             # this tree descends from the published bytes
+  elif git merge-base --is-ancestor "$GIT_HEAD" "$PUB_SHA" 2>/dev/null; then
+    PUB_STATE=behind
+  else
+    PUB_STATE=divergent
+  fi
+fi
+if [ "$guard_rc" = 0 ] && [ "${ALLOW_ROLLBACK:-0}" != 1 ] \
+   && [ "$PUB_STATE" != none ] && [ "$PUB_STATE" != same ] && [ "$PUB_STATE" != ahead ]; then
+  case "$PUB_STATE" in
+    unresolvable)
+      echo "REFUSE tree-unresolvable: the journal's newest repair names head=$PUB_RAW but that commit is not in this tree (shallow clone, partial fetch, or a hand-written row), so ancestry cannot be checked and this writer will not guess that it is safe; fetch the published head or pass ALLOW_ROLLBACK=1 if the rollback is deliberate" >&2 ;;
+    behind)
+      echo "REFUSE tree-behind: HEAD $HOSTSHA is an ancestor of the published head $PUB_SHA (newest head= row in $JOURNAL) -- this tree is older than the legs it would write, so publishing would roll a published leg BACKWARD to bytes that commit already replaced; grade and publish at the tip (ALLOW_ROLLBACK=1 only for a deliberate rollback)" >&2 ;;
+    divergent)
+      echo "REFUSE tree-divergent: HEAD $HOSTSHA and the published head $PUB_SHA share a fork but neither descends from the other -- this tree's sources are not newer than the published legs, they are a different line of history, so publishing would overwrite them with bytes no published commit vouches for; rebase onto the published head, or pass ALLOW_ROLLBACK=1 if this is the branch that should own the legs" >&2 ;;
+  esac
   guard_rc=1
 fi
 if [ "$guard_rc" != 0 ]; then

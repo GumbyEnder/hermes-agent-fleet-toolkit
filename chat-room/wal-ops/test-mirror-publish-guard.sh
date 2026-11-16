@@ -28,6 +28,13 @@
 #      differs -- untracked needs `git add` AND a commit, an edited source needs only the
 #      commit -- so a shared "uncommitted edits" sentence would be wrong for a file that
 #      was never in HEAD.
+#   J  a SIBLING branch off the published head's fork   -> rc=5, tree-divergent, nothing
+#      written, --dry also rc=5, ALLOW_ROLLBACK=1 still publishes. Added 2026-11-16: the
+#      ancestry question asked in the HEAD->PUB direction answers false for a sibling, so a
+#      guard built on it publishes another line of history's bytes over a newer leg.
+#   K  the journal's coordinate is not a commit here     -> rc=5, tree-unresolvable, nothing
+#      written; and a 40-char head= row is HONOURED as a coordinate instead of dropped to
+#      "published none" (which was indistinguishable from a first publish).
 #
 # Usage: bash test-mirror-publish-guard.sh [--keep]
 # Exit: 0 every arm held, 1 any arm failed, 2 setup failed.
@@ -238,6 +245,81 @@ out=$( cd "$BR" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNA
               || bad "G --dry rc=$rc, expected 5 -- the gate would read anachronistic drift as a defect"
 grep -q '^dry  would write' <<< "$out" && bad "G --dry still printed would-write lines (drift was measured for a tree that cannot publish)" \
   || pass "G --dry printed no would-write line"
+
+# --- J: a SIBLING branch -> refused (the shape --is-ancestor HEAD PUB cannot see) -----
+# Measured 2026-11-16 (buzzy). side and master fork from `base`; the published leg was
+# written from master's instructions, and the side branch carries OLDER bytes for the same
+# leg. `git merge-base --is-ancestor <side> <master>` is false, so the one-question guard
+# published. Only a DESCENDANT of the published coordinate may write.
+DR="$W/divergent"; mkdir -p "$DR"
+for f in $SRCS; do cp "$WALOPS/$f" "$DR/$f" || exit 2; done
+( cd "$DR" && git init -q \
+  && git -c user.email=t@example.invalid -c user.name=t add -A \
+  && git -c user.email=t@example.invalid -c user.name=t commit -qm base \
+  && git checkout -q -b side \
+  && printf '\n# side line: older instructions for this leg\n' >> grade-slot.sh \
+  && git -c user.email=t@example.invalid -c user.name=t commit -qam side \
+  && git checkout -q master \
+  && printf '\n# master line: the published instructions\n' >> grade-slot.sh \
+  && git -c user.email=t@example.invalid -c user.name=t commit -qam tip \
+  && git checkout -q side ) || { echo "SETUP FAIL: cannot build $DR" >&2; exit 2; }
+DPUB=$(cd "$DR" && git rev-parse --short=12 master)
+printf 'repair ts=2026-11-16T00:00:00Z head=%s dirty=0 leg=%s old=absent new=x root=%s\n' \
+  "$DPUB" "$W/nas/grade-slot.sh" "$W" > "$GJ"
+stale_legs
+before=$(leg_state); jbefore=$(wc -l < "$GJ" | tr -d ' ')
+out=$( cd "$DR" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$GJ" \
+       bash ./install-mirror-legs.sh 2>&1 ); rc=$?
+after=$(leg_state); jafter=$(wc -l < "$GJ" | tr -d ' ')
+[ "$rc" = 5 ] && pass "J rc=5 on a SIBLING branch (not an ancestor of the published head)" \
+              || bad "J rc=$rc, expected 5: $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
+[ "$before" = "$after" ] && pass "J nothing written (a sibling did not overwrite a newer leg)" \
+                         || bad "J a published leg was overwritten from a divergent tree"
+[ "$jbefore" = "$jafter" ] && pass "J no journal row for the refusal" || bad "J journal grew $jbefore -> $jafter"
+grep -q '^REFUSE tree-divergent' <<< "$out" && pass "J refusal names tree-divergent (a distinct token from behind)" \
+  || bad "J refusal does not name tree-divergent: $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
+grep -q '^REFUSE tree-behind' <<< "$out" && bad "J a sibling was reported as behind (wrong repair sentence)" \
+  || pass "J refusal is not misreported as tree-behind"
+stale_legs
+out=$( cd "$DR" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$GJ" \
+       bash ./install-mirror-legs.sh --dry 2>&1 ); rc=$?
+[ "$rc" = 5 ] && pass "J --dry also refuses on a sibling (rc=5, not rc=3 drift)" \
+              || bad "J --dry rc=$rc, expected 5"
+grep -q '^dry  would write' <<< "$out" && bad "J --dry still printed would-write lines" || pass "J --dry printed no would-write line"
+# the hatch is a decision, not a default: a deliberate publish from the sibling still works
+stale_legs
+out=$( cd "$DR" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$GJ" ALLOW_ROLLBACK=1 \
+       bash ./install-mirror-legs.sh 2>&1 ); rc=$?
+[ "$rc" = 0 ] && pass "J ALLOW_ROLLBACK=1 publishes from a sibling (J cannot pass for the blob guard's reason)" \
+              || bad "J rc=$rc with ALLOW_ROLLBACK=1 -- J would pass for the wrong reason"
+
+# --- K: a coordinate this tree cannot resolve -> refused, never silently skipped ------
+# Measured 2026-11-16 (buzzy): a journal row naming a commit absent from the repo printed
+# `published deadbeef1234`, skipped the ancestry test and printed would-write lines. A field
+# that grades health must never default to safe. A 40-char row must be HONOURED, not dropped.
+KJ="$W/nas/k-journal.log"
+printf 'repair ts=2026-11-16T00:00:00Z head=cafebabef00d dirty=0 leg=%s old=absent new=x root=%s\n' \
+  "$W/nas/grade-slot.sh" "$W" > "$KJ"
+stale_legs
+before=$(leg_state)
+out=$( cd "$R" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$KJ" \
+       bash ./install-mirror-legs.sh 2>&1 ); rc=$?
+after=$(leg_state)
+[ "$rc" = 5 ] && pass "K rc=5 when the journal's coordinate is not a commit in this tree" \
+              || bad "K rc=$rc, expected 5: $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
+[ "$before" = "$after" ] && pass "K nothing written" || bad "K a leg was written behind an unchecked coordinate"
+grep -q '^REFUSE tree-unresolvable' <<< "$out" && pass "K refusal names tree-unresolvable" \
+  || bad "K refusal does not name tree-unresolvable: $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
+K40="$W/nas/k40-journal.log"
+printf 'repair ts=2026-11-16T00:00:00Z head=%s dirty=0 leg=%s old=absent new=x root=%s\n' \
+  "$(cd "$R" && git rev-parse HEAD)" "$W/nas/grade-slot.sh" "$W" > "$K40"
+stale_legs
+out=$( cd "$R" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$K40" \
+       bash ./install-mirror-legs.sh --dry 2>&1 ); rc=$?
+grep -q '^published  none' <<< "$out" && bad "K a 40-char head= row was dropped to 'published none'" \
+  || pass "K a 40-char head= row is read as a coordinate"
+[ "$rc" = 3 ] && pass "K 40-char HEAD==published publishes on --dry (rc=3 drift, not a refusal)" \
+              || bad "K 40-char row rc=$rc, expected 3: $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
 
 echo "---"
 if [ "$fail" = 0 ]; then echo "RESULT PASS (0 failed arms)"; exit 0; fi
