@@ -525,25 +525,38 @@ occurrences in the blob, so nothing increments it. Every stop line that arm writ
 says `scan: 0`, and that zero is a shipped artifact, not a measurement: grade it
 **absent**, exactly like a missing field, and never as "no scan-leg rows". The same
 code carries `"scan": true` inside `mark_failures` entries, and that key is *not*
-stale draft cruft: it entered with the per-subdir marks (1619f79), and both sites
-(340-347 `_walk`, 361-366 root) are failures of the pre-arm `scandir` whose only job
-is finding directories to mark. So the key names a real scandir failure that the
-census never counts — the fix is to wire the leg, not to delete the key. Deleting it
-would bury a `_walk` wall inside the mark-failure count, which is the defect this
-row is about, inverted.
+stale draft cruft: it entered with the per-subdir marks (1619f79), and both sites are
+failures of the pre-arm `scandir` whose only job is finding directories to mark — the
+discovery walk's own `except OSError`, and the root `os.stat` under `if a.depth > 0`.
+So the key names a real discovery failure that the census never counts: the fix is to
+wire the leg, not to delete the key. Deleting it would bury a discovery wall inside
+the mark-failure count, which is the defect this row is about, inverted. Cite those
+two sites by name, never by line: at eb5d5a0 they are 383 and 403, and the
+coordinates this row first carried (340-347 `_walk` / 361-366 root) were dead the
+same day — 3a3a3c5 renamed the walk.
 
 - Before quoting a zero from a census field, grep the field name and count its
   occurrences: a name with an init and a print and no `+=` is a constant.
 - Fix it in the commit that adds the leg it was written for, not before — `named`
   and the OPEN_PERM denominator land with the notify-class companion arm.
 - **A leg that must be "strictly pre-arm" needs the arm restructured, not just a new
-  counter.** As shipped, `--dir` takes `FAN_MARK_ADD` at 306-309 *before* any
-  `scandir`, and `_walk` marks each subdirectory at 358 *before* descending into it:
-  scan and mark are interleaved, so SCAN rows are not pre-arm by construction for
-  `--depth > 0`. Scan-then-mark means two passes — discover directories and emit
-  SCAN rows, then `FAN_MARK_ADD` over the collected list (`marked_dirs` already
-  holds it). There is also no row source yet: `_scan_ino_map` (393) builds the name
-  map and emits nothing, so `mask=SCAN` occurs zero times in the blob.
+  counter — and that restructure has since landed on master for an unrelated reason.**
+  Pre-3a3a3c5 the arm was interleaved: `--dir` took `FAN_MARK_ADD` before any
+  `scandir`, and `_walk` called `_mark_dir(kid)` and then descended, so for
+  `--depth > 0` no SCAN row could be pre-arm by construction. 3a3a3c5
+  (2026-11-15 16:36 ET, the inode-reuse/rescan fix) replaced that with `_collect`
+  (pure discovery into `discovered`) followed by one `_mark_dir` loop over the list,
+  and `_rescan` walks the same two passes. So at HEAD the ordering half is done and
+  the open half is **emission**: neither `_collect` nor the root `os.stat` emits a
+  row, `_scan_ino_map` builds the name map and emits nothing, and `n_scan` is still
+  initialised and printed with no `+=` — so `mask=SCAN` occurs zero times and the
+  census still prints the constant. Wiring it now means one increment beside each
+  `"scan": true` append plus a SCAN row out of the discovery pass; the ordering half
+  does not require merging `scan-arm-census` (ffdf9ac, still off master).
+- Read "as shipped … interleaved" anywhere in this section as **pre-3a3a3c5**, never
+  as HEAD: the sentence was true at 7a01418 (04:18) when it was written and stopped
+  being true eight commits later, which is the same "date the shape claim" rule as
+  the stale line numbers above.
 - A leg's census value is `null` when the leg did not run and `0` only when it ran
   and found nothing. A crashed baseline and an empty directory print the same `0`,
   which is the same defect class as the constant.
