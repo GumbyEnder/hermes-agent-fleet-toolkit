@@ -156,13 +156,20 @@ rm -rf "$rs_tmp"
 # mirror_root=unreported and rc=1: an unread coordinate cannot pass, for the same
 # reason an unread contract cannot pass.
 m_ok=0; m_drift=0; m_skip=0; m_state=measured; m_roots=unreported
-m_journal=unreported; m_repairs=0; m_last=none; m_cause=-
+m_journal=unreported; m_repairs=0; m_last=none; m_cause=-; m_pub=unreported
 if [ -x ./install-mirror-legs.sh ]; then
   # REQUIRE_LEGS=1 pinned: an inherited REQUIRE_LEGS=0 is a rehearsal opt-out and must
   # not be able to turn this gate's absent-directory FAIL back into a silent skip.
   m_out=$(REQUIRE_LEGS=1 ./install-mirror-legs.sh --dry 2>&1); m_rc=$?
   m_roots=$(printf '%s\n' "$m_out" | sed -n 's/^root  //p' | paste -sd, -)
   [ -n "$m_roots" ] || m_roots=unreported
+  # THE PUBLISHED COORDINATE. Only available on writer builds that print it (`published  <sha12|none>`).
+  # It is what makes mirror_drift= readable beside head=: drift is an MD5 comparison of source bytes,
+  # so head != published is the normal state (measured 2026-11-16: head=8965b9f vs
+  # mirror_repair_last=b0ac1fce900a with mirror_drift=0, rc=0, every commit between them docs-only).
+  # `unreported` when the writer is older than this gate, never `none` -- `none` is a state.
+  m_pub=$(printf '%s\n' "$m_out" | sed -n 's/^published  //p' | tail -1)
+  [ -n "$m_pub" ] || m_pub=unreported
   if [ "$m_roots" = unreported ]; then
     echo "FAIL mirror coordinate (writer printed no 'root  <dir>' line: the directory this run measured is unknown, so its verdict cannot be attributed to a share)"
     rc=1
@@ -259,6 +266,14 @@ if [ -x ./install-mirror-legs.sh ]; then
     elif grep -q 'uncommitted edits' <<< "$m_refuse"; then
       m_cause=edited
       m_repair="commit the wal-ops source (the disk bytes are not the committed bytes), then ./install-mirror-legs.sh"
+    elif grep -q '^REFUSE tree-behind' <<< "$m_refuse"; then
+      # THE ANACHRONISM, REFUSED. A tree whose HEAD is an ancestor of the published head cannot
+      # grade these legs at all: the comparison would measure the distance from this commit to the
+      # published tip (a fact about the checkout, not about the commit), and a live run would roll a
+      # published leg BACKWARD. This is a refusal, not a NOTE: a NOTE invites a reader to keep using
+      # numbers that cannot mean what they say. Measured 2026-11-16 in a fresh worktree at eb5d5a0.
+      m_cause=behind
+      m_repair="grade and publish from the tree at the published head (mirror_published=$m_pub): this worktree's HEAD $sha is an ancestor of it, so the leg comparison measures the checkout, not the commit -- re-run there, or ALLOW_ROLLBACK=1 for a deliberate rollback"
     fi
     echo "FAIL mirror legs: publish guard refused (rc=5) over mirror_root=$m_roots; repair: $m_repair"
     m_state=refused
@@ -277,5 +292,5 @@ else
   echo "FAIL mirror legs: ./install-mirror-legs.sh is not executable -- the published-leg contract is not readable"
 fi
 
-echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_refuse=$m_cause mirror_root=$m_roots mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip mirror_journal=$m_journal mirror_repairs=$m_repairs mirror_repair_last=$m_last rc=$rc"
+echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_refuse=$m_cause mirror_root=$m_roots mirror_published=$m_pub mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip mirror_journal=$m_journal mirror_repairs=$m_repairs mirror_repair_last=$m_last rc=$rc"
 exit $rc

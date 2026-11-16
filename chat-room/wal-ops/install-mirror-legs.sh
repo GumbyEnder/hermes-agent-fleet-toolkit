@@ -21,6 +21,8 @@
 #   --allow-absent  tolerate a leg DIRECTORY that is absent, and report it as a skip
 #                   (also `REQUIRE_LEGS=0` in the environment). Without it an absent
 #                   directory is a FAIL.
+#   ALLOW_ROLLBACK=1 (env only) publish from a tree BEHIND the published head, i.e. a
+#                   deliberate rollback of a leg. Without it that is refused (rc=5).
 # rc: 0 every published leg already matches the repo, or was written;
 #     1 a write failed / no repo source / a leg directory is absent (default);
 #     2 usage;
@@ -28,8 +30,10 @@
 #     4 --allow-absent tolerated an absent leg directory, so at least one leg was
 #       never measured (nothing about that leg is known: not ok, not drift);
 #     5 REFUSED before any write: HEAD is not a resolvable sha (no repo, or git ran
-#       and failed) or at least one source blob differs from its blob at HEAD.
-#       Nothing was published. See THE PUBLISH GUARD below.
+#       and failed), at least one source blob differs from its blob at HEAD, or this
+#       tree's HEAD is an ANCESTOR of the published head (a historical checkout; the
+#       write would roll a leg backward). Nothing was published. See THE PUBLISH
+#       GUARD and THE ROLLBACK GUARD below.
 # rc=3 exists because a --dry run that prints drift and exits 0 makes the caller's
 # verdict a string match on this script's phrasing: reword "would write" and a gate
 # that greps for it reads green over a stale leg (measured 2026-11-15 11:5x on a
@@ -157,6 +161,25 @@ done <<< "$roots"
 # The journal is a second coordinate: it says WHERE the repair token would land, so the
 # gate can read the same file this writer appends to instead of assuming a path.
 echo "journal  $JOURNAL"
+# --- THE PUBLISHED COORDINATE -------------------------------------------------
+# `head=` says which tree is being graded. It does NOT say which commit the legs were
+# last written from, and a reader who compares `mirror_drift` to `head=` will read a
+# contradiction that is not there. Measured 2026-11-16 (frodo, live): head=8965b9f,
+# mirror_repair_last=b0ac1fce900a, mirror_drift=0, rc=0 -- every commit since b0ac1fce
+# was docs-only, so the legs still match their sources and there is nothing to write.
+# `head != published` therefore never means stale; the drift is measured on MD5s of the
+# source bytes, which are commit-independent. The newest `head=` in the journal IS the
+# published coordinate, so print it beside `journal` and let both parties read one number.
+PUB_HEAD=
+if [ -r "$JOURNAL" ] && [ -s "$JOURNAL" ]; then
+  _last_pub=$(sed -n 's/.*[[:space:]]head=\([0-9a-f][0-9a-f]*\).*/\1/p' "$JOURNAL" | tail -n 1)
+  case "$_last_pub" in
+    ''|*[!0-9a-f]*) PUB_HEAD= ;;
+    *) [ "${#_last_pub}" = 12 ] && PUB_HEAD=$_last_pub ;;
+  esac
+  unset _last_pub
+fi
+echo "published  ${PUB_HEAD:-none}"
 
 # --- THE PUBLISH GUARD --------------------------------------------------------
 # WHY NOT `refuse dirty!=0`: the writer runs from the repo worktree, which is normally
@@ -211,6 +234,30 @@ else
       guard_rc=1
     fi
   done < <(printf '%s\n' "$LEG_TABLE" | sed '/^[[:space:]]*$/d')
+fi
+# --- THE ROLLBACK GUARD: a tree BEHIND the published head must not publish ----------
+# The blob guard above proves "the disk bytes are the committed bytes". It cannot see
+# WHICH commit they are, so a clean checkout of an OLD commit passes it and publishes
+# old bytes over newer legs -- a silent downgrade of a published leg, from a worktree
+# that did nothing wrong. Measured 2026-11-16 (buzzy, in a fresh `git worktree` at
+# eb5d5a0): the four gates reproduced byte-for-byte, including copies_idents, EXCEPT
+# the mirror arm, which read mirror_drift=1 against a journal whose newest row was
+# 104f7c1 -- a commit that postdates the graded one. So the arm was not measuring the
+# health of eb5d5a0; it was measuring the distance from eb5d5a0 to the published tip,
+# and its FAIL was an anachronism. Grading a historical commit with this arm open is
+# not a defect in the commit, and it is not a NOTE either: a NOTE invites a reader to
+# keep using numbers that cannot mean what they say. Reachability is the fact, not
+# inequality (`head != published` is satisfied by every docs-only commit and by every
+# healthy run -- see the published coordinate above), so ask git whether this HEAD is
+# an ANCESTOR of the published head. If it is, this tree is older than the bytes it
+# would write: refuse, before the first write, exactly like the blob guard.
+# ALLOW_ROLLBACK=1 is the deliberate-rollback escape hatch and is the only one.
+if [ "$guard_rc" = 0 ] && [ -n "$PUB_HEAD" ] && [ "${ALLOW_ROLLBACK:-0}" != 1 ] \
+   && [ "$PUB_HEAD" != "$HOSTSHA" ] \
+   && git rev-parse --verify -q "${PUB_HEAD}^{commit}" >/dev/null 2>&1 \
+   && git merge-base --is-ancestor "$GIT_HEAD" "$PUB_HEAD" 2>/dev/null; then
+  echo "REFUSE tree-behind: HEAD $HOSTSHA is an ancestor of the published head $PUB_HEAD (newest head= row in $JOURNAL) -- this tree is older than the legs it would write, so publishing would roll a published leg BACKWARD to bytes that commit already replaced; grade and publish at the tip (ALLOW_ROLLBACK=1 only for a deliberate rollback)" >&2
+  guard_rc=1
 fi
 if [ "$guard_rc" != 0 ]; then
   echo "REFUSE nothing written (head=$GIT_HEAD); the published legs still carry whatever they carried before this run" >&2

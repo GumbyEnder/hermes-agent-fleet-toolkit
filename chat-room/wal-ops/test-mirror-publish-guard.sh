@@ -179,6 +179,66 @@ else
   pass "F refusal is distinct from the edited-source message"
 fi
 
+# --- G/H: a tree BEHIND the published head -> refused (G), hatch publishes (H) ------
+# The arm's shape is buzzy's 2026-11-16 replay: a clean `git worktree` checkout of an OLD
+# commit, where every source blob equals its HEAD blob (so the PUBLISH GUARD passes) and the
+# published legs were written from a LATER commit. Nothing is dirty, nothing is untracked;
+# the only fact is ancestry. That run used to publish old bytes over newer legs, and its
+# --dry twin graded a checkout while reading as a grade of the commit.
+# G runs FIRST with ALLOW_ROLLBACK=1 and REQUIRES rc=0, because a refusal arm that could
+# pass for the blob guard's reason proves nothing: this tree must be publishable when the
+# rollback is deliberate, and refused only because it is behind.
+BR="$W/behind"; mkdir -p "$BR"
+for f in $SRCS; do cp "$WALOPS/$f" "$BR/$f" || exit 2; done
+( cd "$BR" && git init -q \
+  && git -c user.email=t@example.invalid -c user.name=t add -A \
+  && git -c user.email=t@example.invalid -c user.name=t commit -qm one \
+  && printf '\n# newer than the checkout this arm grades\n' >> grade-slot.sh \
+  && git -c user.email=t@example.invalid -c user.name=t commit -qam two ) || {
+  echo "SETUP FAIL: could not build the two-commit repo at $BR" >&2; exit 2; }
+OLD12=$(cd "$BR" && git rev-parse --short=12 HEAD~1)
+PUB12=$(cd "$BR" && git rev-parse --short=12 HEAD~1 >/dev/null; git rev-parse --short=12 HEAD)
+( cd "$BR" && git checkout -q --detach "$OLD12" ) || { echo "SETUP FAIL: cannot detach at $OLD12" >&2; exit 2; }
+GJ="$W/nas/g-journal.log"
+# one journal row, attributable to the LATER commit: that is the published coordinate
+printf 'repair ts=2026-11-16T00:00:00Z head=%s dirty=0 leg=%s old=absent new=x root=%s\n' \
+  "$PUB12" "$W/nas/../run-gate-logged.sh" "$W" > "$GJ"
+stale_legs
+out=$( cd "$BR" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$GJ" ALLOW_ROLLBACK=1 \
+       bash ./install-mirror-legs.sh 2>&1 ); rc=$?
+[ "$rc" = 0 ] && pass "H rc=0 at $OLD12 with ALLOW_ROLLBACK=1 (the tree is publishable: the refusal below is about ancestry, not blobs)" \
+              || bad "H rc=$rc at $OLD12 with ALLOW_ROLLBACK=1 -- the arm would pass G for the wrong reason: $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
+# H's own writes journal head=$OLD12 (the journal records the tree AT THE WRITE, so a
+# deliberate rollback MOVES the published coordinate backward -- that is what the hatch
+# means). So the published coordinate has to be re-seeded before G, or G would be grading
+# a journal whose newest row is its own HEAD and the ancestry test would never fire.
+seed_pub() { printf 'repair ts=2026-11-16T00:00:00Z head=%s dirty=0 leg=%s old=absent new=x root=%s\n' \
+  "$PUB12" "$W/nas/../run-gate-logged.sh" "$W" > "$GJ"; }
+seed_pub
+stale_legs
+before=$(leg_state); jbefore=$(wc -l < "$GJ" | tr -d ' ')
+out=$( cd "$BR" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$GJ" \
+       bash ./install-mirror-legs.sh 2>&1 ); rc=$?
+after=$(leg_state); jafter=$(wc -l < "$GJ" | tr -d ' ')
+[ "$rc" = 5 ] && pass "G rc=5 at a historical checkout (tree-behind refused)" || bad "G rc=$rc, expected 5: $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
+[ "$before" = "$after" ] && pass "G nothing written (no leg rolled backward)" || bad "G a published leg was rolled BACKWARD by a historical checkout"
+[ "$jbefore" = "$jafter" ] && pass "G no journal row for the refusal" || bad "G journal grew $jbefore -> $jafter"
+grep -q '^REFUSE tree-behind' <<< "$out" && pass "G refusal names tree-behind" \
+  || bad "G refusal does not name tree-behind: $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
+grep -q "published head $PUB12" <<< "$out" && pass "G refusal names the published head $PUB12" \
+  || bad "G refusal does not name the published head $PUB12"
+grep -q 'ALLOW_ROLLBACK' <<< "$out" && pass "G refusal names the escape hatch" \
+  || bad "G refusal does not name the escape hatch"
+# --dry over the same tree must fail the same way: the gate grades with --dry, so a guard
+# that only fired on a live run would leave the anachronism in every gate line.
+stale_legs
+out=$( cd "$BR" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$GJ" \
+       bash ./install-mirror-legs.sh --dry 2>&1 ); rc=$?
+[ "$rc" = 5 ] && pass "G --dry also refuses at a historical checkout (rc=5, not rc=3 drift)" \
+              || bad "G --dry rc=$rc, expected 5 -- the gate would read anachronistic drift as a defect"
+grep -q '^dry  would write' <<< "$out" && bad "G --dry still printed would-write lines (drift was measured for a tree that cannot publish)" \
+  || pass "G --dry printed no would-write line"
+
 echo "---"
 if [ "$fail" = 0 ]; then echo "RESULT PASS (0 failed arms)"; exit 0; fi
 echo "RESULT FAIL ($fail failed arms)"; exit 1
