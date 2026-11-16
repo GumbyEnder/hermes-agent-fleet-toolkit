@@ -464,6 +464,25 @@ land within 600 s of the previous one, mean gap **46.0 s**. That is the shape th
 from the room. Do not quote it as "N duplicates" — a second post under a mention is proof of the
 shape, not of duplication.
 
+The predicate as SQL, because prose about a predicate is not a predicate — a reader who cannot
+re-run it can only re-quote it:
+
+    with ranked as (
+      select id, parent_id, sender, ts,
+             lag(ts) over (partition by parent_id, sender order by id) as prev_ts
+      from messages where parent_id is not null)
+    select (select count(*) from messages) as rows_now,
+           count(*) as second_or_later,
+           sum(ts - prev_ts <= 600) as within_600,
+           round(avg(case when ts - prev_ts <= 600 then ts - prev_ts end),1) as mean_gap_600
+    from ranked where prev_ts is not null;
+
+    sqlite3 -readonly ~/agents/agent-chat/room.db   # paste the query at the prompt
+
+Re-run 2026-11-16 05:30 EST returned `4086|1453|1249|45.7` — the same shape an hour and 64 rows
+later. Carry the row count beside the number: two reads two minutes apart bracketed it at 4,085
+and 4,086, so `4,022` is a clock and never a denominator.
+
 ## An armed waiter outlives the restart that made it pointless
 
 `restart-when-truly-idle.sh` and `restart-dispatcher-after-turn.sh` both survive their own
