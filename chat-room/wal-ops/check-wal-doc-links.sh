@@ -163,9 +163,9 @@ WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 # The last line is the verdict, built so that a quote of this gate carries its own
 # evidence: head/dirty name the tree measured, ok/fail remove the need to count OK
 # lines by hand, and the pair of oids names two different objects. docs_oid is the git
-# blob oid of the DOCS LIST -- it pins the ROSTER (which eight filenames are in the
+# blob oid of the DOCS LIST -- it pins the ROSTER (which filenames are in the
 # contract) and cannot move when a doc's bytes move. docs_md5 is one digest over the
-# eight (sha256, name) pairs in DOCS order  [order matters: the digest is printed that way] -- it pins the DOC SET's CONTENT and moves
+# (sha256, name) pairs, one per DOCS entry, in DOCS order  [order matters: the digest is printed that way] -- it pins the DOC SET's CONTENT and moves
 # on any byte anywhere. Quote docs_oid for "the roster is what it was"; quote docs_md5
 # for "the doc set is what it was". Neither one carries the other's claim.
 rc=0
@@ -387,7 +387,7 @@ fi
 unset DIRTY_RAW
 docs_n=$(printf '%s\n' $DOCS | wc -l)
 docs_oid=$(printf '%s\n' $DOCS | git hash-object --stdin 2>/dev/null || echo no-git)
-# docs_md5 is the CONTENT witness: sha256 over the eight (sha256, name) pairs in DOCS
+# docs_md5 is the CONTENT witness: sha256 over the (sha256, name) pairs in DOCS
 # order, truncated to 16 hex. A missing doc contributes the token `missing` rather than
 # being skipped, so a deletion moves this field too. Measured 2026-11-15: docs_oid
 # printed 56364eaa at 6478004 and again at 9e978c5 while build-provenance-and-gate-arms.md
