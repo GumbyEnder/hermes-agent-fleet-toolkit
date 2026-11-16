@@ -298,28 +298,62 @@ commit that produced the build — one slot proves one mechanism, not a series.
 Existence is not completeness. The 0 B window above is bounded and reaches only peer
 globbers, so the fix is a reading rule, not another code change: **before grading any
 `pairsplit2-*.log`, `stat -c %s` it and require > 0, then read the tail under the cutover
-clause below — this rule has two arms and one head.** One regex cannot cover both: before
-`61e21f2` no verdict reached the file at all, because every `VERDICT:` in the witness is
-echoed OUTSIDE the `} | tee "$OUT"` group (the group closes at `:267`, the grade block runs
-from `:276`). Measured 2026-11-15 at `61e21f2`: `grep -c VERDICT` over every capture on
-disk returned 0, so "the zero-retry path falls through to a `VERDICT:` line" was never true
-of the file — it falls through to the journal.
+clause below — this rule has two arms and one head.** One regex cannot cover both: before the
+trailer existed no verdict reached the file at all, because every prose `VERDICT:` in the
+witness is echoed OUTSIDE the `} | tee "$OUT"` group, and the grade block runs after that
+group closes — name that structure, never a line number, because the numbers in this section
+have already drifted by twenty lines under one comment fix. Measured 2026-11-15: `grep -c
+VERDICT` over every pre-trailer capture on disk returned 0, so "the zero-retry path falls
+through to a `VERDICT:` line" was never true of the file — it falls through to the journal.
 
-**Pre-trailer (`< 61e21f2`) — the last line is a marker of its era, and the verdict comes
-from the journal.** `tail -1` over the 62 captures on disk at 2026-11-15 08:58 gives three
-classes: 42 `# keeper ` (zero-retry), 18 `# flush-retry:` (present only when `_tries > 0`,
-and then always the last line written), 2 `# wal absent holders:` (the 11-13 pre-fix fuser
-artifacts). Count the classes with `tail -1`; do not copy the numbers — the 08:28 slot
-alone took 61 to 62. A tail that ends on a bare journal line is a capture still being
-written: wait, do not grade. For these artifacts the slot's verdict exists only in the
+**The cutover commit is `4cdfa20` (blob `faf8e2db`, 30,226 B), not its annotation-only
+successor `61e21f2`.** `git log -S'# VERDICT: rc=' -- chat-room/wal-ops/witness-split-pair-v2.sh`
+returns exactly one commit and it is `4cdfa20` ("absolute deadline, arm lateness, verdict
+trailer"); its blob already carries the `printf ... >> "$OUT"` that every trailer comes from.
+`61e21f2`'s blob (`4a46ccc3`) is the same logic with a comment rewritten, so it supersedes
+`faf8e2db` for *binding* without moving the cutover. Binding and cutting over are different
+questions, and they take different handles: **bind to the bytes that ran — `4a46ccc3`, md5
+`6c5438939e965d4158215195934ffdc5`, 30,458 B, identical at the NAS path the unit execs and at
+`HEAD:chat-room/wal-ops/witness-split-pair-v2.sh` — and cut over at the commit that first
+taught the file to speak.** A claim that `61e21f2` is "the first commit whose script writes a
+trailer" is false by one command, and it would have been quoted as fact.
+
+Attribution is by the artifact's own `# WITNESS ... md5 <hex>` header, never by a commit
+head: all 16 trailer-bearing captures carry `md5 6c5438939e965d4158215195934ffdc5`, i.e.
+`git hash-object` of the NAS copy — artifact → md5 → blob, a chain that does not move when
+HEAD does. It does move: this binding was written when HEAD was `61e21f2`, and by 2026-11-16
+06:39Z HEAD was `867423a` with the path blob still `4a46ccc3`. Both `4cdfa20` and `61e21f2`
+are ancestors, so `>= 4cdfa20` partitions artifacts exactly as `>= 61e21f2` would; `>= HEAD`
+partitions them by the reader's checkout.
+
+**Pre-trailer (`< 4cdfa20`) — the last line is a marker of its era, and the verdict comes
+from the journal.** `tail -1` over the 62 pre-trailer captures on disk at 2026-11-16 06:44Z
+gives three classes: 42 `# keeper ` (zero-retry), 18 `# flush-retry:` (present only when
+`_tries > 0`, and then always the last line written), 2 `# wal absent holders:` (the 11-13
+pre-fix fuser artifacts). Count the classes with `tail -1`; do not copy the numbers — the
+08:28 slot alone took 61 to 62. The census is one command, and it partitions on the trailer
+first so a post-trailer file cannot be miscounted as a pre-trailer class:
+
+    for f in pairsplit2-*.log; do
+      grep -q '^# VERDICT: rc=' "$f" || tail -1 "$f"
+    done | sed -E 's/^# (keeper|flush-retry:|wal).*/# \1/' | sort | uniq -c
+
+A tail that ends on a bare journal line is a capture still
+being written: wait, do not grade. For these artifacts the slot's verdict exists only in the
 unit journal, so read it there and name the slot it belongs to.
 
-**Post-trailer (`>= 61e21f2`) — exactly one
+**Post-trailer (`>= 4cdfa20`) — exactly one
 `^# VERDICT: rc=[0-9]+ [A-Z_]+ late=[^ ]+ deadline=[0-9]+s$`, and it is the last line.**
 The trailer is appended with `>>` after the tee pipeline closed and after the flush-retry
 append (tee opens without `O_APPEND`, so a trailer written inside the group is overwritten
 at tee's own offset). Two trailers, a trailer that is not last, or a non-matching tail is a
-finding, not a shape to paper over. Absence means killed OR never reached the capture
+finding, not a shape to paper over. "Exactly one" is structural, not observed luck: every
+terminal branch `finish`es and then `exit`s, and `finish` no-ops once `_finished=1`, so no
+path can write twice. Measured 2026-11-16 06:44Z over 78 captures: 62 pre-trailer in the
+three classes above, 16 post-trailer with exactly one trailer each, each trailer the last
+line and regex-matching (16 of 16); tokens seen `GRADED` 6 and `VACUOUS_STRUCTURAL` 10, both
+`rc=0`, the first such artifact `pairsplit2-20261115T092835.log` — the predicted first slot.
+Absence means killed OR never reached the capture
 branch (exit 2 has no `OUT`; exit 3 runs before `: > "$OUT"`), so compare the trailer's
 `rc=` with `ExecMainStatus` and never read absence as "killed": an untrapped `TERM` runs the
 EXIT trap and writes a trailer that says `rc=0` (measured, bash 5.2.21: `TERM` 143 / trap
@@ -330,6 +364,15 @@ inherits SIGINT ignored -- `/proc/<pid>/status` `SigIgn` `0x6`; a non-background
 it caught and deferred across the `sleep`, so the `wait` restarts), while `KILL` 137 writes
 no trailer either. Absence is "no trailer", never "`rc=0`"; only a `TERM`/`HUP` absence
 that disagrees with `ExecMainStatus` is the finding.
+
+**Signal delivery has an ordering, and the ordering decides whether a trailer exists at
+all.** A `TERM` sent to the bash pid ALONE while the script sits in its pre-capture `sleep`
+does not run the trap: bash defers a trap until the foreground child returns, so the run
+hangs out the full sleep and dies with no trailer — measured, and it looked like a hung unit
+rather than a kill. systemd stops a oneshot by signalling the whole cgroup
+(`KillMode=control-group`), and only that ordering produces the trap and `rc=143`. So never
+rehearse a kill against a pid; rehearse it against the cgroup, and read a kill off the pair
+(trailer present?, `ExecMainStatus`), never off the trailer alone.
 `late=` is computed from the artifact's own `checkpoint-pre:` `slot=`, never from `tail -1` of the
 checkpoint log (on an expired arm that is the previous hour and prints ~3600 s); no
 `slot=` line gives `late=absent`.
@@ -352,8 +395,10 @@ reason therefore ships with an underscore. This constrains the TRAILER only; the
 (`VERDICT: DEADLINE EXPIRED -- no checkpoint-pre:/checkpoint: line by slot+Ns`) stays a human
 sentence, because nothing parses it and the abbreviation would read worse.
 
-The vocabulary is closed at `61e21f2` — seven tokens, the three kill tokens identical but for
-the signal:
+The vocabulary is closed at `4cdfa20` — nine token strings in seven rows, the three kill
+tokens identical but for the signal. The table is what the code CAN emit; only two of the
+nine have actually reached a file (`GRADED` 6, `VACUOUS_STRUCTURAL` 10, both `rc=0`, 16 of 16
+at 2026-11-16 06:44Z), so a token here is a shape to match, not evidence it has occurred:
 
 | token | rc | means |
 |---|---|---|
@@ -384,7 +429,9 @@ signal rehearsals both print `late=absent` rather than `0`.
 **A grade run must not mutate the file it graded.** `--grade` reads the stored capture, and a
 trailer appended there is the instrument destroying its own evidence: the re-grade would then
 count two trailers and fail its own rule. Measured on `pairsplit2-20261115T012835.log`, md5
-`e7c6a702` before and after, `grep -c '^# VERDICT: rc='` still `0`. Verify both on any future
+`e7c6a702` before and after, `grep -c '^# VERDICT: rc='` still `0`; and re-measured
+2026-11-15 on a copy of the 08:28 artifact, md5 `3aaf3635` before and after, trailer count
+`0`, with grade printing the `NO CHECKPOINT LINE` verdict instead. Verify both on any future
 edit to `finish` — the guard is `GRADE_FILE`-non-empty, not a mode flag a caller can forget.
 
 ### `# tee` is the checkpoint log's size and mtime, not a tee process
