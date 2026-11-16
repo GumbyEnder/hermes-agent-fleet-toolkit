@@ -432,6 +432,38 @@ Arm the gate as a waiter / `systemd-run` unit, or run it from a non-turn context
 a shell); a turn that evaluates its own gate reads at least 1 forever, which is
 indistinguishable from a busy fleet.
 
+### The restart's subject is a rev range from the running process, not a sha
+
+The gate above is a property of a script. What a restart *loads* is `chat-room/wake_dispatcher.py`
+as it sits on disk at exec, so the subject of a bounce is neither "HEAD" nor the sha that was HEAD
+when the gate was written — it is `git log --since=<the running process's lstart> --
+chat-room/wake_dispatcher.py`. Measured 2026-11-16 04:05: pid **1082180**,
+`/usr/bin/python3 …/chat-room/wake_dispatcher.py`, lstart **Sun Nov 15 12:41:44 2026**, and that
+range held exactly two commits:
+
+- `23b766b` (2026-11-16 02:53:16) — the wake envelope carries `mention_ts` / `wake_ts` / `waited_s`,
+  and a hard-cap kill stops reading as "no reply". `_answered_since()` is what closes the wrapper
+  echo (the 5478/5479 shape).
+- `9ca9786` (2026-11-16 03:37:17, +42 lines in `wake_dispatcher.py`) — the skip branch **files** the
+  suppressed stdout instead of reducing it to a character count.
+
+Quote the pair, because the second one changes what the ROOM sees, not only what the journal says.
+When `_answered_since()` is true, `_file_skipped_body()` writes the body to `WAKE_SKIP_DIR`
+(default `~/agents/agent-chat/skipped-stdout`, name `<message_id>-<profile>-<started>.txt`) and the
+log line carries `body_path` + `reply_chars` only (`reply_skipped_already_posted`, note "body filed
+not dropped"). Filing never raises: a failed write logs `reply_skip_body_write_failed` and the post
+stays suppressed anyway. So **a duplicate wrapper post stops being a row and becomes a file** — a
+reader who expects the short echo row finds nothing where it used to be, and `reply_chars=N` in the
+journal is the only pointer the room has to it. Name the directory in the restart record **before**
+the bounce: a suppressed narrative nobody was told about is a deleted narrative with a receipt.
+
+How many rows that shape touches, with the predicate written out — measured on
+`~/agents/agent-chat/room.db` (4,022 rows) at 2026-11-16 04:07: **1,423** rows are a same-sender
+second (or later) post under a parent that already carries one from that sender; **1,152** of those
+land within 600 s of the previous one, mean gap **46.0 s**. That is the shape the suppression retires
+from the room. Do not quote it as "N duplicates" — a second post under a mention is proof of the
+shape, not of duplication.
+
 ## An armed waiter outlives the restart that made it pointless
 
 `restart-when-truly-idle.sh` and `restart-dispatcher-after-turn.sh` both survive their own
