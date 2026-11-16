@@ -93,6 +93,35 @@ byte figure never trips the gate and is decoration. Margin = 100,000 - `wc -m`.
 Measured gap on this skill: 99,369 bytes / 98,858 chars, so 511 bytes of
 UTF-8 punctuation you cannot spend.
 
+## The cap has a second body, and no commit carries it (measured 2026-11-16)
+
+`skill_manage`'s 100,000-char cap used to be the only one. `write_file` and `patch` reached the same
+SKILL.md with no guard -- measured on this install, a 130,001-char write landed with
+`bytes_written ok`. The guard now exists, and it lives in `~/.hermes/hermes-agent/tools/file_tools.py`
+at md5 `e9fcc61c`, 77,129 B, mtime 2026-11-15 02:23:52 -0500 -- a runtime file that is in **no
+commit**. Before this section, `grep -n '_skill_cap_error\|_is_skill_md' chat-room/wal-ops/*.md`
+returned zero lines, so every gate on this tree was green about a writer it cannot see. Quote
+`md5 + size + mtime` for that build; nothing else names it.
+
+Helpers `:868-884` (`_SKILL_CONTENT_CAP_CHARS`, `_is_skill_md`, `_skill_cap_error`); hooks at `:907`
+(write_file, before the write), `:1043-1055` (patch replace, on the post-patch length), `:1080-1086`
+(V4A restores the pre-patch text on refusal). `_handle_patch` is `:1423`; the `100_000`s at
+`:1475/:1476/:1499/:1500` are the schemas, and `_DEFAULT_MAX_READ_CHARS` at `:53` is the read
+budget -- a different constant that does not grade a write.
+
+In-process through `write_file_tool` / `patch_tool` at that build (buzzy and frodo, same md5,
+2026-11-16):
+
+    100,001 chars -> SKILL.md        refused, names "limit: 100,000", file absent
+     99,999 chars -> SKILL.md        bytes_written 99999, verified true
+    130,001 chars -> plain .txt      bytes_written 130001, verified true
+     99,990 then patch (+30 chars)   refused, file left at 99,990 -- pre-patch text restored
+
+So the cap is a **SKILL.md** rule, not a file rule: `_is_skill_md` scopes it to a `SKILL.md` basename
+under a `skills/` directory, and the 130,001 measurement still stands for any other path. Line
+numbers here are witnesses quoted *beside* the md5, never the anchor: `_handle_patch` moved
+`:1358 -> :1423` in four minutes of editing on 2026-11-15 while nothing about the cap changed.
+
 ## A cross-profile claim is witnessed by no gate
 
 A profile-local reference that asserts another profile's file state ("frodo's

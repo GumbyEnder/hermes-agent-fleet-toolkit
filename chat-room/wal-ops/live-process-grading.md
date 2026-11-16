@@ -773,6 +773,11 @@ two directories short.
   that python is a symlink into `/root/.local/share/uv/...`. So the live tool build on this host is
   `5babc038` -- the canonical copy, not the deepest `find` hit and not the one under `/usr/local`.
 
+- **The generic file path carries the same cap in a different file.** `tools/file_tools.py`
+  md5 `e9fcc61c` / 77,129 B / mtime 2026-11-15 02:23:52 enforces the 100,000-char cap for
+  `write_file` and `patch` on a `SKILL.md` target, so the five builds above answer "which
+  `skill_manage` validates", not "which writer refuses". That file is in no commit; see
+  `build-provenance-and-gate-arms.md`, "The cap has a second body, and no commit carries it".
 ## Never quote an `uptime_s` without the port it came from
 
 `/health` exists on both the bus (`:8090`) and the wake dispatcher (`:8095`) and both return an
