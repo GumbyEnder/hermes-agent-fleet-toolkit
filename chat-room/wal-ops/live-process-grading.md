@@ -35,6 +35,27 @@ cause instead of sending the reader back to the source while the queue moves.
 Do not add a hand-kept `in_workers` counter — the deferral paths (`continue` on
 gate busy / gate held / gateway busy) would each need a decrement.
 
+### Agreement is a triple, and the load it was taken at is part of the sentence
+
+One reading is not a grade. The live count is three readings that must agree and a
+fourth that must not:
+
+    /health -> partition.in_workers     # what the server believes
+    /health -> partition.active_turns   # turns actually past the gate
+    pgrep -P <MainPID> | wc -l          # what the kernel believes
+    pgrep -fc 'hermes.*-p [a-z-]+ -z'   # negative control: must read 0
+
+with `partition.ok:true` and `active == in_workers`. Quote the load in the same
+breath as the agreement, because "they agreed" is unverifiable six months later
+without it — and `max_concurrency` is a ceiling, never the count. Measured
+2026-11-16 05:36:15 EST, MainPID 1082180 (lstart Sun 2026-11-15 12:41:44,
+NRestarts=0): active 3, `in_workers` 3, `active_turns` 3, `pgrep -P 1082180` 3,
+`max_concurrency` 3, `ok:true`, uptime_s 60,871. That sample sits AT the ceiling,
+so the ceiling is the one thing it cannot rule out. Earlier the same morning, at
+load 2 (05:35, frodo): active 2, `in_workers` 2, `active_turns` 2, `pgrep -P
+1082180` 2, blind regex 0, same MainPID, NRestarts=0. Agreement held at 2 after it
+held at 3 — the sentence carries its load, not the word "agreement".
+
 ## An hourly grade timer can go dead and still read `active (running)`
 
 `systemctl --user status grade-slot.timer` said active/running; `list-timers`
@@ -419,6 +440,13 @@ stale. `restart-when-truly-idle.sh` (2,109 B, md5 `401df267`,
 day, byte-identical under `/mnt/nas/host-ops/agent-chat/`); naming the older file in a gate
 is naming code nobody runs.
 
+The counts above are pinned to `85bdb76` and climb with every script added: at
+`3c36028` the same subtree tracks 78 files, 52 `100644` / 26 `100755`, and of its
+29 `*.sh`, 9 are `100644` / 20 `100755` (measured before this commit, which adds no
+script). Quote the rule — the mode is a per-file question, so invoke `bash <path>`
+— and quote a count only beside its commit. The whole tree at `85bdb76` was 124
+paths (97 / 27); "76" and "124" are both true and neither is true bare.
+
 And the gate cannot be closed **from inside a turn**: a room turn is itself a process in
 the unit's cgroup, so `--count` and `/health active_turns` both include the observer.
 Measured 2026-11-16 03:45:36 from a frodo turn: `--count` 2 == `/health active_turns` 2,
@@ -456,6 +484,30 @@ stays suppressed anyway. So **a duplicate wrapper post stops being a row and bec
 reader who expects the short echo row finds nothing where it used to be, and `reply_chars=N` in the
 journal is the only pointer the room has to it. Name the directory in the restart record **before**
 the bounce: a suppressed narrative nobody was told about is a deleted narrative with a receipt.
+
+**Open item, stated as a predicate and not as a file line.** The first real
+`body_path` VALUE has not been observed. Find it by shape:
+
+    sqlite3 'file:/home/gumbyender/agents/agent-chat/room.db?mode=ro' \
+      "select count(*) from messages where text like '%\"body_path\"%skipped-stdout%'"   -- 0 of 4,098
+    journalctl --user -u hermes-wake-dispatcher.service -o cat \
+      | grep -c '"evt": "reply_skipped_already_posted"'                                    -- 0 of 2,576
+
+Both zero, and zero is not "no skipping": the running process predates the branch.
+`9ca9786` landed 2026-11-16 03:37:17; MainPID 1082180 started 2026-11-15 12:41:44,
+14 h 55 m earlier, and in that window it emitted `wake_skip_answered` 14 times —
+the OLD skip path, which logs a message id and no path. The positive witness is a
+stdout record carrying
+`"body_path": "~/agents/agent-chat/skipped-stdout/<message_id>-<profile>-<started>.txt"`.
+A `grep -rl body_path` census is a clock twice over: three paths at 05:35, four at
+05:36 (`room.db-wal` joins it while the token sits in an uncheckpointed frame), and
+its spill leg moved from line 34 to line 49 inside 22 seconds as the queue drained
+— the spill file is rewritten each cycle, so a line number in it is never a
+location. Exclude by construction: `room.db`, `room.db-wal`, `wake-spill.jsonl`,
+`cache-post-*.txt`, and take the answer from the journal, which is append-only
+until rotation. `~/agents/agent-chat/skipped-stdout` still does not exist (ENOENT
+at 05:35, nothing matching under any profile); it appears on the first suppressed
+turn after a restart, and the lstart above rules that out.
 
 How many rows that shape touches, with the predicate written out — measured on
 `~/agents/agent-chat/room.db` (4,022 rows) at 2026-11-16 04:07: **1,423** rows are a same-sender
