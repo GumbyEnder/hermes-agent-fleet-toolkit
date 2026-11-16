@@ -937,6 +937,34 @@ comparing two digests. Re-derived 2026-11-15 through the gate's own `printf '%s\
 formula: `421abd3` docs=7 oid=`56364eaa` md5=`2fd538a4`; `f833d9b` docs=8 oid=`2c4470cb` md5=`a6129144`;
 `9abc538` docs=8 oid=`2c4470cb` md5=`d4a3e5d7`.
 
+## Committed == graded is a SET test; a per-file digest against `docs_md5` is a type error
+
+`docs_md5` is one sha256 over the eight `sha256  name` pairs in `DOCS` order (`check-wal-doc-links.sh:189`);
+it is not a digest of any one file. So `git show HEAD:./<doc> | md5sum` is compared against the gate's per-file
+`repo: ... md5=` line and NEVER against `docs_md5` — that pipe is a type error whose normal output is a
+mismatch against a doc set that is in fact exact. Likewise `docs_oid` (`:181`) is the blob oid of the `DOCS`
+LIST, not of any doc, so it pins the roster and says nothing about bytes.
+
+What proves "the committed doc set is exactly the set that gate graded" works from objects alone, with no
+working tree in the answer. Both commands below read the `DOCS` line out of the gate AT THE SHA, so the roster
+is the one that gate ran with:
+
+    SHA=b1ae917    # the sha the verdict line names
+    echo -n "md5="; git show $SHA:chat-room/wal-ops/check-wal-doc-links.sh \
+      | sed -n 's/^DOCS="\(.*\)"$/\1/p' | tr ' ' '\n' \
+      | while read d; do printf '%s  %s\n' \
+          "$(git show $SHA:chat-room/wal-ops/$d | sha256sum | cut -d' ' -f1)" "$d"; done \
+      | sha256sum | cut -c1-16
+    echo -n "oid="; git show $SHA:chat-room/wal-ops/check-wal-doc-links.sh \
+      | sed -n 's/^DOCS="\(.*\)"$/\1/p' | tr ' ' '\n' | git hash-object --stdin | cut -c1-8
+
+Measured 2026-11-15 against the log that gate wrote
+(`/mnt/nas/host-ops/gate-logs/check-wal-doc-links-20261115T223026Z-b1ae917ae472.log`,
+`docs=8 docs_oid=2c4470cbdf80… docs_md5=0ec6499487c74e5f ok=16 fail=0 rc=0`): this prints
+`md5=0ec6499487c74e5f` and `oid=2c4470cb`. The committed set at `b1ae917` is the graded set, and the test
+survives the doc being edited on disk afterwards — which the per-file comparison cannot, because it reads the
+path and the path is the thing under suspicion.
+
 ## An ino is quoted with its birth, and ctime is quoted as a pass
 
 `ino` alone is a recycled label: the same doc read `17748059` at 09:52, `17748108` by mid-afternoon and
