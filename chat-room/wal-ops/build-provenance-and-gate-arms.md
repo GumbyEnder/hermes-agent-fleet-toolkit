@@ -103,7 +103,35 @@ commit**. Before this section, `grep -n '_skill_cap_error\|_is_skill_md' chat-ro
 returned zero lines, so every gate on this tree was green about a writer it cannot see. Quote
 `md5 + size + mtime` for that build; nothing else names it.
 
-Helpers `:868-884` (`_SKILL_CONTENT_CAP_CHARS`, `_is_skill_md`, `_skill_cap_error`); hooks at `:907`
+**The copy of record is a dirty worktree, and both gates are blind to it.** At
+`~/.hermes/hermes-agent`, HEAD is `2bd378ed1b` and `git cat-file -s HEAD:tools/file_tools.py`
+is **73,867 B** (md5 `7ad528b9`) -- the committed file does **not** carry the cap. The capped
+body is the worktree file measured above: `git status --porcelain` = `M tools/file_tools.py` +
+`?? tools/file_tools.py.bak-buzzy-20261115T0217`, `git diff HEAD --numstat` = `+65/-0`. So
+`git checkout -- tools/file_tools.py`, or any `hermes update` that resets the worktree, deletes
+all five arms on this page and **nothing fails**: neither `check-wal-doc-links.sh` nor
+`check-manifest.sh` contains the string `file_tools`, so both stay green about a writer that no
+longer exists. No other copy carries it either: all 10 environment workspaces
+(`~/.hermes/installs/*/environments/*/workspace/tools/file_tools.py` -- the shallow
+`~/.hermes/installs/*/workspace/...` glob matches **0** paths) read
+`grep -c _SKILL_CONTENT_CAP_CHARS` = 0 at 73,021-73,867 B, measured 2026-11-16. Repair order:
+recover the body from this worktree (or re-implement it from the five arms below, which are the
+spec), re-apply, re-run `probe-skill-cap-arms.py`, require `arms: 5/5 agree` on the triple *it*
+prints. The `.bak-buzzy-...` file is **untracked** -- git prints it `??`, `git cat-file` cannot
+resolve it, and a reset of untracked paths takes it too. A convenience, never the backup of
+record.
+
+**Two trees, two HEADs.** `head=` on the gate lines below is the **fleet-toolkit** HEAD
+(`~/Agents/Projects/hermes-agent-fleet-toolkit`), the tree the gate scripts live in. It is not
+the runtime: at `~/.hermes/hermes-agent` that sha does not exist (`git cat-file -t a4cd294` ->
+`fatal: invalid object name`; that repo sits on detached HEAD `2bd378ed1b` off `origin/main`).
+A build artifact quoted beside a gate line -- `file_tools.py` is the standing example -- is
+pinned by its own `md5 + size + mtime`; print the two on adjacent lines only with their repos
+named, or the reader re-measures one in the other and gets "no such commit".
+
+Helpers `:868-884` (`_SKILL_CONTENT_CAP_CHARS` `:868`, `_is_skill_md` `:871`, `_skill_cap_error`
+`:876` -- `:877` is the `if _is_skill_md(...)` body line, and a def read out of a sed window is
+how that off-by-one happens); hooks at `:907`
 (write_file, before the write), `:1043-1055` (patch replace, on the post-patch length), `:1080-1086`
 (V4A restores the pre-patch text on refusal). `_handle_patch` is `:1423`; the `100_000`s at
 `:1475/:1476/:1499/:1500` are the schemas, and `_DEFAULT_MAX_READ_CHARS` at `:53` is the read
@@ -141,7 +169,12 @@ cap).
 
 
 So the cap is a **SKILL.md** rule, not a file rule: `_is_skill_md` scopes it to a `SKILL.md` basename
-under a `skills/` directory, and the 130,001 measurement still stands for any other path. Line
+under a `skills/` directory, and the 130,001 measurement still stands for any other path. The test is `basename == "SKILL.md"`
+and `"<sep>skills<sep>" in abspath` -- a substring test on the path, blind to which skill is
+live, so `skills/.archive/<name>/SKILL.md` matches exactly like a live one (1,056 of the 3,280
+`SKILL.md` files under 19 `~/.hermes/profiles/*/skills` roots on this box, 2026-11-16). Any
+census of that universe must say whether it pruned dot-directories: 3,280 with them, 2,224
+without, the entire delta `.archive/`. Line
 numbers here are witnesses quoted *beside* the md5, never the anchor: `_handle_patch` moved
 `:1358 -> :1423` in four minutes of editing on 2026-11-15 while nothing about the cap changed.
 
@@ -682,7 +715,8 @@ verdict line so the quote carries its evidence instead of the reader's memory.
     doc-links gate: head=<sha> dirty=<0|1> docs=N docs_oid=<blob oid of the DOCS list> docs_md5=<16-hex content witness> ok=N fail=N rc=N
 
 A row count alone cannot separate 41 rows at 7335bd7 (correct there) from 41 of 43 at HEAD
-(wrong); the oid can, and `dirty` makes a run taken before the doc commit quotable.
+(wrong); the oid can, and `dirty` makes a run taken before the doc commit quotable. Both `head=` fields
+name the fleet-toolkit repo, never the Hermes runtime (see "Two trees, two HEADs" above).
 
 **The doc-links gate is a LIVE-TREE assertion, not a commit property.** Its `-ef` arm compares
 each repo doc against the profile reference by inode identity plus byte equality, so it can only

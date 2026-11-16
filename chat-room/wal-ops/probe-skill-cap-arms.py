@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-run the four SKILL.md cap arms in-process, through the real file tools.
+"""Re-run the five SKILL.md cap arms in-process, through the real file tools.
 
 WHY: the 100,000-char cap on write_file/patch lives in ~/.hermes/hermes-agent/tools/
 file_tools.py, a runtime file that is in NO commit. The doc section "The cap has a second
@@ -15,8 +15,9 @@ USAGE (the venv matters -- file_tools imports agent/hermes_platform at module lo
 Exit 0 = all four arms agree with the doc. Exit 1 = at least one arm disagrees (the
 disagreement is printed, and the doc is then wrong, not this script).
 
-The line numbers the doc quotes (:868/:877/:1080/:1085) are witnesses beside the build
-triple, never the anchor: quote md5 + size + mtime.
+The line numbers the doc quotes (:868/:871/:876/:907/:1043-1055/:1079-1086) are witnesses
+beside the build triple, never the anchor: quote md5 + size + mtime. `_skill_cap_error` is at
+:876; :877 is its first body line.
 """
 import hashlib
 import io
