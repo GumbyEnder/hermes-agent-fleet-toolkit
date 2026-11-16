@@ -116,14 +116,29 @@ In-process through `write_file_tool` / `patch_tool` at that build (buzzy and fro
      99,999 chars -> SKILL.md        bytes_written 99999, verified true
     130,001 chars -> plain .txt      bytes_written 130001, verified true
      99,990 then patch (+30 chars)   refused, file left at 99,990 -- pre-patch text restored
+     99,990 then V4A patch (+30)     refused, bytes restored -- but the hardlink is NOT restored
 
-The probe that carries those four rows is `probe-skill-cap-arms.py` in this directory, rostered
+The probe that carries those five rows is `probe-skill-cap-arms.py` in this directory, rostered
 in `MANIFEST.md5`: it imports the live `tools.file_tools` through the install's own interpreter,
-re-measures all four arms, prints the build triple it measured as its first line, and exits
+re-measures all five arms, prints the build triple it measured as its first line, and exits
 non-zero on any disagreement. Re-run it in the turn you cite the cap
 (`~/.hermes/hermes-agent/venv/bin/python chat-room/wal-ops/probe-skill-cap-arms.py`, cwd
 anywhere) and compare *its* triple to the one above -- a scratch-dir probe is deleted after a day
 idle, so a measurement with no rostered probe is a number with a shelf life.
+
+The fifth arm is the one that grades `:1080-1086` instead of quoting it as a code read (buzzy,
+2026-11-16, `arms: 5/5 agree`, rc=0, same build triple). V4A is the only writer with **no
+pre-check**: `write_file` and `replace` refuse before writing, V4A applies the patch, reads the
+result back, and restores the pre-patch text on an over-cap `SKILL.md`. The bytes come back
+exactly (99,990) and the verdict names `limit: 100,000` -- so a size-only check calls it clean --
+but the restore is `open(path, "w")` on the inode the **apply** just created. Measured on a
+hardlinked `SKILL.md` (a profile reference's shape): ino `23732533 -> 23732711`, nlink `2 -> 1`,
+sibling leg still holding the 99,990-byte pre-image. Two files, byte-identical, link gone -- a
+refused V4A patch is **not a no-op** on a reference leg, and `md5=` on both legs would still
+print the same value. So run the doc-links gate after a V4A **refusal** too, not only after a
+failure batch; the durable fix is still the one the gate points at (keep `SKILL.md` under the
+cap).
+
 
 So the cap is a **SKILL.md** rule, not a file rule: `_is_skill_md` scopes it to a `SKILL.md` basename
 under a `skills/` directory, and the 130,001 measurement still stands for any other path. Line

@@ -65,6 +65,30 @@ def arm(name: str, body: str, path: str, expect: str):
     return ok
 
 
+def arm_v4a_over_cap(skill: str, write_fn) -> bool:
+    base = "c" * 99_980 + "0123456789"
+    assert len(base) == 99_990
+    write_fn(skill, base)
+    sibling = skill + ".leg"
+    if os.path.exists(sibling):
+        os.unlink(sibling)
+    os.link(skill, sibling)
+    pre_ino, pre_nlink = os.stat(skill).st_ino, os.stat(skill).st_nlink
+    patch = ("*** Begin Patch\n*** Update File: %s\n@@\n-0123456789\n+%s\n*** End Patch\n"
+             % (skill, "z" * 40))
+    out = ft.patch_tool(mode="patch", patch=patch)
+    refused = "limit: 100,000" in out
+    left = len(open(skill, encoding="utf-8").read())
+    post_ino, post_nlink = os.stat(skill).st_ino, os.stat(skill).st_nlink
+    sib_len = len(open(sibling, encoding="utf-8").read())
+    ok = refused and left == 99_990
+    print(f"[{'OK ' if ok else 'BAD'}] 99,990 + V4A patch 10->40 chars (100,020) -> refused, left at 99,990")
+    print(f"      refused={refused} pre={99_990} post={left}  verdict={out.strip()[:80]}")
+    print(f"      link: ino {pre_ino}->{post_ino} nlink {pre_nlink}->{post_nlink} "
+          f"sibling {sib_len}B (pre-image 99,990B) diverged={sib_len != left}")
+    return ok
+
+
 def main() -> int:
     print(build_triple())
     tmp = tempfile.mkdtemp(prefix="cap-probe-")
@@ -96,6 +120,15 @@ def main() -> int:
     print(f"[{'OK ' if ok else 'BAD'}] 99,990 + replace 10->40 chars (100,020) -> refused, left at 99,990")
     print(f"      pre={pre_n} post={left}  verdict={out.strip()[:90]}")
     results.append(ok)
+
+    # 5. V4A has NO pre-check, unlike write_file and replace mode: the patch is
+    # applied, the result is read back, and an over-cap SKILL.md is restored from
+    # the pre-image (file_tools.py:1078-1086). Run it on a HARDLINKED skill so the
+    # refusal's effect on the link is measured, not assumed: the apply writes the
+    # file, so whatever inode the restore writes into is the one the sibling name
+    # then holds. Gate on the refusal + restored byte count (the doc's claim); the
+    # inode/nlink/sibling facts are printed as measurements, not gated.
+    results.append(arm_v4a_over_cap(skill, write))
 
     print()
     print(f"arms: {sum(1 for r in results if r)}/{len(results)} agree with the doc")
