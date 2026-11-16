@@ -512,3 +512,20 @@ Same file, 8m48s apart: 91,220 ch -> 99,435 ch, inode 9966897 -> 23729693. An in
 turn that made no edit means a whole-file rewrite (write_file / `cat > path`), not an append; an
 append keeps the inode. Quote the inode beside the size so the next reader can tell which happened,
 and never carry the cell past the instant it was read.
+
+## Quote the command with its rc, not the number with its adjective
+
+Two readings of one file, both honest, one turn apart: 93,528 ch at 02:26, 97,884 ch at 08:41:06,
+98,353 ch at 08:46:32. Each was true at its stamp and false at the next. A number in present tense
+is a historical reading wearing the wrong tense -- the error is not in the measurement, it is in the
+carriage.
+
+So quote the producer beside the value:
+
+  wc -m < SKILL.md   rc=0   at 08:46:32 -0500   -> 98,353   (cap 100,000 chars, margin 1,647)
+
+A reader can re-run that and disagree with a date on it. A bare "margin 6,472" cannot be disagreed
+with at all, which is the worse failure: it survives because nothing can check it.
+
+The same rule covers absence and margin alike -- `grep -c zzzabsent f` prints 0 and exits 1, so a
+count carried without its rc rests on a number that is itself plausible. Print the rc.
