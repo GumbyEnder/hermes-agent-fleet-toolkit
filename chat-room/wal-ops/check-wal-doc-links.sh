@@ -122,19 +122,34 @@ set -u
 #       ~/.hermes/profiles/<p>/skills/agent-chat-bus/SKILL.md
 #   At 2026-11-15T16:42 ET that read 748 ch (frodo) and 42 ch (buzzy) -- buzzy was one append
 #   from the cap, where every later batch in that profile fails and re-materialises every ref.
+#   A byte margin is NOT a char margin: the cap counts characters, so the two coincide only for a
+#   pure-ASCII body (ch == B, and then 100,001 ch IS 100,001 B -- the cap alone decides). Any
+#   non-ASCII punctuation makes B > ch, and a byte reading then UNDERSTATES the headroom by the
+#   gap: measured frodo/SKILL.md 86,069 ch / 86,516 B, gap 447, at 2026-11-15T22:54 ET -- the same
+#   file read 99,252 ch / 99,768 B, gap 516, in frodo's own 22:53:12 read, so margin AND gap are
+#   per-instant. Subtract the gap before comparing a byte reading to the char cap; quote the char
+#   read.
 #
 # SCOPE -- what this gate does NOT cover. Counted, not assumed:
 #   repo 14 tracked `.md` (`git ls-files '*.md'`: 4 root + chat-room/wal-ops 10), DOCS 8 -> 16 arms.
 #   The 4 root docs and the 2 wal-ops docs outside DOCS (README.md,
 #   manifest-truncation-2026-11-14.md) have no reference in the frodo, buzzy, aragorn or sam
 #   profile dirs, so they have no drift path. Everywhere else this gate is blind by
-#   construction: 39 reference docs in frodo's dir and 37 in buzzy's -- 76 profile-local docs
-#   against 8 graded -- are neither in DOCS nor in the repo. Coverage is exhaustive for the 8
-#   DOCS names x 2 profiles and for nothing else. Never restate it as "exhaustive for drift".
-#   (Counts re-measured 2026-11-15T22:38 ET at c262ac0 + this commit: `git ls-files`, `ls` in
-#   each references dir. Both counts moved inside one evening (38->39, 35->37); the cause of a
-#   delta is a claim about someone else's turn, so state the count and not where it went. A
-#   count in a comment decays silently -- re-count it in the same edit, never carry it.)
+#   construction: names in a profile's references/ that are not in DOCS are neither canonical
+#   here nor graded: 40 in frodo's dir, 37 in buzzy's, 69 distinct across both -- and the 8 DOCS
+#   names are, measured 2026-11-15T22:54 ET, the ENTIRE intersection of the two dirs (`comm -12`
+#   over the two sorted `ls` lists returns exactly those 8 names, nothing else). So the blind set
+#   is the 61 names that exist on ONE leg only (32 frodo-only + 29 buzzy-only), never "69 against
+#   8": an 8-of-69 phrasing inverts the claim, because the graded set is every name present on
+#   BOTH legs and the uncovered set is every name present on one. Coverage is exhaustive for the
+#   8 DOCS names x 2 profiles and for nothing else. Never restate it as "exhaustive for drift".
+#   (Counts are per-leg and per-instant. frodo's dir read 39 at 22:53:12 (frodo's count) and 40 at
+#   22:54:13 (this one) because references/room-turns-without-duplicates.md was born at
+#   22:53:52.456 (btime; mtime .457, nlink 1, frodo leg only) -- 40 s after that count: both
+#   honest, one leg, two instants. Earlier the same evening the pair moved 38->39, 35->37. The
+#   cause of a delta is a claim about someone else's turn, so quote the leg and the instant with
+#   the count and not where it went. A count in a comment decays silently -- re-count it in the
+#   same edit, never carry it.)
 #
 # Docs covered. Every entry here is repo-canonical in chat-room/wal-ops/ and symlinked into
 # each profile's references/. Add a doc here in the same commit that adds its symlinks, or the
