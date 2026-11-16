@@ -1032,6 +1032,14 @@ the 02:34 agreement (row == disk at 36,135 B / `ec592cee`) was a **work-in-progr
 because the commit five minutes later (`379e430`) carried 36,441 B / `3ff82bc3`. So neither
 pair-inequality nor pair-equality is a verdict; the tree coordinate is what separates them.
 
+**That pair is an example, not a gate reading.** Both reads predate
+`/mnt/nas/host-ops/gate-logs/INDEX.tsv` (first row `2026-11-15T17:23:41-0500`), so a reader who
+takes `rc=0 at 02:34` to the log finds nothing there. Cite a logged run -- the gate line plus its
+`.log` leg -- when you want a verdict; cite this pair only for the shape of the trap. The same
+rule covers the counts printed inside a gate line: `ok=44` at `797bf17`, `ok=63` at `cc350c0`,
+`idents=... ok=22` on the doc gate. An arm count is a clock, and it says nothing without the
+`head=` that printed it.
+
 `check-manifest.sh` now hashes the FAILING row three ways -- `R` = the MANIFEST row, `D` = the
 file on disk, `H` = the blob at HEAD -- and prints one class per row plus four verdict tokens:
 
@@ -1043,4 +1051,6 @@ file on disk, `H` = the blob at HEAD -- and prints one class per row plus four v
 `rc` stays 1 for every class: a classification is a repair sentence, never a green. All four arms
 were measured in a scratch worktree at `5cd5434` before landing (mid-edit -> `mismatch_worktree=1`,
 stale-against-commit -> `mismatch_row=1`, three-way -> `mismatch_both=1`, untracked row ->
-`mismatch_unclass=1`); a clean tree reads all four at 0 with `rc=0`.
+`mismatch_unclass=1`); a clean tree reads all four at 0 with `rc=0`. Re-measured independently at
+`cc350c0` (gate script installed over a `5cd5434` worktree, clean baseline committed first): the same
+four arms fire one at a time and each returns `rc=1`; only the clean tree returns `rc=0`.
