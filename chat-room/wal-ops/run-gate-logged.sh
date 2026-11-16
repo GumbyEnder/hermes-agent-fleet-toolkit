@@ -158,8 +158,14 @@ LOG="$LOG_DIR/${GATE_NAME}-${TS}-${HEAD12}.log"
   echo "# origin/master  : $ORIGIN_SHA"
   echo "# dirty_count    : $DIRTY"
   echo "# dirty_paths    : $DIRTY_SET"
-  echo "# dirty_untracked : ${DIRTY_UNTRACKED:-<unset>}"
-  echo "# dirty_head_absent : ${DIRTY_HEAD_ABSENT:-<unset>}"
+  # A MEASURED empty is `<none>` long before it reaches here, normalised where the measurement
+  # happened (the branches above), so an empty value at print time can only mean the classifier
+  # never ran -- a fifth branch that forgot to set both. Print that loudly rather than a
+  # plausible-looking word: `<unset>` was the old spelling for the same slot, and it read
+  # identically to a measured-nothing, which is the collapse these two fields exist to prevent.
+  # Not fatal: the row is still written, and the token is what a reader greps for.
+  echo "# dirty_untracked : ${DIRTY_UNTRACKED:-<UNMEASURED>}"
+  echo "# dirty_head_absent : ${DIRTY_HEAD_ABSENT:-<UNMEASURED>}"
   echo "# host           : $(hostname)"
   echo "#--- gate output ---"
 } > "$LOG"
