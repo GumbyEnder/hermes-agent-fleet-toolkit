@@ -920,7 +920,10 @@ while `docs_md5` went `a78f0b70a3b6264b` -> `203c82698c8451b2` and `idents`
 (`git hash-object --stdin`) and `:426` hashes the `(sha256, name)` pairs.
 
 Derive that invariance, do not sample it: `git diff b1d0226 2eebb14 -- check-wal-doc-links.sh`
-is empty, so the DOCS list feeding `docs_oid` is byte-identical and the field *cannot* differ
+is empty, so the DOCS list feeding `docs_oid` is byte-identical and the field *cannot* differ.
+Cover the RANGE, not the pair that happened to be compared: `git log --oneline b1d0226..7209e59 --
+chat-room/wal-ops/check-wal-doc-links.sh` prints nothing (rc=0), so one command certifies the
+invariance across all four heads at once. (buzzy, 2026-11-16 09:11, re-derived not sampled)
 however many doc bytes move. The asymmetry runs one way only — a changed `docs_oid` is a roster
 change and still says nothing about content.
 
