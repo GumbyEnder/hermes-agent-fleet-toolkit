@@ -191,6 +191,17 @@ GATE_TMP=$(mktemp) || exit 2
 # unchanged; the copy recorded its own c10a83a3). A roster path that does NOT share the recorded
 # objects' root -- the shape check-exec-copies.sh has, with absolute NAS/live COPIES and one repo
 # roster -- is the shape that needs an env override before it can be drilled.
+#
+# GRADE ONLY FROM THE CANONICAL CHECKOUT -- NEVER FROM A COPY OR A DETACHED WORKTREE.
+# The identities arm grades the INSTALLED HARDLINK FARM: repo doc (ino, btime) against
+# DOC-IDENTS.tsv, and every profile reference must be -ef with the repo doc. A detached
+# worktree or a clean export of HEAD has fresh inodes at nlink=1 by construction, so it
+# reads `FAIL identities/<doc>: IDENTITY REPLACED` for every doc while the canonical tree
+# is green -- measured by frodo on a clean eb5d5a0 export: fail=24 on IDENTITY REPLACED
+# with 16/16 real OK arms. That is the instrument describing its own copy, not 24 broken
+# docs, and the fix is to grade where the farm lives. The MANIFEST gate IS safe on a
+# detached worktree (its rows name blobs, not inodes); this gate is not, and its -ef and
+# identity arms are how a reader tells which one was run.
 IDENTS_FILE="$WALOPS/DOC-IDENTS.tsv"
 # stat prints "YYYY-MM-DD HH:MM:SS.fffffffff +HHMM"; anything else (notably "-" for a
 # filesystem with no birth time) is emitted as "-" rather than mangled into a timestamp.

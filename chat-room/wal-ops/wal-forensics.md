@@ -526,8 +526,10 @@ says `scan: 0`, and that zero is a shipped artifact, not a measurement: grade it
 **absent**, exactly like a missing field, and never as "no scan-leg rows". The same
 code carries `"scan": true` inside `mark_failures` entries, and that key is *not*
 stale draft cruft: it entered with the per-subdir marks (1619f79), and both sites are
-failures of the pre-arm `scandir` whose only job is finding directories to mark — the
-discovery walk's own `except OSError`, and the root `os.stat` under `if a.depth > 0`.
+failures of the pre-arm *discovery* pass, whose one job is finding directories to mark —
+but they are not the same call, and the distinction is the point: one is a failure of
+`os.scandir` (the discovery walk's own `except OSError`), the other a failure of
+`os.stat` (the root `os.stat` under `if a.depth > 0`, which never scandirs anything).
 So the key names a real discovery failure that the census never counts: the fix is to
 wire the leg, not to delete the key. Deleting it would bury a discovery wall inside
 the mark-failure count, which is the defect this row is about, inverted. Cite those
