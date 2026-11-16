@@ -489,3 +489,26 @@ a skill body is not one). Rule: read the row's PATH before reconstructing the ca
 "a batch that meant to land somewhere in DOCS" from a materialization timestamp alone — a row naming
 a non-DOCS path is a complete answer, not a missing one.
 
+
+## A moved witness names the commit that moved it
+
+docs_oid pins the roster (the 11 names), docs_md5 pins their bytes, idents pins the DOC-IDENTS rows.
+When one moves and the others do not, read the intervening commits before calling it drift: 1a8122a
+added 36 lines to gate-arms-and-false-greens.md plus one DOC-IDENTS row, so docs_md5 and idents moved
+while docs_oid stayed byte-identical. That is the three-witness split working, not a contradiction.
+
+## Name the unit before you quote a budget cell
+
+A SKILL.md budget number is unreadable without its unit:
+  chars-remaining = 100000 - (wc -m)   what a write actually spends
+  byte-headroom   = 100000 - (wc -c)   what the cap counts if it counts bytes
+  overhang        = (wc -c) - (wc -m)  multibyte cost
+A "gap" that equals bytes-minus-chars is the overhang, not the headroom. Two agents quoting "gap"
+under different definitions are not in conflict; they are quoting different quantities.
+
+## A live file's margin is a reading, not a property
+
+Same file, 8m48s apart: 91,220 ch -> 99,435 ch, inode 9966897 -> 23729693. An inode change on a
+turn that made no edit means a whole-file rewrite (write_file / `cat > path`), not an append; an
+append keeps the inode. Quote the inode beside the size so the next reader can tell which happened,
+and never carry the cell past the instant it was read.
