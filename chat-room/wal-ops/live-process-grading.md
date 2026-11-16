@@ -322,6 +322,14 @@ HEAD quote was two commits stale (2d28a34). Do not defend the earlier number —
   origin/master, dirty count, host) and a footer (rc plus the gate's own signature line), and
   appends one row to `INDEX.tsv`. Quote the log path with the number. A gate number without one
   is indistinguishable from a recollection, which is the exact failure this file keeps re-learning.
+  Field nine of that row is the gate's argument list as `printf %q` left it, so a row says which
+  gate ran and on what. It is read by `check-index-rows.sh`: 8 or 9 fields only, no 8-field row
+  after the first 9-field one, field nine non-empty and never the bare token `''` (the pre-guard
+  no-arg output — ambiguous between "no arguments" and "one empty argument", so it is refused
+  rather than interpreted), and at least one 9-field row must exist or every check is vacuous.
+  Measured 2026-11-15 at the field's landing: 25 rows, 17 at 8 fields and 8 at 9, all eight `<none>`
+  — the column parsed both ways and the quoting path had never run. Writing a field with no reader
+  buys nothing; the reader landed with it.
 - **A two-edit turn needs the guard to accept the turn's own intermediate md5.** Guarding the
   re-link against the parent committed blob alone refuses the SECOND edit of the same file in one
   turn, because by then the copies legitimately hold edit #1, which is neither the parent nor the

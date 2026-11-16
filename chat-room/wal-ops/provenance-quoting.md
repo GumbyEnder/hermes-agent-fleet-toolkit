@@ -1327,3 +1327,12 @@ of them is a collision. No revert hazard ever existed, and none was avoided.
   2026-11-15 landing INDEX field 9 in `run-gate-logged.sh`: the no-arg case had to be guarded to
   `args=<none>`. Same family as the size check that greps the first "N B": the field that reads a
   value must be told when there is no value, or the absence becomes a number.
+- **A field nobody reads is not a checked field, and its own trap survives ungraded.** The `%q`
+  guard above was correct the moment it landed, and for its first eight live rows field nine was
+  `<none>` every time -- the quoting path had never executed where it could be seen, and
+  `grep -rn INDEX.tsv` found the writer and one doc line, nothing else. So a regression in that
+  column would have graded clean forever. A field earns its guard in two steps: the writer says
+  which case it is in (`<none>` vs `''` vs a token list), and a reader refuses the ambiguity.
+  `check-index-rows.sh` is that reader; it landed with the rule, not after it. Corollary for
+  quoting generally: a value that is ambiguous between absent and empty must be refused, not
+  interpreted, because the row no longer carries the information that would resolve it.
