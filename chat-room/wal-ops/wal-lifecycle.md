@@ -1108,7 +1108,9 @@ actor), so this instrument belongs in a system unit, not beside the two inotify 
 - **A tree copied in AFTER arm time still needs the walk to reach it.** At `--depth 1` a
   `cp -a` whose subdirectories are NEW marks the top directory on the next rescan and sees its
   direct children only: measured 6/6 top-level files, 0/6 files one level deeper. Depth 2 is one
-  flag; no shape in use needs depth 3.
+  flag; no shape in use needs depth 3. The bound is the tick, not the copy: a directory created and
+  emptied inside one interval is never seen at all, and no reading of these rows should say the copy
+  was watched.
 - **The units are `hermes-seeder-watch-{frodo,buzzy}.service`; their logs live in
   `<profile>/logs/seeder-watch-<p>.jsonl`.** Not `seeder-watch-*` — a check of the short name gets
   "no such unit" and concludes the arm is gone — and never `cache/scratch/`: that dir is pruned at 24 h
