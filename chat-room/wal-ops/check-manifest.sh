@@ -115,6 +115,65 @@ if tracked=$(git ls-files . 2>/dev/null) && [ -n "$tracked" ]; then
 fi
 rm -rf "$rs_tmp"
 
+# --- A FAILING ROW CARRIES A CLASS, AND THE CLASS NAMES THE ACTION ------------
+# `md5sum -c` collapses two opposite situations into one `FAILED` token:
+#   (a) the row no longer describes the COMMITTED file -- the roster is the artifact at
+#       fault, or the commit landed content without its row: bounce the tree; and
+#   (b) the working file was written seconds ago and the row's own update has not landed
+#       yet: the tree is mid-edit -- wait, then re-measure. Bouncing (b) is a false red and
+#       it is the expensive direction, because it lands a correction on a peer's in-flight work.
+# Measured 2026-11-15 (buzzy, 02:28 -> 02:34, no commit in between, HEAD 797bf17 both
+# reads): one row FAILED at 02:28 and the same rowset read ok=44 fail=0 six minutes
+# later -- the actor rewriting fanotify-close-actor.py had not yet written its MANIFEST
+# row. The mirror-image trap is just as real: the 02:34 agreement (row == disk at
+# 36,135 B / ec592cee) was a WORK-IN-PROGRESS agreement, because the commit five minutes
+# later (379e430) carried 36,441 B / 3ff82bc3. So neither pair-inequality nor pair-equality
+# is a verdict on its own; the tree coordinate is what separates them.
+#
+# The third hash is the discriminator, and it costs one `git cat-file` per FAILING row:
+#   R = the row's md5 (MANIFEST.md5), D = md5 on disk, H = md5 of the blob at HEAD.
+#   D == H, R != D  -> mismatch_row       the row is stale against a COMMIT   (bounce)
+#   R == H, D != R  -> mismatch_worktree  row agrees with HEAD, disk is ahead (wait)
+#   R != H, D != H  -> mismatch_both      neither matches HEAD                (bounce + re-derive)
+#   no H (untracked, or git unavailable)   -> mismatch_unclass                (cannot classify)
+# rc stays 1 for every one of them: a classification is not a green, it is a repair
+# sentence. When the tree is not a repo the rowset assertion already reads nogit and the
+# class tokens read 0 with `fail` still carrying the count.
+mismatch_row=0; mismatch_worktree=0; mismatch_both=0; mismatch_unclass=0
+failing_names=$(printf '%s\n' "$out" | grep -v '^md5sum: ' | grep -v ': OK$' \
+                | sed -e 's/: FAILED open or read$//' -e 's/: FAILED$//')
+if [ -n "$failing_names" ]; then
+  while IFS= read -r f_row; do
+    [ -n "$f_row" ] || continue
+    row_h=$(awk -v f="$f_row" '{p=$2; sub(/^\.\//,"",p); if (p==f) {print $1; exit}}' MANIFEST.md5)
+    disk_h=$(md5sum -- "$f_row" 2>/dev/null | awk '{print $1}')
+    head_h=
+    if [ -n "$row_h" ] && [ "$rs_state" = asserted ]; then
+      head_h=$(git cat-file blob "HEAD:./$f_row" 2>/dev/null | md5sum | awk '{print $1}')
+      # an empty blob hashes to d41d8cd9...; an unavailable path yields no bytes at all,
+      # so treat the git-failure case as "no H" rather than as a real digest.
+      git cat-file -e "HEAD:./$f_row" 2>/dev/null || head_h=
+    fi
+    coord="row=${row_h:--} disk=${disk_h:--} head=${head_h:--}"
+    if [ -z "$disk_h" ]; then
+      mismatch_unclass=$((mismatch_unclass+1))
+      echo "FAIL row unreadable ($f_row): $coord; repair: restore the file -- a row it cannot open is neither stale nor in flight"
+    elif [ -z "$head_h" ]; then
+      mismatch_unclass=$((mismatch_unclass+1))
+      echo "FAIL row unclassifiable ($f_row): $coord; repair: this file is not a blob at HEAD -- if it is new, git add it and restamp its row; if it was deleted in the worktree, restore it or drop the row"
+    elif [ "$disk_h" = "$head_h" ]; then
+      mismatch_row=$((mismatch_row+1))
+      echo "FAIL row stale-against-commit ($f_row): $coord; the disk bytes ARE the committed bytes, so the ROW is the defect -- repair: restamp the row from $(git rev-parse --short HEAD), never 'revert the file'"
+    elif [ "$row_h" = "$head_h" ]; then
+      mismatch_worktree=$((mismatch_worktree+1))
+      echo "FAIL row mid-edit ($f_row): $coord; the row agrees with HEAD, so the working file is an uncommitted edit -- action: WAIT for the writer to finish, then commit content+row together and re-run; do not bounce the artifact"
+    else
+      mismatch_both=$((mismatch_both+1))
+      echo "FAIL row three-way drift ($f_row): $coord; neither the row nor the worktree matches HEAD -- repair: re-derive the row from the intended content and re-run before quoting rc"
+    fi
+  done <<< "$failing_names"
+fi
+
 # --- MIRROR LEGS -------------------------------------------------------------
 # The roster hashes the REPO worktree. Some of these files are also published at a
 # path a unit execs or a room post cites as "installed at ...", and the rowset
@@ -308,5 +367,5 @@ else
   echo "FAIL mirror legs: ./install-mirror-legs.sh is not executable -- the published-leg contract is not readable"
 fi
 
-echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_refuse=$m_cause mirror_root=$m_roots mirror_published=$m_pub mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip mirror_journal=$m_journal mirror_repairs=$m_repairs mirror_repair_last=$m_last rc=$rc"
+echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail mismatch_row=$mismatch_row mismatch_worktree=$mismatch_worktree mismatch_both=$mismatch_both mismatch_unclass=$mismatch_unclass rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_refuse=$m_cause mirror_root=$m_roots mirror_published=$m_pub mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip mirror_journal=$m_journal mirror_repairs=$m_repairs mirror_repair_last=$m_last rc=$rc"
 exit $rc

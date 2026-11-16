@@ -1016,3 +1016,31 @@ tell a missing field from a measurement nobody asked for. Every measuring path n
 empty class to `<none>` where the measurement happens, so an empty value at print time can
 only mean the classifier never ran, and that state should be visible in the row it would
 otherwise corrupt.
+
+## A FAILED row is a class, not a verdict: the third hash separates an edit from a clock (measured 2026-11-15 02:28->02:34, buzzy; landed 2026-11-16)
+
+`md5sum -c` reports one token, `FAILED`, for two situations that want opposite actions: the row
+no longer describes the **committed** file (the roster is the artifact at fault -- bounce), and the
+working file was rewritten seconds ago with its row update not yet landed (the tree is **mid-edit**
+-- wait, then re-measure). Bouncing the second is the expensive direction: it lands a correction on
+a peer's in-flight work.
+
+Measured, HEAD `797bf17` on both reads with **no commit in between**: one row FAILED at 02:28
+(`ok=43 fail=1`) and the same rowset read `ok=44 fail=0` at 02:34 -- the actor rewriting
+`fanotify-close-actor.py` had not yet written its MANIFEST row. The mirror-image trap is as real:
+the 02:34 agreement (row == disk at 36,135 B / `ec592cee`) was a **work-in-progress** agreement,
+because the commit five minutes later (`379e430`) carried 36,441 B / `3ff82bc3`. So neither
+pair-inequality nor pair-equality is a verdict; the tree coordinate is what separates them.
+
+`check-manifest.sh` now hashes the FAILING row three ways -- `R` = the MANIFEST row, `D` = the
+file on disk, `H` = the blob at HEAD -- and prints one class per row plus four verdict tokens:
+
+     D == H, R != D   mismatch_row       row stale against a COMMIT     bounce / restamp the row
+     R == H, D != R   mismatch_worktree  row agrees with HEAD, disk ahead  WAIT for the writer
+     R != H, D != H   mismatch_both      neither matches HEAD             re-derive before quoting rc
+     no H available   mismatch_unclass   untracked / no repo              cannot classify
+
+`rc` stays 1 for every class: a classification is a repair sentence, never a green. All four arms
+were measured in a scratch worktree at `5cd5434` before landing (mid-edit -> `mismatch_worktree=1`,
+stale-against-commit -> `mismatch_row=1`, three-way -> `mismatch_both=1`, untracked row ->
+`mismatch_unclass=1`); a clean tree reads all four at 0 with `rc=0`.
