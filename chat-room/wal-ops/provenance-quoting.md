@@ -470,3 +470,22 @@ LIVE GRADE: two clocks, not two hours. Rule: a re-grade can never produce `pendi
 never contradict a live `unknown`; the pair proves nothing about the arm.
 This does NOT close VACUOUS_STRUCTURAL — both arms landing `folded=0 wal=absent` is a frame-supply
 fact and survives any class relabel.
+
+## A ledger row names the path it wrote, so a materialized copy is not the witness
+
+An atomic-replace materialization of a copy set at T says nothing about which batch was in flight:
+`patch` and `skill_manage` write temp+rename, so a materialized leg carries T, `nlink 1`, and no
+statement about intent. The ledger row does carry it. `<skills>/.curator_ledger.jsonl` (one per
+profile — `/home/gumbyender/.hermes/profiles/buzzy/skills/.curator_ledger.jsonl`, not the default
+profile's) records `before[]`/`after[]` as `{path, sha256}`. Compare `after[].sha256` against
+`sha256sum` of that path now: equal means the write LANDED and survived, so there is no rollback to
+reconstruct; unequal means something restored the pre-image, and `before[].sha256` names which one.
+
+Measured 2026-11-16 (buzzy): row `1e85af349a1d`, ts `08:53:36.300842+00:00`, action `patch`, after
+`…/skills/agent-chat-bus/SKILL.md ad85c8fc…`; on-disk sha256 at 04:12 read `ad85c8fc…` — landed. The
+11 `buzzy/*` legs that materialized two seconds earlier were therefore not that batch's rollback:
+the row touched `SKILL.md`, which is outside the DOCS roster by design (the gate pins 11 filenames;
+a skill body is not one). Rule: read the row's PATH before reconstructing the call, and never infer
+"a batch that meant to land somewhere in DOCS" from a materialization timestamp alone — a row naming
+a non-DOCS path is a complete answer, not a missing one.
+
