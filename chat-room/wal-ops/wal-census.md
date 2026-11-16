@@ -274,8 +274,13 @@ wal mtime 08:13:47.740357 with the WAL untruncated. Grade from the pre tuple (`l
 `folded<log` => stuck) rather than abstaining. `checkpoint()` has THREE call sites — backup, janitor,
 shutdown — not two.
 
-**Rule for any script that touches room.db.** Reads: `sqlite3.connect('file:...?mode=ro&immutable=1',
-uri=True)` — no sidecar, no lock, no pin. Writes and probes: connect and close inside one call, never at
+**Rule for any script that touches room.db.** Reads: `sqlite3.connect('file:...?mode=ro',
+uri=True)` — honours the WAL, so it returns the store. `immutable=1` is NOT the read form: it skips
+`-wal`/`-shm` entirely, which is why it never creates a sidecar and never pins (the property that makes it
+right for a probe that must not fake a holder) and why it silently omits every uncheckpointed commit — it
+reads the main file as stored, not the store. Measured 2026-11-16 11:58:35 -0500, one instant, `-wal`
+226,632 B: `immutable=1` 4,233 rows / max_id 6360 vs `mode=ro` 4,234 / 6361, rc=0 both, no warning.
+Writes and probes: connect and close inside one call, never at
 module scope, because the execute_code kernel outlives the call and keeps the fd. Filter events by NAME
 (`CREATE room.db-wal`) before counting: unfiltered CREATE counts run ~2x because db, -wal and -shm each
 produce one (measured 309 vs 155 in one minute).

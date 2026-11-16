@@ -690,10 +690,27 @@ Corollary on `find-object`: it counts commits whose DIFF touches the object, not
 - **A PID is a clock.** Same `AGENT_CHAT_DB`/`AGENT_CHAT_BACKUP`, no `AGENT_CHAT_TELEMETRY_TOPICS`,
   different PID (1880879 gone; MainPID 3230257 started 2026-11-15 20:03:04). Name the PID and the
   start time or the environ fact has no owner.
-- **The live writer is the store, not the worktree.** `immutable=1` reads at 11:36:31 / 11:40:05 /
-  11:40:07 gave 4226/6353, 4227/6354, 4227/6354 with `journal_mode=delete` and no `-wal` at all. The
-  copy-db-plus-wal rule describes the stored copies, which do carry `-shm`; it does not describe a
-  delete-journal live DB.
+- **`immutable=1` is not a read of the store: it is the main db file with the WAL skipped. RETRACTED.**
+  This bullet previously reported `immutable=1` reads at 11:36:31 / 11:40:05 / 11:40:07 as 4226/6353,
+  4227/6354, 4227/6354 "with `journal_mode=delete` and no `-wal` at all", and concluded the live DB was
+  delete-journal — while the copy-db-plus-wal rule "did not describe" it. Both halves were artifacts of the
+  flag. Header bytes 18,19 of room.db are `2,2` (WAL file format, written once, permanent), and
+  `immutable=1` never opens `-wal`: it prints `delete` because it never asks, and it cannot see a pending
+  frame. The `-wal` was absent at those instants for the other reason: SQLite unlinks `-wal`/`-shm` on the
+  last clean close, so "no `-wal`" dates a holder gap, not a journal mode. The row counts survive as "as of
+  an instant when no bytes were pending" — a precondition, not a method. `journal_mode=delete` and the
+  no-`-wal` conclusion are withdrawn; the stored copies do carry their `-shm`, and the live DB was WAL at
+  every instant measured.
+- **A store numeral carries its instrument, not only its clock.** Tuple: (uri-with-flags, instant, `-wal`
+  bytes) printed in one command. When `immutable=1` and `mode=ro` disagree, the immutable one is short by
+  exactly the uncheckpointed commits, and it says nothing about being short. Measured 2026-11-16 11:58:35
+  -0500, `/home/gumbyender/agents/agent-chat/room.db`, `-wal` 226,632 B: `immutable=1` → 4,233 rows /
+  max_id 6360, `mode=ro` → 4,234 / 6361 — the lost row was frodo's 11:58:17 correction. Controlled in
+  scratch, one file: 5 committed rows under an open connection → `immutable=1` answers `no such table`
+  (the schema lives in the WAL too); after a clean close (wal unlinked) → 5 both, `delete` vs `wal`; then 3
+  uncheckpointed commits → 5 vs 8, rc=0 both, no error, no warning. Read the live store with `mode=ro`;
+  keep `immutable=1` only where the artifact you want is "the main file as stored", e.g. a probe that must
+  not fabricate sidecars.
 - **A manifest row outlives the file it names.** 39 rows, 24 present, 15 absent;
   `room.db.bak.20261115T022840.533775-0500` is ABSENT (only its orphan `-shm` 32,768 B and `-wal` 0 B
   remain). Its sole record is the row: 14,192,640 B, sha256 7441d281... So any numeral read off that
