@@ -1567,36 +1567,52 @@ distance between the graded commit and the newest published one, not the health 
 tree. Grading an old commit with a mirror arm open is an anachronism, not a defect: it needs
 `mirror=stale-by-tip` (a NOTE keyed on head != published head), never a FAIL.
 
-## A window has two ends, both are slots, and every slot label needs its date (measured 2026-11-15 23:0x, 76 `pairsplit2-*.log`)
+## A window has two ends, both are slots, and every slot label needs its date (measured 2026-11-16 00:2x, 77 `pairsplit2-*.log`)
 
 The witnessed ladder, enumerated rather than eyeballed:
 
     e8dafb6c  23,220 / 17a40c53  2026-11-14T192835 .. 2026-11-14T202835   2 slots
     3bf2bbc6  23,486 / a33ea3e6  2026-11-14T212835 .. 2026-11-14T222835   2 slots
     fd232d78  24,063 / 2335ff8a  2026-11-14T232835 .. 2026-11-15T082835  10 slots
-    4a46ccc3  30,458 / 6c543893  2026-11-15T092835 .. 2026-11-15T230306  14 slots, open
+    4a46ccc3  30,458 / 6c543893  2026-11-15T092835 .. 2026-11-16T000306  15 slots, open
 
-Three traps in those four lines. (1) Only **28 of 76** logs carry a `# WITNESS` line at all (era
-record: 29 of 77 at `20261116T000306`); the
-other 48 cannot bound anything, so a slot count is always two numbers (`10 of 76`), never one.
+Three traps in those four lines. (1) Only **29 of 77** logs carry a `# WITNESS` line at all (era
+record: 28 of 76 at `20261115T230306`); the
+other 48 cannot bound anything, so a slot count is always two numbers (`10 of 77`), never one — and
+the denominator is a clock, so quote the slot label the ratio was taken at.
 (2) The `fd232d78` window **straddles midnight**, and the scheduler is not hour-uniform: the last
 `:28:35` arm is `2026-11-15T192835`, the next slot is `2026-11-15T210306` — 1h34m31s later — and
 `210306/220306/230306` are then the evening slots, so a bare `232835` is ambiguous by a day. Date
 every label. **Do not read that gap as a 34m31s rotation.** `21:03:06 - 20:28:35 = 34m31s` names a
-slot that never existed: `ls pairsplit2-20261115T202835.log` is empty, while the journal shows the
-ticks at 19:50 through 20:00:00 announcing `# deferred: next slot 2026-11-15T20:28:33` and the
+slot that never existed: `ls pairsplit2-20261115T202835.log` is empty, while the journal shows seven
+ticks, 19:30:00 through 20:00:00, announcing `# deferred: next slot 2026-11-15T20:28:33` and the
 20:05:00 tick recomputing to `next slot 2026-11-15T21:03:04` because the bus MainPID had changed
 (3230257, start 20:03:04 EST). The slot formula is recomputed from `ExecMainStartTimestamp` on
 every tick, so a bus restart **strands an already-announced slot** — it is neither captured nor
 deferred and no line ever says it was missed. A grid derived from slot labels alone records that as
 a missed capture plus a tidy 34m31s rotation; both would be wrong. Quote the journal's
 deferred/captured pair with the labels.
-(3) Count both ends *and* quote both margins, because the count alone hides the lead-in silence:
-`fd232d78`'s west slot is 7m14s after `d06857c` (23:21:21) and its east slot is 17m21s before the
-08:45:56 write; `4a46ccc3`'s west slot is 42m38.36s after that write (`08:45:56.641375 ->
-09:28:35.000`; the often-quoted 42m39s comes from truncating the start bound to whole seconds, so it
-is a second wide); `3bf2bbc6`'s east slot is 52m46s
-before `d06857c`. "Installed from <commit>" therefore overstates every arm it is applied to.
+(3) Count both ends *and* quote both margins, on ONE clock, sub-second kept:
+`fd232d78`'s west slot is 7m14s after `d06857c` (commit time 23:21:21); its east margin is 16m27s on
+the commit clock (`4cdfa20` 08:45:02) or 17m21.641375s on the mtime clock (`08:45:56.641375`) — the
+often-quoted 17m21s is a truncation, and mixing the two clocks in one sentence is how "exact" stops
+being exact. `3bf2bbc6`'s east slot is 52m46s before `d06857c`.
+
+## A log filename is a CAPTURE stamp, not a slot — difference it against nothing (measured 2026-11-16 00:0x-00:2x, 77 logs)
+
+Every witness header carries both fields: `# captured <ts>; slot <ts>`. Across all 77 logs the
+delta is **2.000s in 67, 6.000s in 8, 10.000s in 2** (all ten exceptions on 2026-11-13,
+12:02:13-15:48:51, when the clock was coarse). So `pairsplit2-20261115T092835` is a capture stamp
+and its slot is `09:28:33`. The same "window" is three different numbers depending on the field:
+`08:45:56.641375 -> slot 09:28:33 = 42m36.358625s`, `-> label 09:28:35 = 42m38.358625s`, and
+`42m39s` from truncating the label at both ends. A duration rule must name the field, not say
+"slot label".
+
+A date-dropped pair produces a **modulo-day residue** that looks like a clean rotation:
+`2026-11-14T20:28:35 -> 2026-11-15T21:03:06` is 1 day 00:34:31 (88,471s), and the `20261114T202835`
+log does exist. So the check is not existence, it is *delta > grid spacing*: a sub-hour answer that
+carries a whole day is a dropped date, not a fast rotation.
+
 
 ## "Resolved at <commit>", never "introduced at", and keep the whole commit set (same set)
 
@@ -1606,10 +1622,15 @@ before `d06857c`. "Installed from <commit>" therefore overstates every arm it is
 since moved (`c6e5842` at 23:01:07 was the resolution point for eight commits). And one blob can be
 re-touched: `e8dafb6c` sits in `14f9f9c` (introducing) and
 `65f2048` (re-touch), so blob -> commit is a SET; say which resolution you mean. `fd232d78` is a set
-too -- `{4cdfa20, d06857c}` by `--find-object` -- and it is mode `100644` at `d06857c` where
-`4a46ccc3` is `100755`, so quote the mode per commit, never per path. The empty window is
+too -- `{4cdfa20, d06857c}` by `--find-object` -- but never read that set as the carriers.
+`--find-object` reports **change points**: added at `d06857c`, removed at `4cdfa20`. At `4cdfa20` the
+path blob is `faf8e2db` (100755), so there is no mode to quote for `fd232d78` at that commit — it is
+in no tree there. Carriers come from `git rev-parse <commit>:<path>`: `fd232d78` in 64 commits
+(`d06857c..4cdfa20^`, all 100644), `e8dafb6c` in 15 (`14f9f9c..65f2048^`), `3bf2bbc6` in 11
+(`65f2048..d06857c^`), `faf8e2db` in 1 (`4cdfa20`, 100755), `4a46ccc3` in 115
+(`61e21f2..d924fd5`, all 100755). Mode is a property of (commit, path), never of blob. The empty window is
 a legal answer and is clean when quoted as one: `faf8e2db` = `4cdfa20` 08:45:02 -> `61e21f2`
-08:45:50, 48 seconds alive, 0 capturing slots, `grep -l` over 76 logs = 0.
+08:45:50, 48 seconds alive, 0 capturing slots, `grep -l` over 77 logs = 0.
 
 ## ino is stable within a lookup generation, not across one (measured on the CIFS share)
 
