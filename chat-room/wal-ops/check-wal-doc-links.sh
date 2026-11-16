@@ -154,12 +154,27 @@ GATE_TMP=$(mktemp) || exit 2
 # 17:15:02.245143572) and no gate said a word. A property held by discipline alone has
 # the shelf life of a prose size.
 #
-# So identity is now a ROW, not a sentence: DOC-IDENTS.tsv records name<TAB>ino<TAB>btime
-# per doc, the gate diffs live against it, and a moved inode or a new birth FAILS. The
-# re-record is a tracked diff, so a whole-file rewrite costs one visible line and an
-# in-place append costs none. ino alone would not do it -- inode numbers recycle, so the
-# pair (ino, btime) is the identity, and btime is the field that makes a recycled ino
-# distinguishable from a surviving one.
+# So identity is now a ROW, not a sentence: DOC-IDENTS.tsv records
+# name<TAB>ino<TAB>btime<TAB>mtime per doc, the gate diffs live against it, and a moved
+# inode or a new birth FAILS. The re-record is a tracked diff, so a whole-file rewrite
+# costs one visible line and an in-place append costs none. ino alone would not do it --
+# inode numbers recycle, so the pair (ino, btime) is the identity, and btime is the field
+# that makes a recycled ino distinguishable from a surviving one.
+#
+# WHY THERE IS A FOURTH COLUMN (mtime), measured 2026-11-15T21:28:08 by frodo on this doc:
+# provenance-quoting.md was rewritten whole by a preserved-mtime copy -- ino 17748465 ->
+# 15479978, nlink back to 3, btime 21:28:08.095305184, mtime 20:48:01.001716243. Content
+# identical (md5 = the committed blob), -ef green on all three names, md5 green. Every
+# field agreed the file was untouched except one: mtime was 39 minutes OLDER than the
+# file's birth. An (ino, btime) row flags that the file MOVED but cannot name what did
+# it; a normal ext4 file cannot be modified before it exists, so `mtime < btime` is the
+# signature of a restored-time copy, and it is only a signature if the row carries mtime.
+# It is also the field that lets a reader check the write, not just the identity: an
+# append through a second name keeps (ino, btime) and moves mtime.
+# The timestamps are emitted as real ISO 8601 (YYYY-MM-DDTHH:MM:SS.fffffffff[+-]HHMM).
+# The previous form used `tr ' ' 'T'` on stat's output and produced
+# 2026-11-15T16:35:27.163383733T-0500 -- a string `date -d` refuses, so it could only ever
+# be compared by byte order and never handed to a clock.
 # PORTABILITY, because a correct gate on one filesystem is a false one on another:
 # (ino, btime) is the identity pair on ext4, where an inode number is stable for the life of a
 # mount. It is NOT a portable recipe. On the CIFS shares the kernel synthesises inode numbers per
@@ -177,13 +192,17 @@ GATE_TMP=$(mktemp) || exit 2
 # objects' root -- the shape check-exec-copies.sh has, with absolute NAS/live COPIES and one repo
 # roster -- is the shape that needs an env override before it can be drilled.
 IDENTS_FILE="$WALOPS/DOC-IDENTS.tsv"
+# stat prints "YYYY-MM-DD HH:MM:SS.fffffffff +HHMM"; anything else (notably "-" for a
+# filesystem with no birth time) is emitted as "-" rather than mangled into a timestamp.
+stamp() { awk '{ if (NF == 3) print $1 "T" $2 $3; else print "-" }'; }
 idents_now() {
   for d in $DOCS; do
     r="$WALOPS/$d"
-    if [ ! -f "$r" ]; then printf '%s\tmissing\tmissing\n' "$d"; continue; fi
+    if [ ! -f "$r" ]; then printf '%s\tmissing\tmissing\tmissing\n' "$d"; continue; fi
     i=$(stat -c %i "$r" 2>/dev/null || echo '?')
-    b=$(stat -c %w "$r" 2>/dev/null | tr ' ' 'T')
-    printf '%s\t%s\t%s\n' "$d" "$i" "${b:--}"
+    b=$(stat -c %w "$r" 2>/dev/null | stamp)
+    m=$(stat -c %y "$r" 2>/dev/null | stamp)
+    printf '%s\t%s\t%s\t%s\n' "$d" "$i" "${b:--}" "${m:--}"
   done
 }
 if [ "${1:-}" = "--record-idents" ]; then
@@ -238,11 +257,11 @@ done
 # this compares the FILE to the tree, so it is the one check whose input is not the doc
 # itself. Fail-closed on all three shapes -- moved, unrecorded, stale row -- because a
 # witness you can choose not to record is not a witness.
-declare -A R_INO=() R_BT=()
+declare -A R_INO=() R_BT=() R_MT=()
 if [ -f "$IDENTS_FILE" ]; then
-  while IFS=$'\t' read -r n i b; do
+  while IFS=$'\t' read -r n i b m; do
     [ -n "${n:-}" ] || continue
-    R_INO["$n"]="$i"; R_BT["$n"]="${b:-}"
+    R_INO["$n"]="$i"; R_BT["$n"]="${b:-}"; R_MT["$n"]="${m:-}"
   done < "$IDENTS_FILE"
 fi
 for d in $DOCS; do
@@ -252,9 +271,17 @@ for d in $DOCS; do
     continue
   fi
   if [ -f "$WALOPS/$d" ]; then
-    li=$(stat -c %i "$WALOPS/$d"); lb=$(stat -c %w "$WALOPS/$d" 2>/dev/null | tr ' ' 'T')
+    li=$(stat -c %i "$WALOPS/$d"); lb=$(stat -c %w "$WALOPS/$d" 2>/dev/null | stamp)
+    lm=$(stat -c %y "$WALOPS/$d" 2>/dev/null | stamp)
     if [ "${R_INO[$d]}" != "$li" ] || [ "${R_BT[$d]}" != "$lb" ]; then
       echo "FAIL identities/$d: IDENTITY REPLACED ino ${R_INO[$d]} -> $li, btime ${R_BT[$d]} -> ${lb} -- a recorded inode died; relink restores -ef and identical bytes keep md5, so this is the only check that sees a whole-file rewrite. If the rewrite was intended, re-record (one visible diff line) and name the writer in the commit: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
+      rc=1
+    fi
+    # mtime < btime cannot happen on a live file: a file is not modified before it exists.
+    # It is the signature of a preserved-mtime copy -- bytes, -ef and md5 all green, and
+    # the only field that says a write happened is this one.
+    if [ "$lm" != "-" ] && [ "$lb" != "-" ] && [[ "$lm" < "$lb" ]]; then
+      echo "FAIL identities/$d: RESTORED-TIME COPY -- mtime $lm is OLDER than btime $lb, so these bytes were planted with someone else's clock. Content and -ef cannot see this; only this column can. Name the writer and re-record only if the replacement was intended: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
       rc=1
     fi
   fi
@@ -287,10 +314,12 @@ docs_oid=$(printf '%s\n' $DOCS | git hash-object --stdin 2>/dev/null || echo no-
 # the same two heads. One of seven moved, the roster did not, and the field that can
 # carry the move is this one.
 docs_md5=$({ for d in $DOCS; do if [ -f "$WALOPS/$d" ]; then printf '%s  %s\n' "$(sha256sum "$WALOPS/$d" | awk '{print $1}')" "$d"; else printf 'missing  %s\n' "$d"; fi; done; } | sha256sum | awk '{print substr($1,1,16)}')
-# idents is the IDENTITY witness: one digest over the live (name, ino, btime) triplets in
-# DOCS order. docs_oid pins the roster, docs_md5 pins the bytes, idents pins the FILES --
-# three claims, and the third one is the only one a relink cannot restore. Quote it with
-# the head, and compare it to DOC-IDENTS.tsv at that head, never to a later stat.
+# idents is the IDENTITY witness: one digest over the live (name, ino, btime, mtime)
+# quadruplets in DOCS order. docs_oid pins the roster, docs_md5 pins the bytes, idents
+# pins the FILES -- three claims, and the third one is the only one a relink cannot
+# restore. mtime is in the digest because the restored-time copy leaves every other
+# field green (mtime < btime is its whole signature). Quote it with the head, and compare
+# it to DOC-IDENTS.tsv at that head, never to a later stat.
 idents=$({ idents_now; } | sha256sum | awk '{print substr($1,1,16)}')
 echo "doc-links gate: head=$sha dirty=$dirty docs=$docs_n docs_oid=$docs_oid docs_md5=$docs_md5 idents=$idents ok=$ok_n fail=$fail_n rc=$rc" >&4
 rm -f "$GATE_TMP"

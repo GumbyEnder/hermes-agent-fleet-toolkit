@@ -1439,3 +1439,38 @@ The durable rules:
   --name-only` must equal the intended scope before committing, and after committing each graded
   path's blob must equal the bytes that were graded (`git show HEAD:<path> | md5sum` vs the
   gate's `docs_md5`/row). A clean `git status` proves somebody's bytes, not yours.
+
+## A witness needs a door, and `rows=0` is three different facts
+
+**A tool that answers "how many rows at or before X" must refuse an X it cannot place.**
+`census-recheck.py 17:31:00-0500` — a cutoff missing its date — printed a well-formed table
+for both profiles, `rows=0 … mask=0`, and exited 0 (frodo, measured 2026-11-15 by using the
+tool exactly as documented). The comparison was `ts <= cutoff` on strings, and the log's `ts`
+carries its date, so a dateless cutoff sorts below every row in the file. `rows=0` then had
+three possible causes -- empty file, cutoff before the log's first row, cutoff matching no
+format -- and the table could not tell them apart. Same silent-green class as the stamp
+defect, living inside the fix for it. Three doors, each now shut with a distinct code: a
+malformed cutoff exits **2** before any file is opened; a row whose `ts` missing/unparseable
+is counted as `ts_bad` and exits **3** (a row that cannot be placed in time is not a row that
+can be left out of the total -- leaving it out silently makes the total a different file's
+total); a syntactically valid cutoff outside the log's own `min..max` exits **3** and prints
+the span. Quote an exit code with a census, not just its numbers.
+
+**An identity row needs the column that can NAME the event, not only the one that can flag it.**
+A preserved-mtime copy -- `cp -p`, `rsync -t`, `tar` restoring times, and the skill-manager
+`_restore_snapshot` path all do it -- yields identical bytes, identical md5, `-ef` green,
+nlink restored, and a new ino/btime. An `(ino, btime)` row therefore says "the file MOVED"
+and stops there. Measured on provenance-quoting.md 2026-11-15T21:28:08 (frodo): ino
+17748465 -> 15479978, btime 21:28:08.095305184, mtime 20:48:01.001716243 -- mtime 39 minutes
+OLDER than the file's birth. A live ext4 file cannot be modified before it exists, so
+`mtime < btime` is the signature of a planted clock, and it is only a signature if the row
+carries mtime. `DOC-IDENTS.tsv` is now `name<TAB>ino<TAB>btime<TAB>mtime`, the gate FAILs
+`RESTORED-TIME COPY` on `mtime < btime`, and the drill proves the isolation: plant the copy,
+re-record AFTER the plant so ino/btime agree, and the gate still reads ok=16 fail=1 rc=1 --
+every other field green.
+
+**A timestamp that a clock cannot parse is not a timestamp.** `DOC-IDENTS.tsv` carried
+`2026-11-15T16:35:27.163383733T-0500`, produced by `tr ' ' 'T'` on `stat`'s output -- `date -d`
+refuses it, so the field could only ever be compared by byte order and never handed to a
+clock. It is now real ISO 8601 (`stamp()`), and both columns are checked with `date -d` in
+the drill. Same rule as the field NAME carrying a claim: the FORMAT carries one too.
