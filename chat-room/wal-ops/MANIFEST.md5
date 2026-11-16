@@ -1,7 +1,7 @@
 d7da84c654abe1fd0503098dc83c3672  census-recheck.py
 6c03eaff3718581ef85143b8bda823c1  check-exec-copies.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
-86731b2196c0e53863652c9f9698ada1  check-index-rows.sh
+30578b2e03172a5220c1e6c483e792d7  check-index-rows.sh
 de356dd9abbe981f75cb68d7118f86ec  check-manifest.sh
 6b7dc976ef500aa12d9e28ac2c4aaa53  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py

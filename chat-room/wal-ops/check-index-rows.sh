@@ -23,6 +23,18 @@
 #   5. At least one 9-field row exists. A file with none is a file that predates or lost the
 #      column, and every check above would pass vacuously over it.
 #
+# rows= IS A READ-TIME SNAPSHOT, AND THE ROW THAT REPORTS IT CANNOT BE IN IT.
+# Measured three times (2026-11-15, 21:47 and later, twice more): the gate printed rows=N
+# against a file of N lines, and the very next wrapper run appended N+1. Not a race, not a
+# counter that "cannot keep up": run-gate-logged.sh appends this run's INDEX row AFTER the
+# gate returns, so the gate can never count its own witness. The closing line therefore
+# carries the decomposition instead of a bare total -- rows=<non-blank rows read>,
+# lines=<NR>, blank=<lines-rows>, self_row=excluded -- and the testable invariant for a
+# wrapped run is rows + 1 == the line count a later reader sees. Two earlier readings of
+# this were wrong: "the file grew" (nothing grew between the read and the print) and
+# "the counter is one behind" (it counts exactly what exists; the missing row does not
+# exist yet). Decomposing the field is the fix; adding +1 would be a prediction, not a count.
+#
 # Usage: bash check-index-rows.sh [index-path]
 #        default: ${GATE_LOG_DIR:-/mnt/nas/host-ops/gate-logs}/INDEX.tsv
 # Exit: 0 all rows held, 1 any refusal, 2 index unreadable.
@@ -33,7 +45,7 @@ set -u
 IDX="${1:-${GATE_LOG_DIR:-/mnt/nas/host-ops/gate-logs}/INDEX.tsv}"
 
 if [ ! -f "$IDX" ]; then
-  printf 'index-rows gate: index=%s rows=0 eight=0 nine=0 ok=0 fail=1 rc=2 -- index not readable\n' "$IDX"
+  printf 'index-rows gate: index=%s rows=0 lines=0 blank=0 self_row=excluded eight=0 nine=0 ok=0 fail=1 rc=2 -- index not readable\n' "$IDX"
   exit 2
 fi
 
@@ -62,18 +74,19 @@ VERDICT=$(awk -F'\t' '
   END {
     if (rows > 0 && nine == 0)
       fail(sprintf("FAIL: no 9-field rows in %d rows -- this file predates or lost field nine, so every other check is vacuous", rows))
-    printf "%d %d %d %d\n", rows, eight, nine, bad
+    printf "%d %d %d %d %d\n", rows, NR, NR - rows, eight, bad
   }
 ' "$IDX")
 
-read -r rows eight nine bad <<< "$VERDICT"
-rows=${rows:-0}; eight=${eight:-0}; nine=${nine:-0}; bad=${bad:-0}
+read -r rows lines blank eight bad <<< "$VERDICT"
+rows=${rows:-0}; lines=${lines:-0}; blank=${blank:-0}; eight=${eight:-0}; nine=${nine:-0}; bad=${bad:-0}
 
 if [ "$bad" -eq 0 ]; then
-  printf 'index-rows gate: index=%s rows=%s eight=%s nine=%s ok=%s fail=0 rc=0\n' "$IDX" "$rows" "$eight" "$nine" "$rows"
+  printf 'index-rows gate: index=%s rows=%s lines=%s blank=%s self_row=excluded eight=%s nine=%s ok=%s fail=0 rc=0\n' \
+    "$IDX" "$rows" "$lines" "$blank" "$eight" "$nine" "$rows"
   exit 0
 fi
 
-printf 'index-rows gate: index=%s rows=%s eight=%s nine=%s ok=%s fail=%s rc=1\n' \
-  "$IDX" "$rows" "$eight" "$nine" "$((rows - bad))" "$bad"
+printf 'index-rows gate: index=%s rows=%s lines=%s blank=%s self_row=excluded eight=%s nine=%s ok=%s fail=%s rc=1\n' \
+  "$IDX" "$rows" "$lines" "$blank" "$eight" "$nine" "$((rows - bad))" "$bad"
 exit 1
