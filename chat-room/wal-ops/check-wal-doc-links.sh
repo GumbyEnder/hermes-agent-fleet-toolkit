@@ -337,7 +337,19 @@ done
 ok_n=$(grep -c '^OK ' "$GATE_TMP")
 fail_n=$(grep -c '^FAIL' "$GATE_TMP")
 cat "$GATE_TMP" >&4
-sha=$(git -C "$WALOPS" rev-parse --short HEAD 2>/dev/null || echo no-git)
+# head= carries THREE states, not two -- copied from run-gate-logged.sh:63-68 and its twin
+# in check-manifest.sh. `rev-parse --short HEAD || echo no-git` put "no repo here" and "git
+# ran and failed" in one token, so this verdict line could not be compared to the writer's
+# head=none|unknown on the same tree. Measured 2026-11-16 (frodo): failing-git shim ->
+# head=no-git, no-.git copy -> head=no-git, writer -> head=unknown and head=none. `none` =
+# no repo here; `unknown` = git ran and failed.
+if ! git --version >/dev/null 2>&1; then
+  sha=unknown
+elif ! git -C "$WALOPS" rev-parse --git-dir >/dev/null 2>&1; then
+  sha=none
+elif ! sha=$(git -C "$WALOPS" rev-parse --short HEAD 2>/dev/null); then
+  sha=unknown
+fi
 # dirty= is 0, 1, or unknown -- see the same three-ending rule in check-manifest.sh: a
 # failing git prints nothing, and emptiness is not a measurement of clean.
 if ! DIRTY_RAW=$(git -C "$WALOPS" status --porcelain --untracked-files=no 2>/dev/null); then

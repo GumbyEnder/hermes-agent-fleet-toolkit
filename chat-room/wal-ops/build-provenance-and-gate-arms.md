@@ -1520,3 +1520,43 @@ this section is about.
 
 The timer is still not wired; what remains for that decision is the cadence and the
 journal-growth evidence, not this guard.
+
+### Arm F and the gate-layer `head=` vocabulary (2026-11-16)
+
+Frodo's arm F, measured on his scratch repo and now asserted in
+`test-mirror-publish-guard.sh`: a source present on disk and ABSENT FROM HEAD. The arm
+above is the table for the writer; this is the sixth shape, and it is the one where
+"commit the wal-ops source" is HALF a repair.
+
+| arm | shape | measured |
+|---|---|---|
+| F | source on disk, untracked (`?? grade-slot.sh` in `git status`) | `rc=5`, nothing written, journal rows 0, refusal `HEAD:./grade-slot.sh does not resolve`, and NOT the edited-source sentence |
+
+The distinctness is the point, not the wording: untracked needs `git add` AND a commit,
+an edited source needs only the commit, and one shared "uncommitted edits" sentence would
+be half a repair for a file that was never in HEAD.
+
+The same turn closed the residual one layer up. `check-manifest.sh`, `check-wal-doc-links.sh`
+and `check-exec-copies.sh` (a third instance found by grep, not named in the report) each
+carried `sha=$(git rev-parse --short HEAD 2>/dev/null || echo no-git)`, so `no-git` covered
+BOTH "this is not a repo" and "git ran and failed" while the writer on those same trees
+printed `head=none` and `head=unknown`. One field, three vocabularies, and a grep for
+`head=none` over gate logs returned nothing ever. All three gates now carry
+`run-gate-logged.sh`'s branch: `git --version` failing -> `unknown`; `rev-parse --git-dir`
+failing -> `none`; HEAD unresolvable -> `unknown`.
+
+The reader-facing half: the rc=5 verdict line in `check-manifest.sh` printed one fixed
+sentence, "repair: commit the wal-ops source", over all four causes. On `head=none` and
+`head=unknown` no commit exists to make; on an untracked source a commit alone publishes
+nothing. The repair is now derived from the REFUSE lines, the cause rides the verdict line
+as `mirror_refuse=head_none|head_unknown|untracked|edited`, and `-` when nothing was
+refused -- NOT `none`, because `none` is what `head=` already means on a tree with no repo.
+That collision was caught on this change's own first logged run, which printed
+`mirror_refuse=none` on a green gate: a cause field whose healthy default spells a state
+field's word is the same two-facts-one-token defect in the sentence that reports it.
+Untracked wins over edited when both appear, because it is the stricter repair, and G6
+asserts the derivation still sends the one cause a commit DOES fix to the commit.
+
+`test-gate-head-vocabulary.sh` holds 25 assertions over three gates x three trees
+(sha / none / unknown) plus the repair lines on the two trees where committing cannot work.
+Measured RED at b0ac1fc: 17 failed arms. Measured GREEN on the fix: 0.

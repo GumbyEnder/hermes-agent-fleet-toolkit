@@ -20,7 +20,23 @@
 set -u
 cd "$(dirname "$(readlink -f "$0")")" || exit 2
 
-sha=$(git rev-parse --short HEAD 2>/dev/null || echo no-git)
+# head= carries THREE states, not two -- the same branch run-gate-logged.sh:63-68 carries,
+# one layer up. `git rev-parse --short HEAD 2>/dev/null || echo no-git` collapsed "this is
+# not a repo" and "git ran and failed" into one token, so the field a reader greps could
+# not separate a mount/publish tree from a broken git -- while the WRITER on those same two
+# trees prints head=none and head=unknown respectively. Three vocabularies for one field
+# (writer none|unknown|sha, wrapper none|unknown|sha, gates no-git|sha) is a field nobody
+# can compare across artifacts. Measured 2026-11-16 (frodo): gates printed head=no-git
+# dirty=unknown on both a failing-git shim and a copied no-.git tree, and a grep for
+# head=none over gate logs returned nothing ever. `none` = no repo here; `unknown` = git
+# ran and failed (missing git, unborn HEAD, corrupt index).
+if ! git --version >/dev/null 2>&1; then
+  sha=unknown
+elif ! git rev-parse --git-dir >/dev/null 2>&1; then
+  sha=none
+elif ! sha=$(git rev-parse --short HEAD 2>/dev/null); then
+  sha=unknown
+fi
 # dirty= has three endings, not two: 0, 1, and unknown. The old one-liner read the
 # EMPTINESS of `git status --porcelain` as clean, but a failing git also prints nothing --
 # so "no index / no git" was reported as a measurement of clean (measured 2026-11-15 on a
@@ -140,7 +156,7 @@ rm -rf "$rs_tmp"
 # mirror_root=unreported and rc=1: an unread coordinate cannot pass, for the same
 # reason an unread contract cannot pass.
 m_ok=0; m_drift=0; m_skip=0; m_state=measured; m_roots=unreported
-m_journal=unreported; m_repairs=0; m_last=none
+m_journal=unreported; m_repairs=0; m_last=none; m_cause=-
 if [ -x ./install-mirror-legs.sh ]; then
   # REQUIRE_LEGS=1 pinned: an inherited REQUIRE_LEGS=0 is a rehearsal opt-out and must
   # not be able to turn this gate's absent-directory FAIL back into a silent skip.
@@ -209,12 +225,42 @@ if [ -x ./install-mirror-legs.sh ]; then
     # THE PUBLISH GUARD REFUSED, before any write: the sources on disk are not the
     # bytes at HEAD, or HEAD itself does not resolve. Nothing was measured about the
     # published legs, so no ok/drift/skip line exists to parse -- the writer's REFUSE
-    # lines are the whole evidence. The repair is "commit the wal-ops source", which is
-    # the opposite of what rc=3's repair line says; a reader who sees only "exited 5"
-    # runs the writer again and gets the same refusal.
+    # lines are the whole evidence. A reader who sees only "exited 5" runs the writer
+    # again and gets the same refusal.
+    #
+    # THE REPAIR SENTENCE IS DERIVED FROM THE REFUSAL, NEVER FROM THE rc. Measured
+    # 2026-11-16 (frodo): this branch printed one fixed sentence, "repair: commit the
+    # wal-ops source", over all four causes -- and on a tree with no .git that sentence
+    # is not merely incomplete, it is impossible: there is no commit to make. On an
+    # UNTRACKED source it is half the repair (`git add` AND commit; a commit alone
+    # publishes nothing), and the writer gives that case its own message ("does not
+    # resolve") precisely because the repair differs. The cause token is carried on the
+    # verdict line as mirror_refuse= so a grep for mirror=refused is not the only handle.
+    # The tokens are head_none | head_unknown | untracked | edited, and `-` when nothing was
+    # refused -- NOT `none`, which is what the head= field already means on a tree with no
+    # repo. A cause field whose healthy default spells the same word as a state field is the
+    # two-facts-one-token bug in the sentence that reports it (caught on this file's first
+    # run: a green gate printed mirror_refuse=none beside head=1f94814).
+    m_refuse=$(printf '%s\n' "$m_out" | grep '^REFUSE' || true)
     printf '%s\n' "$m_out" | grep '^REFUSE' \
       | sed 's|^REFUSE |FAIL mirror publish-refused (guard refused before any write): |'
-    echo "FAIL mirror legs: publish guard refused (rc=5) over mirror_root=$m_roots; repair: commit the wal-ops source, then ./install-mirror-legs.sh"
+    m_cause=unstated
+    m_repair="read the REFUSE lines above: the guard refused before any write and named the cause"
+    if grep -q '^REFUSE head=none' <<< "$m_refuse"; then
+      m_cause=head_none
+      m_repair="run this gate and the writer from a repo worktree (git rev-parse --git-dir must succeed); a copied tree or an export has no HEAD, so no commit exists to make -- committing cannot clear this"
+    elif grep -q '^REFUSE head=unknown' <<< "$m_refuse"; then
+      m_cause=head_unknown
+      m_repair="make HEAD resolve in this tree (git rev-parse --verify HEAD) and re-run ./install-mirror-legs.sh; an unborn HEAD or a failing git is not fixed by committing the source"
+    fi
+    if grep -q 'does not resolve' <<< "$m_refuse"; then
+      m_cause=untracked
+      m_repair="git add the source(s) named above AND commit them, then ./install-mirror-legs.sh -- an untracked file needs both, a commit alone does not publish it"
+    elif grep -q 'uncommitted edits' <<< "$m_refuse"; then
+      m_cause=edited
+      m_repair="commit the wal-ops source (the disk bytes are not the committed bytes), then ./install-mirror-legs.sh"
+    fi
+    echo "FAIL mirror legs: publish guard refused (rc=5) over mirror_root=$m_roots; repair: $m_repair"
     m_state=refused
     rc=1
   elif [ "$m_rc" -ne 0 ]; then
@@ -231,5 +277,5 @@ else
   echo "FAIL mirror legs: ./install-mirror-legs.sh is not executable -- the published-leg contract is not readable"
 fi
 
-echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_root=$m_roots mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip mirror_journal=$m_journal mirror_repairs=$m_repairs mirror_repair_last=$m_last rc=$rc"
+echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_refuse=$m_cause mirror_root=$m_roots mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip mirror_journal=$m_journal mirror_repairs=$m_repairs mirror_repair_last=$m_last rc=$rc"
 exit $rc

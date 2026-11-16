@@ -293,7 +293,18 @@ if [ -f "$IDENTS_FILE" ]; then
 fi
 ino_group=none
 [ "${#groups[@]}" -gt 0 ] && ino_group=$(IFS=,; echo "${groups[*]}")
-sha=$(git rev-parse --short HEAD 2>/dev/null || echo no-git)
+# head= carries THREE states, not two -- the same branch as run-gate-logged.sh:63-68,
+# check-manifest.sh and check-wal-doc-links.sh. This gate carried a third copy of the old
+# two-ending one-liner (found by grep on 2026-11-16 while fixing the two frodo named: the
+# vocabulary rule is one field, one vocabulary, so a third instance is not out of scope --
+# it is the counter-example that would have kept `no-git` alive in gate logs).
+if ! git --version >/dev/null 2>&1; then
+  sha=unknown
+elif ! git rev-parse --git-dir >/dev/null 2>&1; then
+  sha=none
+elif ! sha=$(git rev-parse --short HEAD 2>/dev/null); then
+  sha=unknown
+fi
 if ! DIRTY_RAW=$(git status --porcelain --untracked-files=no 2>/dev/null); then
   dirty=unknown
 elif [ -n "$DIRTY_RAW" ]; then dirty=1

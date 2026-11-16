@@ -21,6 +21,13 @@
 #   C  edited source, git working, clean legs                    -> rc=5, nothing written.
 #   D  no repo (tree copied without .git)                        -> rc=5, head=none.
 #   E  --dry over stale legs                                     -> rc=3, nothing written.
+#   F  source present on disk, ABSENT FROM HEAD (untracked)      -> rc=5, nothing written,
+#      no journal row, refusal says "does not resolve" and NOT the edited-source sentence.
+#      Added 2026-11-16 from frodo's arm: the code has the branch, the message is
+#      deliberately distinct, and the tracked test had no assertion for it. The repair
+#      differs -- untracked needs `git add` AND a commit, an edited source needs only the
+#      commit -- so a shared "uncommitted edits" sentence would be wrong for a file that
+#      was never in HEAD.
 #
 # Usage: bash test-mirror-publish-guard.sh [--keep]
 # Exit: 0 every arm held, 1 any arm failed, 2 setup failed.
@@ -135,6 +142,42 @@ out=$(run_writer "$PATH" --dry 2>&1); rc=$?
 after=$(leg_state)
 [ "$rc" = 3 ] && pass "E rc=3 on --dry drift" || bad "E rc=$rc, expected 3"
 [ "$before" = "$after" ] && pass "E --dry wrote nothing" || bad "E --dry wrote a leg"
+
+# --- F: source on disk, absent from HEAD -> rc=5, distinct message -----------------
+# The fourth rc=5 cause. Repo built from the five sources with grade-slot.sh deliberately
+# untracked: git status must show `?? grade-slot.sh`, so the disk bytes exist and HEAD has
+# never carried them. This is the case where "commit the wal-ops source" is HALF a repair.
+FR="$W/untracked"; mkdir -p "$FR"
+for f in $SRCS; do cp "$WALOPS/$f" "$FR/$f" || exit 2; done
+( cd "$FR" && git init -q \
+  && git -c user.email=t@example.invalid -c user.name=t add -A \
+  && git -c user.email=t@example.invalid -c user.name=t commit -qm init \
+  && git rm -q --cached grade-slot.sh \
+  && git -c user.email=t@example.invalid -c user.name=t commit -qm "grade-slot.sh is not in this commit" ) || {
+  echo "SETUP FAIL: could not build the untracked-source repo at $FR" >&2; exit 2; }
+if ( cd "$FR" && git status --porcelain ) | grep -q '^?? grade-slot.sh$'; then
+  pass "F setup: grade-slot.sh is on disk and untracked (?? in git status)"
+else
+  bad "F setup: grade-slot.sh is not untracked -- the arm measures the wrong shape"
+fi
+stale_legs
+before=$(leg_state); jbefore=$(journal_rows)
+out=$( cd "$FR" && env -i PATH="$PATH" HOME="$W/home" NAS="$W/nas" MIRROR_JOURNAL="$W/nas/.mirror-repairs.log" \
+       bash ./install-mirror-legs.sh 2>&1 ); rc=$?
+after=$(leg_state); jafter=$(journal_rows)
+[ "$rc" = 5 ] && pass "F rc=5 on a source absent from HEAD" || bad "F rc=$rc, expected 5"
+[ "$before" = "$after" ] && pass "F nothing written" || bad "F a leg changed during a refused run"
+[ "$jbefore" = "$jafter" ] && pass "F no journal row" || bad "F journal grew $jbefore -> $jafter"
+grep -q 'does not resolve' <<< "$out" \
+  && pass "F refusal says the source does not resolve at HEAD" \
+  || bad "F refusal does not say 'does not resolve': $(grep '^REFUSE' <<< "$out" | tr '\n' '|')"
+# The distinctness assertion: this cause must NOT borrow the edited-source sentence, or the
+# repair a reader acts on is wrong for a file that was never in HEAD.
+if grep -q 'uncommitted edits' <<< "$out"; then
+  bad "F refusal reuses the edited-source sentence for an untracked file (repair would be half of one)"
+else
+  pass "F refusal is distinct from the edited-source message"
+fi
 
 echo "---"
 if [ "$fail" = 0 ]; then echo "RESULT PASS (0 failed arms)"; exit 0; fi

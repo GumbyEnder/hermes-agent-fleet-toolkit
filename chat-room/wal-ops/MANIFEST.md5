@@ -1,9 +1,9 @@
 d7da84c654abe1fd0503098dc83c3672  census-recheck.py
-6c03eaff3718581ef85143b8bda823c1  check-exec-copies.sh
+ac722ea7b2dc8d6d68d8884308f4fc48  check-exec-copies.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 a82a6c56e8e248a9c7deb4a612b5c54a  check-index-rows.sh
-af63db9f7f39dc2e85e18204f5004443  check-manifest.sh
-07637d011fbdf4c56e913b9b43683597  check-wal-doc-links.sh
+c4a92990ba31129709927d786cd5f03e  check-manifest.sh
+fe675328c039679eb8f818c19333b502  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 73c6748ca4d9b910099cebca70c941e2  enumerate-exec-set.sh
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
@@ -40,9 +40,10 @@ e67047c0e8a5b30901a366f2c2613fd9  systemd/hermes-seeder-watch-frodo.service
 358f12819ef4a5c4120bfbe4870ad11e  systemd/hermes-wal-unlink-verdict.service
 b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 94daec2cc9a7d250acbf6097fbd58a9e  test-actor-err-labels.py
+43cefb1002802b675190925a4ae2fb14  test-gate-head-vocabulary.sh
 88ab9035620fe2688b84d3d71336c09a  test-grader-mixed-db.sh
 0209449fe9f0d3dbdbc89c8e87a91a75  test-live-turns-cgroup.py
-a5e8f4eb67af5db4e95b62a7dc3b336f  test-mirror-publish-guard.sh
+182fd864e8a576b84e268fc0bc104250  test-mirror-publish-guard.sh
 d3e37b321c98b707fc066d5c3449618f  test-record-coords.sh
 bcfaae45a7431097906c5ffd2836d1c9  test-verify-skip-path-arm.sh
 78bbb0c2ff292c89a908bb122036dab5  test-waiter-e2e.sh
