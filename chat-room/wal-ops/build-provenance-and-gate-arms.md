@@ -1321,3 +1321,31 @@ why that line is printed and not failed.
 Four NAS copies plus one out-of-tree copy plus two unrostered units is the honest count; "the unit is the
 hole" was one instance of it. Coverage is a property of a set that was enumerated, and the only set this
 directory can enumerate from its own contents is the one it already lists.
+
+## A read is only as honest as its instant: the grader read 48 s before the arm it graded (measured 2026-11-15 18:28:50-19:29:35)
+
+The slot-pair class was added so that absence inside an open window could not pass as evidence. It
+worked, and the grader then spent every hour inside that window: `grade-slot.sh` woke at `slot_ep+8`,
+resolved the row ~4 s later, and handed the verifier a read clock at P+12 while the janitor arm for
+`[row_P, row_P+61 s)` is written at grid+60.87..60.92. Measured on fires 5541/5569/5622 and
+reproduced at 18:28:50 (`class=pending remaining=59.0043s`): 24 pendings a day, `rc=0` never
+reachable from the timer, and no machine-posted verdict for any hour. Three consecutive pendings were
+100% of the sample, not a boundary being probed -- pending was the only outcome that path could reach.
+
+Two rules, both of which the fix had to satisfy:
+
+- **Schedule the read after the artifact it asserts, not after the row it looks up.** A verifier that
+  reports "the second arm has not run yet" is telling you the read is early. Waiting is cheap here
+  because the run already sleeps 23 minutes for the slot; the edge read now lands at grid+62 and the
+  bounded re-read (`rc=3` -> retry every 3 s to grid+90, publish the LAST read) keeps a genuinely
+  absent arm visible as pending/unknown instead of converting it to a silent pass.
+- **Anchor the wait to the grid second, never to the row token.** The backup arm drifts later
+  (11.08 s at 09:28 -> 15.65 s at 19:28 on 2026-11-15, ~0.42 s/h) while the janitor stays
+  grid-anchored (`janitor_prefix` 192933 with row 192848.650 = row_P+45.28 = grid+60.93). A
+  row-anchored wait walks the read past the window edge as the drift grows; a grid-anchored one
+  cannot, and the delta shrinking (45.76 -> 45.28) is the same drift seen from the other side.
+
+First live edge read, 19:05 fire for slot 20261115T192833: `class=post delta=45.2806
+janitor_prefix=20261115T192933`, `RESULT PASS (0 failed legs)`, verifier `rc=0`, identity
+`disk=0c3e8fea HEAD=0c3e8fea`, witness `rc=0 VACUOUS_STRUCTURAL late=15.650 deadline=30s` -- the
+same hour the previous code graded `pending`. Lateness predicted 15.59 s against 15.650 measured.
