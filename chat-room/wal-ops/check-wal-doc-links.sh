@@ -131,7 +131,7 @@ set -u
 #   read.
 #
 # SCOPE -- what this gate does NOT cover. Counted, not assumed:
-#   repo 16 tracked `.md` (`git ls-files '*.md'`: 4 root + chat-room/wal-ops 12), DOCS 10 -> 20 arms.
+#   repo 17 tracked `.md` (`git ls-files '*.md'`: 4 root + chat-room/wal-ops 13), DOCS 11 -> 22 arms.
 #   The 4 root docs and the 2 wal-ops docs outside DOCS (README.md,
 #   manifest-truncation-2026-11-14.md) have no reference in the frodo, buzzy, aragorn or sam
 #   profile dirs, so they have no drift path. Everywhere else this gate is blind by
@@ -156,7 +156,7 @@ set -u
 # new doc drifts with no detector -- measured 2026-11-14: the carve of wal-forensics.md was
 # proposed with this gate covering only wal-lifecycle.md, so the new file would have had two
 # uncontrolled copies from birth.
-DOCS="wal-lifecycle.md wal-forensics.md live-process-grading.md wal-census.md rotated-log-siblings.md copy-arm-semantics.md build-provenance-and-gate-arms.md provenance-quoting.md counts-rates-and-carriers.md gate-and-verdict-quoting.md"
+DOCS="wal-lifecycle.md wal-forensics.md live-process-grading.md wal-census.md rotated-log-siblings.md copy-arm-semantics.md build-provenance-and-gate-arms.md provenance-quoting.md counts-rates-and-carriers.md gate-and-verdict-quoting.md gate-arms-and-false-greens.md"
 PROFILES="frodo buzzy"
 WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 

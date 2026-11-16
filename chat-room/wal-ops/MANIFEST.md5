@@ -3,7 +3,7 @@ ac722ea7b2dc8d6d68d8884308f4fc48  check-exec-copies.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 a82a6c56e8e248a9c7deb4a612b5c54a  check-index-rows.sh
 c4a92990ba31129709927d786cd5f03e  check-manifest.sh
-864748b6300a120593d274217cb87b92  check-wal-doc-links.sh
+896b1988a43f5cd284385f4d728878f0  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
 73c6748ca4d9b910099cebca70c941e2  enumerate-exec-set.sh
 e8757bb6542ff3a0d10d37241b237327  episodes-cut.py
