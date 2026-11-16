@@ -70,7 +70,7 @@ wd._post_reply = lambda *a, **k: 0
 wd._stamp_holder = lambda *a, **k: None
 
 payload = {"from": "buzzy", "topic": "work", "text": "@frodo check this",
-           "message_id": 5463, "parent_id": 4303}
+           "message_id": 5463, "parent_id": 4303, "ts": 1794751280.6161935}
 wd._run_one("frodo", payload, -1)
 prompt = captured["prompt"]
 print("--- prompt head ---")
@@ -79,6 +79,14 @@ print("---")
 check("prompt names message_id", "message_id=5463" in prompt, True)
 check("prompt names parent_id", "parent_id=4303" in prompt, True)
 check("prompt carries wake_ts", "wake_ts=" in prompt, True)
+# mention_ts is the room row's ts as the sender knew it, carried in the signed
+# payload. 4-decimal equality against `SELECT ts FROM messages WHERE id=<mid>`
+# on a live wake is the acceptance test; this unit leg only proves it is plumbed
+# from the payload into the envelope and not recomputed from a local clock.
+check("prompt carries mention_ts from the payload",
+      "mention_ts=1794751280.616194" in prompt, True)
+check("prompt carries wake_ts beside mention_ts",
+      "mention_ts=1794751280.616194 wake_ts=" in prompt, True)
 check("prompt tells the agent reply_to=<message_id>", "reply_to=5463" in prompt, True)
 check("prompt keeps the original mention header",
       prompt.startswith("[Agent Chat Room — you were @mentioned by buzzy in topic 'work']"), True)
@@ -90,7 +98,7 @@ env_line = captured["prompt"].splitlines()[1]
 check("payload body reaches the prompt when there is no id to refetch",
       "BODY-MARKER" in captured["prompt"], True)
 check("no-id wake says none, not 0",
-      env_line.startswith("[envelope message_id=none parent_id=none wake_ts="), True)
+      env_line.startswith("[envelope message_id=none parent_id=none mention_ts=none wake_ts="), True)
 
 # ---- 2. the retry decision asks the room ------------------------------------
 replies = {}
@@ -116,6 +124,34 @@ check("captured reply -> no retry", wd._retry_after_turn("frodo", 5465,
                                                          {"reply": "hi", "err": "", "rc": 0}), False)
 check("rc=-15 no reply, room empty -> retry",
       wd._retry_after_turn("frodo", 5464, {"reply": "", "err": "stopped", "rc": -15}), True)
+
+# ---- 3. the wrapper does not post a second reply under the same mention -----
+# Measured 2026-11-15: 5674 (posted by the turn at 15:26:57.616) and 5675 (posted
+# by the wrapper at 15:27:18.061) are the same answer twice. The guard is the
+# clock: a child of the mention, from this profile, created after the turn started.
+posts = []
+
+
+class TalkingProc(FakeProc):
+    def communicate(self, timeout=None):
+        return ("Posting as the turn, not the wrapper.", "")
+
+
+wd.subprocess.Popen = TalkingProc
+wd._post_reply = lambda *a, **k: (posts.append(a), 9001)[1]
+
+wd._answered_since = lambda profile, mid, since: True
+out = wd._run_one("frodo", {"from": "buzzy", "topic": "work", "text": "x",
+                            "message_id": 5678, "parent_id": 5674, "ts": 1794790495.288}, -1)
+check("turn already posted -> wrapper does not post", posts, [])
+check("turn already posted -> posted_id stays 0", out.get("posted"), 0)
+
+wd._answered_since = lambda profile, mid, since: False
+wd._post_reply = lambda *a, **k: (posts.append(a), 9001)[1]
+out = wd._run_one("frodo", {"from": "buzzy", "topic": "work", "text": "y",
+                            "message_id": 5679, "parent_id": 5674}, -1)
+check("turn did not post -> wrapper posts exactly once", len(posts), 1)
+check("  ... and reports the id it got", out.get("posted"), 9001)
 
 print()
 print(f"{checks - len(fails)}/{checks} checks passed")

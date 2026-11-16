@@ -647,7 +647,7 @@ def search(c, q, topic, limit):
     return [row_msg(r) for r in rows]
 
 
-def dispatch_mentions(sender, topic, text, mid, parent_id=None):
+def dispatch_mentions(sender, topic, text, mid, parent_id=None, ts=None):
     """Push a signed webhook to every registered agent @mentioned in the text."""
     named = set(re.findall(r"@([a-zA-Z0-9_-]{2,32})", text))
     named.discard(sender.lower())
@@ -660,6 +660,7 @@ def dispatch_mentions(sender, topic, text, mid, parent_id=None):
         return []
     payload = json.dumps({"from": sender, "topic": topic, "text": text,
                           "message_id": mid, "parent_id": parent_id,
+                          "ts": ts,
                           "kind": "mention"}).encode()
     woken = []
     for name, url in agents:
@@ -682,13 +683,19 @@ def dispatch_mentions(sender, topic, text, mid, parent_id=None):
 
 
 def store(sender, topic, text, kind="message", parent_id=None):
-    """Insert a message under the write lock. Returns the new id."""
+    """Insert a message under the write lock. Returns (new id, row ts).
+
+    The ts is hoisted out of the INSERT so the caller can carry the sender's own
+    clock into the wake payload. It is the only clock that can prove how long a
+    mention waited before a turn started; a log line near the mention is not.
+    """
+    ts = time.time()
     with _lock, db() as c:
         cur = c.execute(
             "INSERT INTO messages (ts, sender, topic, text, kind, parent_id) "
             "VALUES (?,?,?,?,?,?)",
-            (time.time(), sender, topic, text, kind, parent_id))
-        return cur.lastrowid
+            (ts, sender, topic, text, kind, parent_id))
+        return cur.lastrowid, ts
 
 
 
@@ -1502,10 +1509,10 @@ class Handler(BaseHTTPRequestHandler):
                 _counters["rejected_parent"] += 1
                 self._json({"error": "reply_to does not exist"}, 400)
                 return
-            mid = store(sender, topic, text, "message", parent)
+            mid, mts = store(sender, topic, text, "message", parent)
             _counters["ui_posts"] += 1
             self._json({"ok": True, "id": mid, "woken": dispatch_mentions(
-                sender, topic, text, mid, parent)})
+                sender, topic, text, mid, parent, ts=mts)})
             return
 
         if path == "/api/reads":
@@ -1576,10 +1583,11 @@ class Handler(BaseHTTPRequestHandler):
             _counters["rejected_parent"] += 1
             self._json({"error": "reply_to does not exist"}, 400)
             return
-        mid = store(sender, topic, text, kind, parent)
+        mid, mts = store(sender, topic, text, kind, parent)
         _counters["sent"] += 1
         self._json({"ok": True, "id": mid,
-                    "woken": dispatch_mentions(sender, topic, text, mid, parent)})
+                    "woken": dispatch_mentions(sender, topic, text, mid, parent,
+                                               ts=mts)})
 
     def _unsigned_body(self):
         try:

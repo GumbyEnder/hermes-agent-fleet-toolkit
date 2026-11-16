@@ -540,6 +540,39 @@ def _claim(key):
         return True
 
 
+def _answered_since(profile, message_id, since):
+    """True when this turn has already posted its answer under the mention.
+
+    A `hermes -z` turn can post through the room API itself and still return text;
+    the wrapper would then post that text as a SECOND reply under the same mention
+    (measured 2026-11-15: 5674 posted 15:26:57.616 by the turn, 5675 at 15:27:18.061
+    by the wrapper, 15 + 2,037 chars of it). The clock is the witness: a child of
+    this mention, from this profile, created after the turn started can only be
+    this turn's own write. Text-matching the stdout is not needed and would be
+    fooled by a reply that quotes its own id.
+
+    Fail OPEN (post) when the bus cannot be read: a duplicate post is cheap next to
+    silently dropping an answer.
+    """
+    if not isinstance(message_id, int) or message_id <= 0:
+        return False
+    url = f"{BUS_URL}/api/messages?thread={message_id}&since=0&limit=50"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            rows = json.loads(r.read() or b"[]")
+    except Exception as e:  # noqa: BLE001
+        log(evt="reply_post_check_failed", profile=profile,
+            message_id=message_id, error=str(e)[:200])
+        return False
+    for row in rows if isinstance(rows, list) else []:
+        if (isinstance(row, dict) and row.get("parent_id") == message_id
+                and row.get("sender") == profile
+                and isinstance(row.get("ts"), (int, float))
+                and row["ts"] >= since):
+            return True
+    return False
+
+
 def _post_reply(profile, topic, reply, parent_id=None):
     """Post the woken agent's answer back into the room, signed and threaded."""
     try:
@@ -750,9 +783,15 @@ def _run_one(profile, payload, lock_fd=-1):
     mid_env = message_id if message_id else "none"
     pid_env = payload.get("parent_id") or "none"
     wake_ts = round(time.time(), 3)
+    # mention_ts is the sender's clock at the instant it inserted the row (bus.py
+    # store() -> dispatch_mentions payload). wake_ts stays: it is the honest age.
+    # mention_ts -> wake_ts IS the wait, and neither number can stand in for the other.
+    mention_ts = payload.get("ts")
+    mts_env = f"{float(mention_ts):.6f}" if isinstance(mention_ts, (int, float)) else "none"
     prompt = (f"[Agent Chat Room — you were @mentioned by {payload.get('from')} "
               f"in topic '{payload.get('topic')}']\n"
-              f"[envelope message_id={mid_env} parent_id={pid_env} wake_ts={wake_ts}]\n"
+              f"[envelope message_id={mid_env} parent_id={pid_env} "
+              f"mention_ts={mts_env} wake_ts={wake_ts}]\n"
               f"{text}\n\n"
               f"[envelope] When you post your answer to the room, set reply_to={mid_env}.\n"
               f"The dispatcher's duplicate check re-runs a turn whose mention has no reply\n"
@@ -801,9 +840,17 @@ def _run_one(profile, payload, lock_fd=-1):
             err = f"{err or ''} killed at hard cap {hard}s (budget {budget}s)"
     except Exception as e:  # noqa: BLE001  (no argv in the message: it is the prompt)
         err = f"{type(e).__name__}: {str(e)[:200]}"
-    posted = _post_reply(profile, payload.get("topic", "general"), reply,
-                         message_id if isinstance(message_id, int) and message_id else None) \
-        if reply else 0
+    posted = 0
+    if reply:
+        # The turn may have posted through the room API already. Then the wrapper's
+        # write is a duplicate under the same mention -- skip it, and say so.
+        if _answered_since(profile, message_id, started):
+            log(evt="reply_skipped_already_posted", profile=profile,
+                message_id=message_id, reply_chars=len(reply),
+                note="turn posted through the room API; wrapper write skipped")
+        else:
+            posted = _post_reply(profile, payload.get("topic", "general"), reply,
+                                 message_id if isinstance(message_id, int) and message_id else None)
     with _lock:
         if err and not reply:
             _failed += 1
@@ -811,6 +858,9 @@ def _run_one(profile, payload, lock_fd=-1):
             _done += 1
     log(evt="wake", profile=profile, message_id=message_id, rc=rc,
         dur_s=round(time.time() - started, 1), budget_s=budget,
+        mention_ts=(float(mention_ts) if isinstance(mention_ts, (int, float)) else None),
+        wake_ts=wake_ts, waited_s=(round(wake_ts - float(mention_ts), 1)
+                                   if isinstance(mention_ts, (int, float)) else None),
         prompt_chars=len(text), text_src=text_src,
         reply_chars=len(reply), posted_id=posted, error=(err[:200] or None))
     return {"rc": rc, "reply": reply, "err": err, "posted": posted}
