@@ -26,7 +26,7 @@ d265f17dd557ab5387596786460b2d67  rehearse-run-failure.sh
 42244df17ba82bb422519279a6bb2fb8  rehearse-verify-rolled-and-pruned.sh
 81cd467620e85398422f8095aaf2d005  relink-wal-docs.sh
 5fc43fd95e68382b8987b73e3d56abde  restart-dispatcher-when-no-turns.sh
-afaef597b3d62b29e2248bfcd800d0d6  ro-open-audit.py
+8e30900668e85556d0322593bd9165e3  ro-open-audit.py
 0800eeb18c0687db48edd514ea64976a  run-gate-logged.sh
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 45dfad832e8c773f49e3eea1622a8bfc  systemd/check-grade-timer.timer
