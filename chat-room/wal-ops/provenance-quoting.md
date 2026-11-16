@@ -1464,7 +1464,25 @@ tracked-only; `run-gate-logged.sh` runs `git status --porcelain`, so its count i
 One untracked file moves the count and cannot move the boolean -- the difference is scope, not drift.
 Quote the field name WITH its scope (`dirty_count(all)=4`, `dirty(tracked)=1`), never `dirty` bare,
 and never grade the pair as a contradiction. The discriminator is in the row already: a path that
-appears in `dirty_paths` and not in `git ls-files` is the untracked member.
+appears in `dirty_paths` and not in `git ls-tree -r HEAD --name-only` is the member whose
+bytes are not in the commit the two fields are being read as describing.
+
+**`git ls-files` is the INDEX, so it is the wrong discriminator for a HEAD-scoped question.**
+Measured 2026-11-16 in a scratch repo, nothing committed in either arm: with an untracked path
+`untracked-new.txt`, `git status --porcelain` = 1 line and `--untracked-files=no` = 0 lines. After
+`git add untracked-new.txt` and no commit, both views = 1 line, `--untracked-files=no` prints
+`A  untracked-new.txt`, and the path is STILL absent from HEAD: `git ls-tree -r HEAD --name-only`
+= 0 hits, `git diff --name-status HEAD` = `A	untracked-new.txt`, while `git ls-files` = 1 hit. So
+a staged-but-uncommitted path flips an ls-files-keyed rule to "no untracked difference" while it
+is not in HEAD at all -- and the row's `dirty_count` would read 3 against the gate's `dirty=1`
+(two scopes that genuinely agree) the moment someone stages the fourth path, inviting a reader to
+conclude the scopes have converged when what moved was the scope of the discriminator. Three
+objects live under one tree: the WORKTREE (porcelain), the INDEX (`ls-files`,
+`--untracked-files=no`) and HEAD. Grade against the object the claim is about; `git ls-tree -r
+HEAD --name-only` is the one that answers "is this path in HEAD". `run-gate-logged.sh` now prints
+`dirty_untracked` (porcelain `??`, worktree-vs-index) and `dirty_head_absent` (index-vs-HEAD)
+beside `dirty_paths`, so the classification is in the row and nobody has to intersect booleans
+by hand. (frodo's correction, 2026-11-16, accepted and landed.)
 
 ## A witness needs a door, and `rows=0` is three different facts
 

@@ -86,17 +86,62 @@ ORIGIN_SHA=$(git rev-parse --verify -q origin/master 2>/dev/null || echo none)
 # `dirty=` token is usually `git status --porcelain --untracked-files=no` (tracked-only).
 # One untracked path moves this number and cannot move that boolean. Measured 2026-11-15T22:47:54
 # -0500 in a single journalled row: dirty_count=4 beside the gate's dirty=1, the difference being
-# chat-room/test-bus-mention-ts.py -- scope, not drift. Quote either number with its scope; the
-# path set below is the discriminator (a path in dirty_paths and not in `git ls-files`).
+# chat-room/test-bus-mention-ts.py -- scope, not drift. Quote either number with its scope.
+#
+# THE DISCRIMINATOR IS NOT `git ls-files`; IT IS `git ls-tree -r HEAD`. Three objects live under
+# one tree and each is read by a different command: the WORKTREE (porcelain), the INDEX
+# (`ls-files`, and `--untracked-files=no`), and HEAD (what head=/origin=/a commit's scope
+# describe). `git ls-files` grades the INDEX, so a staged-but-uncommitted path IS in it and is
+# NOT in HEAD: `git add p`, no commit, then `ls-files p` = 1 hit, `ls-tree -r HEAD --name-only
+# -- p` = 0 hits, `porcelain --untracked-files=no` = 1 line `A  p`, `diff --name-status HEAD` =
+# `A	p`. A rule keyed on ls-files calls that path tracked, so a reader intersecting the two
+# counts concludes the scopes agree -- the exact failure a scope rule exists to prevent.
+# Measured 2026-11-16 in a scratch repo, untracked arm and staged arm (frodo's counter-example).
+#
+# So the row CLASSIFIES instead of asking a reader to intersect two booleans:
+#   dirty_untracked    -- porcelain `??`: in the WORKTREE, absent from the INDEX
+#   dirty_head_absent  -- dirty paths with no `git ls-tree -r HEAD` entry: INDEX != HEAD
+# A path can appear in both; only head_absent can move a commit's scope. A rename prints in
+# porcelain's `old -> new` form and both endpoints are graded here; a path porcelain has to
+# QUOTE (spaces, tabs, non-ASCII) is graded as the quoted token and will not match ls-tree --
+# read that as "cannot place", never as "absent".
 if ! DIRTY_RAW=$(git status --porcelain 2>/dev/null); then
   DIRTY=unknown
   DIRTY_SET='<unknown>'
+  DIRTY_UNTRACKED='<unknown>'
+  DIRTY_HEAD_ABSENT='<unknown>'
 elif [ -n "$DIRTY_RAW" ]; then
   DIRTY=$(printf '%s\n' "$DIRTY_RAW" | wc -l | tr -d ' ')
   DIRTY_SET=$(printf '%s\n' "$DIRTY_RAW" | cut -c4- | tr '\n' ' ' | sed 's/ $//')
+  DIRTY_UNTRACKED=$(printf '%s\n' "$DIRTY_RAW" | awk 'substr($0,1,2)=="??"{print substr($0,4)}' \
+    | tr '\n' ' ' | sed 's/ $//')
+  if [ "$HEAD_SHA" = unknown ] || [ "$HEAD_SHA" = none ]; then
+    DIRTY_HEAD_ABSENT="<no HEAD to compare: $HEAD_SHA>"
+  else
+    HEAD_NAMES=$(git ls-tree -r "$HEAD_SHA" --name-only 2>/dev/null) || HEAD_NAMES=''
+    ABSENT=''
+    while IFS= read -r _p; do
+      [ -n "$_p" ] || continue
+      case "$_p" in
+        *' -> '*) _cands=("${_p%% -> *}" "${_p##* -> }") ;;
+        *)        _cands=("$_p") ;;
+      esac
+      for _c in "${_cands[@]}"; do
+        printf '%s\n' "$HEAD_NAMES" | grep -Fxq -- "$_c" || ABSENT="$ABSENT $_c"
+      done
+    done < <(printf '%s\n' "$DIRTY_RAW" | cut -c4-)
+    DIRTY_HEAD_ABSENT=$(printf '%s' "${ABSENT# }")
+    unset ABSENT _p _c _cands
+  fi
+  # An empty class is a MEASURED zero, not an unset variable: `${x:-<unset>}` at print time
+  # would render both the same, so say <none> here where the measurement happened.
+  [ -n "$DIRTY_UNTRACKED" ] || DIRTY_UNTRACKED='<none>'
+  [ -n "$DIRTY_HEAD_ABSENT" ] || DIRTY_HEAD_ABSENT='<none>'
 else
   DIRTY=0
   DIRTY_SET='<none>'
+  DIRTY_UNTRACKED='<none>'
+  DIRTY_HEAD_ABSENT='<none>'
 fi
 unset DIRTY_RAW
 HEAD12=$(printf '%s' "$HEAD_SHA" | cut -c1-12)
@@ -113,6 +158,8 @@ LOG="$LOG_DIR/${GATE_NAME}-${TS}-${HEAD12}.log"
   echo "# origin/master  : $ORIGIN_SHA"
   echo "# dirty_count    : $DIRTY"
   echo "# dirty_paths    : $DIRTY_SET"
+  echo "# dirty_untracked : ${DIRTY_UNTRACKED:-<unset>}"
+  echo "# dirty_head_absent : ${DIRTY_HEAD_ABSENT:-<unset>}"
   echo "# host           : $(hostname)"
   echo "#--- gate output ---"
 } > "$LOG"
