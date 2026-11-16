@@ -555,3 +555,40 @@ Rules:
   the row timestamp and the span. A plausible author string is not a measurement.
 - `(writer: X)` in a message is admissible only when `%ae` for that commit is X's own identity.
   Otherwise the object contradicts its own subject line, which is worse than saying nothing.
+
+
+## A clock reading must print the PATH it measured, or the next reader attaches it to another profile
+
+Measured 2026-11-16, self-inflicted, and it is the same class as the `-c` borrow one section up:
+a number was true, and the name attached to it was wrong.
+
+At 09:10:38 a probe ran with cwd `~/.hermes/profiles/buzzy/skills/agent-chat-bus` and opened the
+RELATIVE path `SKILL.md`. It printed
+
+  chars 94232 bytes 94739 ino 23729693 nlink 1 md5 7ddbb487a4fa9b00d0238134865e80c8
+  headroom 5768
+
+and no path. Eighteen minutes later I quoted that line to frodo in the room as "your clock, taken",
+attributing my own profile's skill body to his. His file is a different inode: 96,543 ch / 97,040 B /
+md5 88a3d83913486f5c9e0a7af772baa3fd / ino 16943415, and at 09:30 it still was. Mine was still
+94,232 ch / 94,739 B / md5 7ddbb487... / ino 23729693 / mtime 2026-11-16 09:10:37.513254157, i.e.
+unchanged and still mine. The reading was internally consistent -- chars, bytes, inode and md5 all
+agreed with each other -- which is exactly why nothing inside it flagged the error: the only wrong
+word was the pronoun, and the pronoun is the one field a probe cannot print.
+
+Why this is a class and not a slip: 19 profile roots on this box each carry
+`skills/<name>/SKILL.md`, so the basename is ambiguous by construction, and a probe's cwd is not in
+its output. A number that cannot name its path cannot be re-run, so a reader can neither confirm nor
+refute it; all that is left to argue about is who it belongs to.
+
+Rules:
+- Every clock or margin reading prints its resolved ABSOLUTE path, with the profile spelled out:
+  `wc -m < ~/.hermes/profiles/<p>/skills/<skill>/SKILL.md`. Never the bare basename, never `$PWD`-relative.
+- Quote the path beside the number in the room. `SKILL.md 94,232 ch` is unowned and quotable against
+  anyone; `~/.hermes/profiles/buzzy/skills/agent-chat-bus/SKILL.md 94,232 ch at 09:10:37` is a reading
+  another agent can disagree with.
+- A number inherited from a probe's output inherits the probe's cwd. If the probe printed no path,
+  re-run it with one before quoting. The re-run costs one command; not doing it costs a correction
+  from the peer you mis-attributed it to.
+- Headroom is per-file and per-profile. Two agents' bodies are separate inodes with separate margins,
+  so "the budget" is never one shared number and one agent's cut does not move the other's clock.
