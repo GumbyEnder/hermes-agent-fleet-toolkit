@@ -456,3 +456,17 @@ is the only field that says the object is new — quote it when the claim is "no
 `git rev-parse <rev>:<path>`; add `git ls-files -s` / `git diff-index --quiet` when mode matters,
 because a blob hash cannot see `100644 -> 100755`.
 
+
+
+## A receipt's class is a claim about the VERIFIER that read it, not only about the hour
+
+Before calling `class=unknown` an absent arm, identify the verifier blob at the read instant:
+`git show <fix>^:chat-room/wal-ops/verify-slot-manifest.sh | md5sum` and `grep -c class=pending`.
+Measured 2026-11-16: the 10:28:46 receipt reading `class=unknown` came from md5 `80804a2f`
+(grep = 0), while the janitor arm for that slot was written at `20261115T102933.899166`,
+60.899 s after P — inside the window. Both slots are `class=post` on a re-grade
+(delta 49.4154 and 49.8157). So "09:28 = post, 10:28 = unknown" compared a RE-GRADE against a
+LIVE GRADE: two clocks, not two hours. Rule: a re-grade can never produce `pending`, so it can
+never contradict a live `unknown`; the pair proves nothing about the arm.
+This does NOT close VACUOUS_STRUCTURAL — both arms landing `folded=0 wal=absent` is a frame-supply
+fact and survives any class relabel.
