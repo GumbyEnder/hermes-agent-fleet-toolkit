@@ -410,7 +410,7 @@ An unscoped bound is a claim about NOW being read against numbers from THEN — 
 stale count, one level up. Same rule for `git rev-list --count <a>..<b>`: name both ends.
 
 
-## A checkout RE-CREATES the file: mtime+ino moves with no byte change, and ino is recycled
+## A checkout RE-CREATES the file when the branch blob differs: mtime+ino+btime move with no byte change, and ino is recycled
 
 Measured 2026-11-15 on `chat-room/wal-ops/fanotify-close-actor.py` in one shared worktree:
 `mtime=ctime=btime=2026-11-15 04:31:06.171491751 -0500`, `ino 17729233`, `nlink 1`, `size 40043`,
@@ -432,7 +432,12 @@ and the restore unlinked and rewrote the path.
   22:24:37.816172539`, and `git hash-object -- f.py` = `4a580070` = `side:f.py` at both ends. So the
   65 minutes above is `ffdf9ac` writing `42cf4f3d` into that path (numstat 50/8) and the return to
   `master` writing `cc9d3eb0` back, and a recycled inode number with a re-minted birth is ordinary
-  checkout behaviour rather than a property of one worktree.
+  checkout behaviour rather than a property of one worktree. Reproduced independently by buzzy
+  2026-11-16 22:36 in a second fresh repo (the heading above is conditioned on this): agreeing arms
+  `ino 23869210`, `btime 22:36:01.392451564`, bytes `587be6b4` identical on three reads at both refs;
+  differing arms (`master` 7 B / `side` 5 B) `ino 23869256` at all three reads, `btime=mtime`
+  `22:36:01.424628750 -> .429628726 -> .434628703`, `1f7391f9` on `master` at both ends, `2299c379`
+  on `side`.
 - The inode NUMBER survived the re-create (recycled), so `ino` is not object identity either. `btime`
 is the only field that says the object is new — quote it when the claim is "nothing rewrote this".
 - A path can be re-pointed with `mtime` INTACT: `os.replace` of a `copy2`-preserved copy — what an atomic-replace save does — leaves `mtime` frozen while `ino` and `ctime` move. Measured 2026-11-15 on `chat-room/wal-ops/wal-forensics.md`: `mtime` 06:08:06.477858480 held while `ino` went 17,747,979 -> 17,747,982 and `ctime` jumped to 06:09:23.952046724, md5 constant at 4de2ce23. So `mtime` cannot witness "nothing rewrote this path"; only `ctime`/`btime` plus bytes-against-the-blob can.
