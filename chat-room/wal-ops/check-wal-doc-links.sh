@@ -63,6 +63,15 @@ set -u
 #   incomplete. One call per doc edit, because two hand-typed `ln -f` lines is where
 #   a half-repair happens -- done twice by hand on 2026-11-15, once by each agent.
 #
+#   IDENTITY IS A STEP TOO, and it is the one the link set cannot carry. `-ef` is
+#   restored by the relink by construction and identical bytes keep md5, so a
+#   whole-file rewrite grades 16/16 green (measured 2026-11-15 21:28). An edit that
+#   appends through the name preserves (ino, btime) and needs nothing; an edit whose
+#   TOOL replaced the inode must re-record -- `bash check-wal-doc-links.sh
+#   --record-idents` -- in the same commit, with the writer named in the message.
+#   Never re-record to silence a FAIL you cannot explain: the FAIL is the only arm
+#   that sees the swap.
+#
 #   The copier in the FAILURE arm is the BATCH ROLLBACK. A SUCCESSFUL write materialises
 #   the file it writes (atomic_write_text: temp + fsync + os.replace -> new inode, so the
 #   link on THAT path is broken and the outside name keeps the pre-image; other refs keep
@@ -130,6 +139,42 @@ WALOPS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 # for "the doc set is what it was". Neither one carries the other's claim.
 rc=0
 GATE_TMP=$(mktemp) || exit 2
+
+# --- identity witness: ino + btime, recorded and refutable -------------------
+# WHY (measured 2026-11-15T20:48 on 53a7c25, by the author of that commit): the two
+# checks above CANNOT carry the claim live-process-grading.md makes -- "append through
+# the second name -- ino and birth fixed, mtime and ctime move". `-ef` is restored by
+# the relink by construction (ln -f puts all three names on the new inode) and md5 is
+# unchanged when the rewrite produced identical bytes, so an inode SWAP grades 16/16
+# green. Measured on the real pair: provenance-quoting.md ino 17748288 -> 17748465
+# (btime 2026-11-15T20:48:01.001194516, 0.52 ms before its mtime -- a whole-file write
+# to a new inode, not an append), live-process-grading.md -> ino 17748463 (btime
+# 20:47:22.087819450), both nlink=3 again, 100253 B / 72109 B, gate ok=16 fail=0.
+# Every recorded life of 17748288 ended there (aa5d4b2, 4064326 cite birth
+# 17:15:02.245143572) and no gate said a word. A property held by discipline alone has
+# the shelf life of a prose size.
+#
+# So identity is now a ROW, not a sentence: DOC-IDENTS.tsv records name<TAB>ino<TAB>btime
+# per doc, the gate diffs live against it, and a moved inode or a new birth FAILS. The
+# re-record is a tracked diff, so a whole-file rewrite costs one visible line and an
+# in-place append costs none. ino alone would not do it -- inode numbers recycle, so the
+# pair (ino, btime) is the identity, and btime is the field that makes a recycled ino
+# distinguishable from a surviving one.
+IDENTS_FILE="$WALOPS/DOC-IDENTS.tsv"
+idents_now() {
+  for d in $DOCS; do
+    r="$WALOPS/$d"
+    if [ ! -f "$r" ]; then printf '%s\tmissing\tmissing\n' "$d"; continue; fi
+    i=$(stat -c %i "$r" 2>/dev/null || echo '?')
+    b=$(stat -c %w "$r" 2>/dev/null | tr ' ' 'T')
+    printf '%s\t%s\t%s\n' "$d" "$i" "${b:--}"
+  done
+}
+if [ "${1:-}" = "--record-idents" ]; then
+  idents_now > "$IDENTS_FILE.new" && mv -f "$IDENTS_FILE.new" "$IDENTS_FILE" \
+    || { echo "FAIL: cannot write $IDENTS_FILE"; rc=2; }
+  echo "recorded: $(wc -l < "$IDENTS_FILE") identity rows -> $IDENTS_FILE"
+fi
 exec 4>&1
 {
 for d in $DOCS; do
@@ -172,6 +217,38 @@ for d in $DOCS; do
   done
 done
 } > "$GATE_TMP" 2>&1
+
+# Grade the identity rows against the live inodes. Deliberately outside the block above:
+# this compares the FILE to the tree, so it is the one check whose input is not the doc
+# itself. Fail-closed on all three shapes -- moved, unrecorded, stale row -- because a
+# witness you can choose not to record is not a witness.
+declare -A R_INO=() R_BT=()
+if [ -f "$IDENTS_FILE" ]; then
+  while IFS=$'\t' read -r n i b; do
+    [ -n "${n:-}" ] || continue
+    R_INO["$n"]="$i"; R_BT["$n"]="${b:-}"
+  done < "$IDENTS_FILE"
+fi
+for d in $DOCS; do
+  if [ -z "${R_INO[$d]:-}" ]; then
+    echo "FAIL identities/$d: no row in DOC-IDENTS.tsv -- an unrecorded inode is a claim nothing can refute; record it: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
+    rc=1
+    continue
+  fi
+  if [ -f "$WALOPS/$d" ]; then
+    li=$(stat -c %i "$WALOPS/$d"); lb=$(stat -c %w "$WALOPS/$d" 2>/dev/null | tr ' ' 'T')
+    if [ "${R_INO[$d]}" != "$li" ] || [ "${R_BT[$d]}" != "$lb" ]; then
+      echo "FAIL identities/$d: IDENTITY REPLACED ino ${R_INO[$d]} -> $li, btime ${R_BT[$d]} -> ${lb} -- a recorded inode died; relink restores -ef and identical bytes keep md5, so this is the only check that sees a whole-file rewrite. If the rewrite was intended, re-record (one visible diff line) and name the writer in the commit: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"
+      rc=1
+    fi
+  fi
+done
+for n in "${!R_INO[@]}"; do
+  case " $DOCS " in
+    *" $n "*) ;;
+    *) echo "FAIL identities/$n: stale row -- recorded but no longer in DOCS; a deleted doc keeps a row that grades nothing: bash check-wal-doc-links.sh --record-idents" >> "$GATE_TMP"; rc=1 ;;
+  esac
+done
 ok_n=$(grep -c '^OK ' "$GATE_TMP")
 fail_n=$(grep -c '^FAIL' "$GATE_TMP")
 cat "$GATE_TMP" >&4
@@ -187,6 +264,11 @@ docs_oid=$(printf '%s\n' $DOCS | git hash-object --stdin 2>/dev/null || echo no-
 # the same two heads. One of seven moved, the roster did not, and the field that can
 # carry the move is this one.
 docs_md5=$({ for d in $DOCS; do if [ -f "$WALOPS/$d" ]; then printf '%s  %s\n' "$(sha256sum "$WALOPS/$d" | awk '{print $1}')" "$d"; else printf 'missing  %s\n' "$d"; fi; done; } | sha256sum | awk '{print substr($1,1,16)}')
-echo "doc-links gate: head=$sha dirty=$dirty docs=$docs_n docs_oid=$docs_oid docs_md5=$docs_md5 ok=$ok_n fail=$fail_n rc=$rc" >&4
+# idents is the IDENTITY witness: one digest over the live (name, ino, btime) triplets in
+# DOCS order. docs_oid pins the roster, docs_md5 pins the bytes, idents pins the FILES --
+# three claims, and the third one is the only one a relink cannot restore. Quote it with
+# the head, and compare it to DOC-IDENTS.tsv at that head, never to a later stat.
+idents=$({ idents_now; } | sha256sum | awk '{print substr($1,1,16)}')
+echo "doc-links gate: head=$sha dirty=$dirty docs=$docs_n docs_oid=$docs_oid docs_md5=$docs_md5 idents=$idents ok=$ok_n fail=$fail_n rc=$rc" >&4
 rm -f "$GATE_TMP"
 exit $rc

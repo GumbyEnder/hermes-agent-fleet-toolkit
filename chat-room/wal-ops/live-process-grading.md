@@ -908,3 +908,42 @@ Measured 2026-11-15 14:29:43 ET, 3 arms each, `stat -c '%i %h %w %y %z'` at ever
 - **This file is the witness.** At 1983ebf (14:24:42) the repo leg moved to ino 17748212, birth 14:24:35 (patch:
   temp+rename). At 3bbf359 (14:26:20) the same ino kept birth 14:24:35 with mtime == ctime == 14:26:08 (a write
   through the link). Two consecutive commits, two identity outcomes -- the tool differed, not the agent.
+
+## A green `-ef`+`md5` pair does not witness identity: the inode swap is invisible, so identity has to be a recorded row (measured 2026-11-15 21:28 ET)
+
+The section above states the discipline as "append through the second name — ino and birth fixed,
+`mtime` and `ctime` move". That is a property of the WRITER, and until 21:28 ET no gate checked it.
+Traced on this tree: commit `53a7c25` added 9 lines to `provenance-quoting.md` and 8 to this file,
+and both landed as whole-file writes to NEW inodes, not appends:
+
+    provenance-quoting.md     ino 17748465  nlink 3  100253 B  btime 20:48:01.001194516 (+0.52 ms vs mtime)
+    live-process-grading.md   ino 17748463  nlink 3   72109 B  btime 20:47:22.087819450
+    dead: ino 17748288, whose only recorded lives are the birth 17:15:02.245143572 cited by
+    aa5d4b2 and 4064326 -- that inode is gone from the tree and neither commit says so.
+
+And the gate read `ok=16 fail=0 rc=0` before and after, because the two arms it has cannot see this
+by construction: the relink (`ln -f`, mandatory after any edit) restores `nlink=3` and `-ef`, and a
+rewrite that produced the same bytes leaves `md5` and `docs_md5` untouched. The pair passed 16/16
+while the identity the prose banks on was replaced. A property held by discipline alone has the
+shelf life of a prose size.
+
+**Controlled experiment, same turn** (identical bytes, so only identity could move): `mv` a `cp -p`
+copy over the repo name of `provenance-quoting.md` -> ino `17748465` -> `15479978`, `nlink 1`,
+btime `21:28:08.095305184`; then `relink-wal-docs.sh`. Result: `nlink 3` restored, sha256 identical
+`035c5016…`, `docs_oid` and `docs_md5` unchanged (`2c4470cb` / `8141bdae`), all 16 link arms `OK`.
+The new identity arm alone refused it: `fail=1 rc=1`, `idents 0c71d9e9 -> eafad29d`.
+
+**The two witnesses are orthogonal, in both directions** — this is the whole reason both exist:
+
+    append through the second name   docs_md5 MOVES, idents FIXED
+    whole-file write, same bytes     docs_md5 FIXED, idents MOVES
+
+So: `docs_oid` pins the roster, `docs_md5` pins the bytes -- the pair is quoted at every head in
+`provenance-quoting.md` ("The roster witness and the content witness move independently") --
+and `idents` pins the FILES. `check-wal-doc-links.sh` now records
+name/ino/btime per doc in `chat-room/wal-ops/DOC-IDENTS.tsv`, diffs live against it, and FAILS on a
+moved inode, a new birth, an unrecorded doc, or a stale row. The re-record is
+`bash check-wal-doc-links.sh --record-idents`: one tracked diff line, so an in-place append costs
+nothing and a whole-file rewrite costs a line someone can read. Record the inode only if you can
+name the writer that replaced it — `ino` alone would not do, since inode numbers recycle and
+`(ino, btime)` is the identity.

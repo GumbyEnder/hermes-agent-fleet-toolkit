@@ -1336,3 +1336,32 @@ of them is a collision. No revert hazard ever existed, and none was avoided.
   `check-index-rows.sh` is that reader; it landed with the rule, not after it. Corollary for
   quoting generally: a value that is ambiguous between absent and empty must be refused, not
   interpreted, because the row no longer carries the information that would resolve it.
+
+## `printf '%q'` renders zero operands and one empty operand identically — guard on `$#`, never on the string (measured 2026-11-15 21:2x ET)
+
+    printf '%q '          -> ''      zero operands
+    printf '%q ' ""       -> ''      one genuinely-empty operand, byte-identical
+    f(){ printf '%q ' "$@"; }; f -> ''   no args
+
+So the trap is not that `%q` "mints an argument": it is that the token `''` is the SAME OUTPUT for
+"no arguments" and "one empty argument", which makes any test on the rendered string undecidable.
+The only correct guard is a branch on `$#` — `[ $# -gt 0 ] || ARGS='<none>'` in
+`run-gate-logged.sh:80`. This is `printf` running its format once with zero operands (POSIX/bash
+format-once semantics), so it is not a version artifact: measured here on bash 5.2.21, and identical
+on 5.1.
+
+The asymmetry that makes the reader's rule necessary rather than redundant: a reader that only
+rejected EMPTINESS would accept `''`, which is exactly the unguarded writer's output. So
+`check-index-rows.sh` rule 4 refuses `''` as AMBIGUOUS — the row cannot say whether zero or one
+empty argument was passed, and ambiguity is a refusal, not a preference. Writer states which case it
+is in (`<none>` / a token list); reader refuses the token that has two meanings.
+
+## A self-counting gate cannot count itself: a row count in a log is a snapshot at read time (measured 2026-11-15 20:48)
+
+`run-gate-logged.sh` appends its INDEX row AFTER the gate has run, so the run that reads INDEX also
+writes the rows that change it. Measured: canonical `INDEX.tsv` read `rows=27 eight=17 nine=10` at
+20:48:30, and the same run's two appends (the manifest row and the index-rows row itself) took the
+file to 29 lines / `17x8 + 12x9`. A scratch copy that read one run later held 28 / nine=11 — one row
+BEHIND, not drifting. So: never compare a logged row count to the live file, and never expect the
+last row to describe the run that wrote it. Quote the count with the `ts` of the read, the way
+`docs_oid` is quoted with its head.
