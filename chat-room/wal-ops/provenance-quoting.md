@@ -1392,3 +1392,50 @@ Two rules follow, and they generalise past git:
 Measured the same day for the adjacent writer, `run-gate-logged.sh`: its `dirty_paths` count is 0
 when git fails, but the row carries `head=none origin=none`, so the coordinate is visible and the
 field is a count with a reader — deliberately left alone rather than retyped.
+
+## A count names the TREE, never the author -- so a dirty field carries its PATHS (measured 2026-11-15 21:41-21:52 ET)
+
+`run-gate-logged.sh` journalled `# dirty_paths : <count>`. Two defects sat in that one line,
+and each one is a class already in this file, one field over:
+
+- **The count came from the emptiness of `git status --porcelain`.** A failing git prints
+  nothing, so the row said `dirty=0` -- the `1ff9cc8` defect, still live in the wrapper that
+  stamps `INDEX.tsv` after the writer and both gates were fixed. `# head : none` was the only
+  tell, and a tell is not a branch: the field a guard reads is the dirty token.
+- **A field named for a SET carried a cardinality.** Measured in a shared worktree: at 21:41
+  `git status` read nine modified `wal-ops` files, all of them the other writer's, in flight,
+  and `1ff9cc8` committed them four minutes later mid-turn. `dirty=9` named no one. The path
+  set does not name an author either -- no git command reports who wrote an uncommitted path
+  -- but the set is the part a second writer can RECOGNISE as theirs, and the only part that
+  can be intersected with a commit's scope.
+
+Now `# dirty_count : 0|N|unknown` and `# dirty_paths : <path path ...>|<none>|<unknown>`, the
+paths stripped of the two porcelain status columns and space-joined (a path with a space keeps
+its porcelain quotes, so the field stays reversible). `INDEX.tsv` keeps its nine columns and its
+`dirty` token; only the token's value set grows by `unknown`.
+
+Three arms, scratch repos, no share touched:
+
+    clean committed repo        -> dirty_count=0        dirty_paths=<none>
+    +1 modified, +1 untracked   -> dirty_count=2        dirty_paths=f "un tracked.py"
+    git shim exits 1            -> dirty_count=unknown  dirty_paths=<unknown>   head=none
+
+**Same fix, one field up: a failing `rev-parse` ECHOES ITS OWN OPERAND.** `git rev-parse
+origin/master` in a repo with no `origin` remote prints `origin/master` to stdout and exits
+non-zero, so the row journalled `origin/master : origin/maste` (a sha column carrying a branch
+name, truncated to 12) beside `head=none` that contradicted it. Both lookups now use
+`git rev-parse --verify -q`, which prints nothing on a miss and lets `|| echo none` stand.
+Re-measured after the fix on the same scratch repo: `head=2d6611c5f13c origin/master : none`.
+
+The durable rules:
+
+- **A field's NAME is part of its claim.** A set-named field that prints a count, or a sha-named
+  field that prints a missing rev's own argument, is the same failure as an `md5=` over a name
+  list quoted as a content witness: the reader qualifies it by the name, and the name is wrong.
+  Rename or carry the real value -- never leave the name standing over a different object.
+- **Attribution is not in the worktree.** `dirty=N` and `dirty_paths=...` are properties of a
+  TREE, so a commit from a shared checkout can sweep another writer's half-finished edit into a
+  green. The two places a human can test it are both at commit time: `git diff --cached
+  --name-only` must equal the intended scope before committing, and after committing each graded
+  path's blob must equal the bytes that were graded (`git show HEAD:<path> | md5sum` vs the
+  gate's `docs_md5`/row). A clean `git status` proves somebody's bytes, not yours.

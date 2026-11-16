@@ -41,9 +41,35 @@ GATE_NAME=$(basename "$GATE" .sh)
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 TS_LOCAL=$(date +%Y-%m-%dT%H:%M:%S%z)
 REPO=$(git rev-parse --show-toplevel 2>/dev/null || echo "not-a-repo")
-HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo none)
-ORIGIN_SHA=$(git rev-parse origin/master 2>/dev/null || echo none)
-DIRTY=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+# --verify -q, because `git rev-parse <unknown-rev>` ECHOES ITS OWN OPERAND on stdout and
+# exits non-zero: a repo with no `origin` remote journalled ORIGIN_SHA="origin/master",
+# truncated to `origin/maste` -- a sha field carrying a branch NAME, next to head=none that
+# said the lookup failed. Measured 2026-11-15 on a scratch repo (arm B of the dirty test).
+HEAD_SHA=$(git rev-parse --verify -q HEAD 2>/dev/null || echo none)
+ORIGIN_SHA=$(git rev-parse --verify -q origin/master 2>/dev/null || echo none)
+# dirty= is 0|1|unknown, and the row carries the PATH SET beside the count.
+# Two defects, one line, both measured 2026-11-15 in a shared worktree:
+#   (a) the count came from the EMPTINESS of `git status --porcelain`, so a failing git
+#       journalled dirty=0 -- the `1ff9cc8` class, left here with head=none as the tell
+#       until now;
+#   (b) `# dirty_paths` printed that count, so a field named for a set carried a
+#       cardinality. A count names the TREE and never the author: frodo read dirty=1 and
+#       nine paths that were mine, in flight, four minutes before 1ff9cc8 committed them.
+#       The SET is the part a second writer can recognise as theirs, and it is the only
+#       part that can be intersected with a commit's scope. Attribution still does not
+#       exist here -- no git command names who wrote an uncommitted path -- so this field
+#       is evidence for a human/peer check, never a verdict.
+if ! DIRTY_RAW=$(git status --porcelain 2>/dev/null); then
+  DIRTY=unknown
+  DIRTY_SET='<unknown>'
+elif [ -n "$DIRTY_RAW" ]; then
+  DIRTY=$(printf '%s\n' "$DIRTY_RAW" | wc -l | tr -d ' ')
+  DIRTY_SET=$(printf '%s\n' "$DIRTY_RAW" | cut -c4- | tr '\n' ' ' | sed 's/ $//')
+else
+  DIRTY=0
+  DIRTY_SET='<none>'
+fi
+unset DIRTY_RAW
 HEAD12=$(printf '%s' "$HEAD_SHA" | cut -c1-12)
 
 LOG="$LOG_DIR/${GATE_NAME}-${TS}-${HEAD12}.log"
@@ -56,7 +82,8 @@ LOG="$LOG_DIR/${GATE_NAME}-${TS}-${HEAD12}.log"
   echo "# repo           : $REPO"
   echo "# head           : $HEAD_SHA"
   echo "# origin/master  : $ORIGIN_SHA"
-  echo "# dirty_paths    : $DIRTY"
+  echo "# dirty_count    : $DIRTY"
+  echo "# dirty_paths    : $DIRTY_SET"
   echo "# host           : $(hostname)"
   echo "#--- gate output ---"
 } > "$LOG"
