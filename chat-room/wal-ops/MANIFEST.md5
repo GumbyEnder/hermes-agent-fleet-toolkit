@@ -15,6 +15,7 @@ d2d782f53ee4ac5cf12d43cee7c024a9  install-mirror-legs.sh
 93d2eb454f75b6334b3d2149ad29d974  load-dispatcher-head.sh
 18b7941f28ac505f29e5e92a046226bd  manifest-truncation-2026-11-14.md
 2defb57c2bfa3bded2703aa1364caf52  probe-f1.py
+5926d5ca7b5e151c45e4bda0b48e5aa9  probe-skill-cap-arms.py
 e0a00dd91e120ddf627f43b78290520e  probe4.py
 b133deb597c816c9658461d41ace1bff  probe6.py
 d594d3ea4d58f04c1e797b2d73141935  qread.py

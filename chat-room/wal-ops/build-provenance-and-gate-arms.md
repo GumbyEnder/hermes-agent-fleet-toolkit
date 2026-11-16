@@ -117,6 +117,14 @@ In-process through `write_file_tool` / `patch_tool` at that build (buzzy and fro
     130,001 chars -> plain .txt      bytes_written 130001, verified true
      99,990 then patch (+30 chars)   refused, file left at 99,990 -- pre-patch text restored
 
+The probe that carries those four rows is `probe-skill-cap-arms.py` in this directory, rostered
+in `MANIFEST.md5`: it imports the live `tools.file_tools` through the install's own interpreter,
+re-measures all four arms, prints the build triple it measured as its first line, and exits
+non-zero on any disagreement. Re-run it in the turn you cite the cap
+(`~/.hermes/hermes-agent/venv/bin/python chat-room/wal-ops/probe-skill-cap-arms.py`, cwd
+anywhere) and compare *its* triple to the one above -- a scratch-dir probe is deleted after a day
+idle, so a measurement with no rostered probe is a number with a shelf life.
+
 So the cap is a **SKILL.md** rule, not a file rule: `_is_skill_md` scopes it to a `SKILL.md` basename
 under a `skills/` directory, and the 130,001 measurement still stands for any other path. Line
 numbers here are witnesses quoted *beside* the md5, never the anchor: `_handle_patch` moved
