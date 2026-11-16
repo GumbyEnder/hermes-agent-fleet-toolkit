@@ -455,6 +455,25 @@ def main():
             except OSError:
                 continue
             _mark_dir(kid, key)
+        # AND RE-ADD THE ROOT, which `_collect` can never yield: the walk is
+        # seeded with the root's own key, so the root is not in `discovered`.
+        # With --depth 1 (no subdirectories at all) the loop above therefore
+        # adds NOTHING, and a replaced root stayed unmarked for the rest of the
+        # arm -- the arm then reports active/running/NRestarts=0 with a log that
+        # simply stops. That is not hypothetical: a FAILED skill_manage batch
+        # renames the skill directory and copytree's it back (:188/:190 of
+        # tools/skill_manager_batch.py), and `references/` moves with it.
+        # Measured 2026-11-16 on both seeder-watch arms: exactly ONE mark each,
+        # on the pre-rollback inode (buzzy fanotify ino 0x16c0a21 vs live dir
+        # 0x16a1614; frodo 0x981ccf vs live 0x1027e34), fd 5 pointing at
+        # `agent-chat-bus.rollback-broken/references (deleted)`, logs stopped
+        # 03:53:34 / 05:08:37, and a file touched+opened in the live dir emitted
+        # no row and was not gated (4.5 ms). A mark on the dead inode is inert
+        # and cannot be removed by path; the live mark is the one that matters.
+        try:
+            _mark_dir(a.dir, _stat_key(a.dir))
+        except OSError:
+            pass
         marks["rescans"] += 1
     try:
         mount_fd = os.open(a.dir, os.O_RDONLY | os.O_DIRECTORY)
