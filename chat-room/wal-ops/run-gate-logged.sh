@@ -8,8 +8,17 @@
 #
 # So: every gate run writes
 #   $LOG_DIR/<gate>-<UTCts>-<head12>.log   full stdout+stderr, plus a HEADER/FOOTER
-#   $LOG_DIR/INDEX.tsv                     one row per run: ts, gate, head, origin, dirty, rc,
-#                                          signature, log, args (args is field NINE, last)
+#   $LOG_DIR/INDEX.tsv                     one row per run: ts, gate, head, origin,
+#                                          dirty_count, rc, signature, log, args
+#                                          (field five is a COUNT; a gate's own closing
+#                                          `dirty=` is the 0|1|unknown boolean of the same
+#                                          tree. Two keys, one tree, different meanings --
+#                                          so they carry different NAMES. Measured 2026-11-15
+#                                          by frodo: the wrapper journalled dirty=4 while
+#                                          check-exec-copies printed dirty=1 on the same
+#                                          tree, and a reader comparing the two reads a
+#                                          contradiction that is not there. No reader moved:
+#                                          check-index-rows.sh reads field NINE and NF only.)
 # and the log is written on FAIL as well as PASS (a failure that was not captured is the
 # expensive case). Logs live on NAS, never in a session scratch dir.
 #

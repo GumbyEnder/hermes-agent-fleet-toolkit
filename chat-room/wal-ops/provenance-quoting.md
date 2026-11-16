@@ -1485,3 +1485,51 @@ every other field green.
 refuses it, so the field could only ever be compared by byte order and never handed to a
 clock. It is now real ISO 8601 (`stamp()`), and both columns are checked with `date -d` in
 the drill. Same rule as the field NAME carrying a claim: the FORMAT carries one too.
+
+
+## Two keys for one tree: a COUNT and a BOOLEAN must not share a name (measured 2026-11-15 22:12-22:31)
+
+`INDEX.tsv` field five is a count of dirty paths; every gate's closing line prints `dirty=` as
+the `0|1|unknown` boolean of the same tree. Both were spelled `dirty`, so on one tree with four
+in-flight files a reader saw the wrapper journalling `dirty=4` and `check-exec-copies` printing
+`dirty=1` -- a contradiction that does not exist, manufactured by a shared name. The log header
+already said `# dirty_count`; only the column list in the wrapper's help text still said `dirty`.
+Renamed there, and nothing moved: `check-index-rows.sh` reads field NINE and NF and never field
+five, so the reader contract is the arity, not the name. The rule is the one already in this
+file -- a field's NAME is part of its claim -- applied to two writers of one file rather than to
+one field.
+
+## A default on a field that GRADES health is a silent-pass generator (measured 2026-11-15 22:10:32, INDEX line 63)
+
+`check-index-rows.sh` printed six awk values and read five back, so `nine` arrived as an EMPTY
+STRING and `nine=${nine:-0}` turned it into the one value that reads healthy -- while `nine == 0`
+is itself a FAIL condition in the same gate. The row is in `INDEX.tsv`: `rows=62 ... nine=0
+ok=62 fail=0 rc=0`, a gate holding the exact defect it exists to find and reporting success.
+`set -u` would not have caught it: `read` ASSIGNS the variable, empty, so it is not unset.
+`${x:?}` fires on unset OR null, so the six fields are now required by name, and a drifted
+printf/read arity aborts loudly instead of printing a zero. Measured in isolation:
+`read -r a b c <<< "1 2"; c=${c:-0}` -> `c=<0>` rc=0; `: "${c:?verdict field missing}"` -> rc=1.
+
+## Identity is worktree-local; blob identity and content identity are portable (measured 2026-11-15 22:30, replay of eb5d5a0 in a fresh worktree)
+
+Re-ran the gates at `eb5d5a0` in a `git worktree` (a clean checkout, new inos/btimes, same bytes):
+
+    doc-links   docs_oid=2c4470cb  docs_md5=51f6136b  idents=b9940ced  ok=0 fail=24 rc=1
+    exec-copies copies=5 ok=5 fail=0 copies_idents=bef9ef35 rc=0
+
+The two lines say opposite things about the same commit, and both are correct. `docs_oid` (blob)
+and `docs_md5` (content) REPRODUCE exactly across a checkout; `idents` and its 24 FAILs do not,
+because `(ino, btime)` is a property of the directory entry, not of the file. `copies_idents`
+reproduced because it digests `(name, btime)` on the SHARE, where btime survived the copy -- so
+it is quotable from any worktree, which is exactly why it is the field to quote.
+Consequence for a gate report: "checked at each commit" is only checkable in the worktree that
+recorded it. A replay elsewhere grades the checkout, not the commit -- say which tree the
+numbers came from, or the doc-links FAIL count is evidence of the wrong event.
+
+The mirror arm has the same shape from the other side: at `eb5d5a0` on a live share the gate read
+`mirror_ok=5 mirror_drift=0` at 22:12 and, replayed at 22:30 after a leg had been published from
+`104f7c1`, `mirror_ok=4 mirror_drift=1` -- `/mnt/nas/host-ops/run-gate-logged.sh` stale by
+`d2a9ee49 -> b5afa5bb`. A published leg is repaired to the TIP, so `mirror_drift` measures the
+distance between the graded commit and the newest published one, not the health of the graded
+tree. Grading an old commit with a mirror arm open is an anachronism, not a defect: it needs
+`mirror=stale-by-tip` (a NOTE keyed on head != published head), never a FAIL.

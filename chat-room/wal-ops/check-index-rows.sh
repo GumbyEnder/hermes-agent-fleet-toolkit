@@ -79,7 +79,22 @@ VERDICT=$(awk -F'\t' '
 ' "$IDX")
 
 read -r rows lines blank eight nine bad <<< "$VERDICT"
-rows=${rows:-0}; lines=${lines:-0}; blank=${blank:-0}; eight=${eight:-0}; nine=${nine:-0}; bad=${bad:-0}
+# `${x:-0}` on a field that GRADES health is a silent-pass generator. The 22:10:32 row in
+# INDEX.tsv is the measurement: the printf above printed six values, the read took five, so
+# `nine` arrived as an EMPTY STRING -- and the default turned it into 0, which is itself the
+# FAIL condition in the END block ("no 9-field rows ... every other check is vacuous"). The
+# gate ran holding the exact value it exists to detect, printed rc=0, and journalled it.
+# `-u` would not have caught it (read ASSIGNS the variable, empty, so it is not unset);
+# `${x:?}` fires on unset OR null. Measured: `read -r a b c <<< "1 2"; c=${c:-0}` -> c=<0>
+# rc=0, and `: "${c:?verdict field missing}"` -> rc=1 with the field named.
+# awk always prints six integers, so an empty field here can only mean the print/read
+# arity drifted -- a defect, never a zero.
+: "${rows:?verdict field 1 missing -- printf/read arity disagree}" \
+  "${lines:?verdict field 2 missing -- printf/read arity disagree}" \
+  "${blank:?verdict field 3 missing -- printf/read arity disagree}" \
+  "${eight:?verdict field 4 missing -- printf/read arity disagree}" \
+  "${nine:?verdict field 5 missing -- printf/read arity disagree}" \
+  "${bad:?verdict field 6 missing -- printf/read arity disagree}"
 
 if [ "$bad" -eq 0 ]; then
   printf 'index-rows gate: index=%s rows=%s lines=%s blank=%s self_row=excluded eight=%s nine=%s ok=%s fail=0 rc=0\n' \

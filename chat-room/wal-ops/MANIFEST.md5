@@ -1,7 +1,7 @@
 d7da84c654abe1fd0503098dc83c3672  census-recheck.py
 6c03eaff3718581ef85143b8bda823c1  check-exec-copies.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
-dd154a9ac654e1fd0149f47aba519c1f  check-index-rows.sh
+a82a6c56e8e248a9c7deb4a612b5c54a  check-index-rows.sh
 af63db9f7f39dc2e85e18204f5004443  check-manifest.sh
 e5259186ce476bffc02cca63668ad0f2  check-wal-doc-links.sh
 9ab01787a9655e53ce15455dcf8c460d  e2e-sink-spawner.py
@@ -26,7 +26,7 @@ d265f17dd557ab5387596786460b2d67  rehearse-run-failure.sh
 81cd467620e85398422f8095aaf2d005  relink-wal-docs.sh
 5fc43fd95e68382b8987b73e3d56abde  restart-dispatcher-when-no-turns.sh
 afaef597b3d62b29e2248bfcd800d0d6  ro-open-audit.py
-d2a9ee49c87dd95e239cfe042979140c  run-gate-logged.sh
+f45b379f8916a5255845e7d8d717ee91  run-gate-logged.sh
 a7b0d5b9d67e851eec3aed922a70ee57  systemd/check-grade-timer.service
 45dfad832e8c773f49e3eea1622a8bfc  systemd/check-grade-timer.timer
 e04f00d4ca47ca46324b57055ad86ea8  systemd/hermes-agent-chat-bus.service
