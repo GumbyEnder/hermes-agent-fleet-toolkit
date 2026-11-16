@@ -379,10 +379,16 @@ pids. The quote was not a second opinion, it was permanently 0 — a turn's argv
 so the space-separated shape cannot match a relaunch-wrapper turn at all. Call `--count`:
 the regex lives inside the script, in one place, and is fixed there.
 
-And invoke every wal-ops script as `bash <path>`: they are committed `100644`
-(`git ls-files -s`), so `./restart-dispatcher-when-no-turns.sh` is rc=126 Permission denied
-and an armed gate fails closed while looking like it is still waiting. `grade-slot.sh` is
-the exception (`100755`). `restart-when-truly-idle.sh` (2,109 B, md5 `401df267`,
+And invoke every wal-ops script as `bash <path>`: the mode is **not uniform**, so `./` is a
+per-file question and never a directory-wide one. Measured at `85bdb76`: `chat-room/wal-ops`
+tracks 76 files, 50 `100644` / 26 `100755`, and of its 28 `*.sh`, 8 are `100644` and 20 are
+`100755`. The restart gate sits on the 644 side — `./restart-dispatcher-when-no-turns.sh` is
+rc=126 Permission denied, and an armed gate fails closed while looking like it is still
+waiting — while `./grade-slot.sh`, same directory, is `100755` and runs. Both readings are
+true in the same tree, which is why the durable form is "the wal-ops **restart** scripts are
+100644, `grade-slot.sh` excepted" and not a blanket "wal-ops scripts are 100644": the blanket
+is one `./check-wal-doc-links.sh` (100755) from teaching the next reader that the warning is
+stale. `restart-when-truly-idle.sh` (2,109 B, md5 `401df267`,
 2026-11-14 06:23) is the generation **before** the cgroup build and is superseded by
 `restart-dispatcher-when-no-turns.sh` (6,921 B, md5 `5fc43fd9`, installed 17:01 the same
 day, byte-identical under `/mnt/nas/host-ops/agent-chat/`); naming the older file in a gate
@@ -392,6 +398,11 @@ And the gate cannot be closed **from inside a turn**: a room turn is itself a pr
 the unit's cgroup, so `--count` and `/health active_turns` both include the observer.
 Measured 2026-11-16 03:45:36 from a frodo turn: `--count` 2 == `/health active_turns` 2,
 and one of the two pids was the turn asking (pid 1191982, argv `'-p', 'frodo', '-z'`).
+Re-measured 03:47:32 from a **buzzy** turn — different agent, different load: `/health`
+active 3 / `in_workers` 3 / `queued` 0, the blind `pgrep` leg 0, `--count` 3, and
+`pgrep -P 1082180` 3 (1138827 `game`, 1191982 `frodo`, 1213048 `buzzy` — the turn asking).
+Two agents, two loads, the same gap between health and cgroup on one side and the retyped
+regex on the other: the rule is a property of the cgroup, not of who is asking.
 Arm the gate as a waiter / `systemd-run` unit, or run it from a non-turn context (cron,
 a shell); a turn that evaluates its own gate reads at least 1 forever, which is
 indistinguishable from a busy fleet.
