@@ -184,13 +184,39 @@ _draining = False
 SPILL_MAX = max(1, int(os.environ.get("WAKE_SPILL_MAX", "200")))
 
 
-def _spill_key(profile, payload):
-    """Identity of a wake: one turn per (profile, message). None when unknown."""
+# An id-less record cannot be keyed by the mention it answers, because it does
+# not name one. Measured 2026-11-16: three watcher records ("[watcher] The BNS …
+# repo changed") entered the spill with no message_id in an 8 ms burst, all
+# attempts=0, and _already_answered fails open for mid<=0, so nothing could ever
+# dedupe or date them — they were re-runnable forever. The fallback identity is
+# the sender + the body + the enqueue window, so a burst of identical notices
+# collapses to one record and two genuinely separate notices a minute apart stay
+# two. WAKE_IDLESS_BUCKET_S is that window.
+IDLESS_BUCKET_S = float(os.environ.get("WAKE_IDLESS_BUCKET_S", "60"))
+
+
+def _spill_key(profile, payload, enqueued_ts=None):
+    """Identity of a wake: one turn per (profile, message). None when unknown.
+
+    With a real message_id the room row is the identity and enqueued_ts is
+    irrelevant. Without one, identity is (profile, sender, text-hash, enqueue
+    window): the only durable facts such a record carries.
+    """
     mid = payload.get("message_id") if isinstance(payload, dict) else None
-    return (profile, mid) if isinstance(mid, int) and mid > 0 else None
+    if isinstance(mid, int) and mid > 0:
+        return (profile, "mid", mid)
+    if not isinstance(payload, dict) or not isinstance(enqueued_ts, (int, float)):
+        return None
+    text = payload.get("text")
+    if not isinstance(text, str):
+        return None
+    body = (str(payload.get("from") or "") + "\x00"
+            + str(payload.get("topic") or "") + "\x00" + text)
+    digest = hashlib.sha1(body.encode("utf-8", "replace")).hexdigest()[:16]
+    return (profile, "idless", digest, int(enqueued_ts // IDLESS_BUCKET_S))
 
 
-def _key_held_locked(profile, payload):
+def _key_held_locked(profile, payload, enqueued_ts=None):
     """Seq already holding this (profile, message) in the spill, or None.
 
     The TTL dedupe in `_claim` forgets a mention after 10 minutes, which is why
@@ -198,11 +224,12 @@ def _key_held_locked(profile, payload):
     and why the spill file carried the same key twice. The spill outlives the
     TTL, so the file itself is the durable answer to "is this already queued".
     """
-    k = _spill_key(profile, payload)
+    k = _spill_key(profile, payload, enqueued_ts)
     if k is None:
         return None
     for seq, rec in _pending.items():
-        if _spill_key(rec["profile"], rec["payload"]) == k:
+        if _spill_key(rec["profile"], rec["payload"],
+                      rec.get("enqueued_ts")) == k:
             return seq
     return None
 
@@ -230,17 +257,29 @@ def _spill_flush_locked():
         log(evt="spill_write_failed", path=SPILL, error=str(e)[:200])
 
 
-def _spill_add(profile, payload, attempts=0):
-    """Add a wake to the spill. Returns its seq, or None when the key is held."""
+def _spill_add(profile, payload, attempts=0, enqueued_ts=None):
+    """Add a wake to the spill. Returns its seq, or None when the key is held.
+
+    `seq` is a process-local counter (`_seq` seeded from the start clock and
+    incremented per add), NOT an arrival time: measured 2026-11-16, 49 live
+    records carried seq in a 362 ms band while spanning 17 h of accumulation.
+    So every record also carries `enqueued_ts`, the wall clock at which it
+    entered this queue, and that field — not seq — is what an age is computed
+    from. It is preserved across a restart: _spill_load hands it back and the
+    re-add keeps it, so a record dates from when the mention actually arrived.
+    """
     global _seq
+    if not isinstance(enqueued_ts, (int, float)):
+        enqueued_ts = time.time()
+    enqueued_ts = float(enqueued_ts)
     with _spill_lock:
-        held = _key_held_locked(profile, payload)
+        held = _key_held_locked(profile, payload, enqueued_ts)
         if held is not None:
             return None
         _seq += 1
         seq = _seq
         _pending[seq] = {"profile": profile, "payload": payload,
-                         "attempts": attempts}
+                         "attempts": attempts, "enqueued_ts": enqueued_ts}
         _spill_flush_locked()
         return seq
 
@@ -474,7 +513,15 @@ def _park_loop():
 
 
 def _spill_load():
-    """Records left over from a previous process. Malformed lines are counted."""
+    """Records left over from a previous process. Malformed lines are counted.
+
+    Returns (profile, payload, attempts, enqueued_ts). A file written before
+    records carried `enqueued_ts` cannot say when any of its records arrived —
+    the whole-file rewrite means the file's own mtime is the last mutation, not
+    an arrival, and the stored `seq` is a counter. Those records get ONE batch
+    bound (this load's clock) and are counted as `undated`, so the bound is
+    visible in the log instead of being passed off as an arrival time.
+    """
     try:
         with open(SPILL, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
@@ -483,7 +530,9 @@ def _spill_load():
     except OSError as e:  # noqa: BLE001
         log(evt="spill_read_failed", path=SPILL, error=str(e)[:200])
         return []
-    out, bad = [], 0
+    out, bad, undated = [], 0, 0
+    bound = round(time.time(), 3)
+    oldest = None
     for line in lines:
         line = line.strip()
         if not line:
@@ -499,8 +548,16 @@ def _spill_load():
         except Exception:  # noqa: BLE001
             bad += 1
             continue
-        out.append((profile, payload, attempts))
-    log(evt="spill_load", path=SPILL, records=len(out), malformed=bad)
+        enq = rec.get("enqueued_ts")
+        if not isinstance(enq, (int, float)):
+            enq, undated = bound, undated + 1
+        enq = float(enq)
+        oldest = enq if oldest is None else min(oldest, enq)
+        out.append((profile, payload, attempts, enq))
+    log(evt="spill_load", path=SPILL, records=len(out), malformed=bad,
+        undated=undated,
+        oldest_enqueued_ts=(round(oldest, 3) if oldest else None),
+        oldest_age_s=(round(time.time() - oldest, 1) if oldest else None))
     return out
 
 
@@ -1227,14 +1284,14 @@ def main():
     # Two lines for the same (profile, message_id) collapse to one: the file
     # outlives the 600 s dedupe window, so it is the durable duplicate guard.
     resumed = []
-    for profile, payload, attempts in _spill_load():
+    for profile, payload, attempts, enqueued_ts in _spill_load():
         mid = payload.get("message_id")
         if _already_answered(profile, mid):
             with _lock:
                 _skipped_answered += 1
             log(evt="spill_skip_answered", profile=profile, message_id=mid)
             continue
-        seq = _spill_add(profile, payload, attempts)
+        seq = _spill_add(profile, payload, attempts, enqueued_ts)
         if seq is None:
             log(evt="spill_dup_dropped", profile=profile, message_id=mid)
             continue

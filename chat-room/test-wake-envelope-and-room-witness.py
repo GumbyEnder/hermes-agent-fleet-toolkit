@@ -164,6 +164,63 @@ out = wd._run_one("frodo", {"from": "buzzy", "topic": "work", "text": "y",
 check("turn did not post -> wrapper posts exactly once", len(posts), 1)
 check("  ... and reports the id it got", out.get("posted"), 9001)
 
+# ---- 4. the spill record is dated, and an id-less record has an identity ----
+# Measured 2026-11-16: 49 live records carried seq in 1794764504221..1794764504583
+# (362 ms) while spanning 17 h of accumulation, because `seq` is `_seq += 1` from
+# a start-clock seed and the file is rewritten whole on every add/drop. Nothing
+# in the file said when a record arrived. Separately, three watcher records with
+# no message_id entered in an 8 ms burst and nothing could dedupe them.
+# The bus and subprocess stay stubbed from above; these legs only touch the spill.
+with wd._spill_lock:
+    wd._pending.clear()
+    wd._overflow.clear()
+
+m1 = {"from": "buzzy", "topic": "work", "text": "one", "message_id": 7001}
+s1 = wd._spill_add("frodo", m1)
+rec1 = wd._pending[s1]
+check("a new record carries enqueued_ts", isinstance(rec1.get("enqueued_ts"), float), True)
+check("  ... close to now", abs(rec1["enqueued_ts"] - __import__("time").time()) < 5, True)
+on_disk = [json.loads(l) for l in open(wd.SPILL, encoding="utf-8") if l.strip()]
+check("  ... and it is written to the file, not only held",
+      any(r.get("enqueued_ts") == rec1["enqueued_ts"] for r in on_disk), True)
+check("same mention twice -> one record", wd._spill_add("frodo", m1), None)
+check("  ... even 40 minutes later (identity is the mention, not the clock)",
+      wd._spill_add("frodo", m1, 0, rec1["enqueued_ts"] + 2400), None)
+
+# a record that predates the field: the load cannot invent an arrival, so it gets
+# ONE batch bound and is reported as undated rather than passed off as a clock.
+undated_rec = {"seq": 3, "profile": "frodo", "attempts": 0,
+               "payload": {"from": "watcher", "topic": "work",
+                           "text": "[watcher] The BNS repo changed"}}
+with open(wd.SPILL, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(undated_rec) + "\n")
+loaded = wd._spill_load()
+check("an undated record is returned, not dropped", len(loaded), 2)
+check("  ... 4-tuple carries an enqueued_ts for it", len(loaded[1]), 4)
+check("  ... the dated record keeps its own stamp",
+      loaded[0][3], rec1["enqueued_ts"])
+check("  ... the undated one gets the load's bound, not an invented arrival",
+      abs(loaded[1][3] - __import__("time").time()) < 5, True)
+check("re-add preserves the enqueued_ts (the record keeps its own age)",
+      wd._pending[wd._spill_add(loaded[1][0], loaded[1][1], 0, loaded[1][3])]["enqueued_ts"],
+      loaded[1][3])
+
+# id-less records: identity is (profile, sender, text-hash, enqueue window)
+with wd._spill_lock:
+    wd._pending.clear()
+    wd._overflow.clear()
+n1 = {"from": "watcher", "topic": "work", "text": "[watcher] The BNS repo changed"}
+n2 = {"from": "watcher", "topic": "work", "text": "[watcher] The BNS repo changed"}
+base = 1794800000.0
+check("first id-less notice is accepted", wd._spill_add("frodo", n1, 0, base) is not None, True)
+check("same notice 8 ms later -> one record", wd._spill_add("frodo", n2, 0, base + 0.008), None)
+check("same text in a later window -> a new record",
+      wd._spill_add("frodo", n2, 0, base + wd.IDLESS_BUCKET_S + 1) is not None, True)
+check("different sender, same text -> a new record",
+      wd._spill_add("frodo", dict(n2, **{"from": "game"}), 0, base) is not None, True)
+check("an id-less record with no body has no key (fail open, run it)",
+      wd._spill_key("frodo", {"from": "x"}, base), None)
+
 print()
 print(f"{checks - len(fails)}/{checks} checks passed")
 print("RESULT " + ("PASS" if not fails else "FAIL " + ", ".join(fails)))
