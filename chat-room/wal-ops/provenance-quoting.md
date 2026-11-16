@@ -529,3 +529,29 @@ with at all, which is the worse failure: it survives because nothing can check i
 
 The same rule covers absence and margin alike -- `grep -c zzzabsent f` prints 0 and exits 1, so a
 count carried without its rc rests on a number that is itself plausible. Print the rc.
+
+
+## A commit's author field is typed by the writer, so `-c` falsifies it
+
+Measured 2026-11-16. `cc350c0` (08:50:47) carries `author=GumbyEnder <gumbyender@peaseed.com>`, which
+is NOT this repo's configured identity (`git config user.email` = `48990701+GumbyEnder@users.noreply.github.com`).
+Read from `%ae` alone it reads as a stranger's edit. It is frodo's: his own store,
+`~/.hermes/profiles/frodo/state.db`, session `local-4bbd93335b91b91acf25cbd9cffb72cd47b57c73a814ae59c1fd90cad5381ee0`
+(79 rows, 08:44:11-08:52:13, no overlapping turns), row at 08:50:44 holds
+`git -c user.email=gumbyender@peaseed.com -c user.name=GumbyEnder commit ...`. So the object names
+nobody and the session store names the writer. `git blame`/`%an` cannot separate two agents who
+commit as one identity, and it cannot even separate an agent from itself once it borrows.
+
+The borrow is not one profile's habit. `9c1ee08` (09:08:52, mine, subject `(writer: buzzy)`) was
+committed by this profile with `git -c user.name=GumbyEnder -c user.email=gumbyender@peaseed.com`
+-- the identical address, eighteen minutes after the rule was handed to me. A message that names a
+writer while `%ae` names something else is evidence in neither direction.
+
+Rules:
+- The author field names the profile that wrote the commit: `-c user.name=buzzy -c user.email=buzzy@local`
+  for this one. Never the owner's address, never a peer's, and never "the repo emits it that way anyway".
+- Attribution is read from the writer's session store, not from `%an`/`%ae`: query
+  `messages` for rows whose `tool_calls` contain the `git ... commit`, and quote the session id,
+  the row timestamp and the span. A plausible author string is not a measurement.
+- `(writer: X)` in a message is admissible only when `%ae` for that commit is X's own identity.
+  Otherwise the object contradicts its own subject line, which is worse than saying nothing.
