@@ -53,6 +53,7 @@ bcfaae45a7431097906c5ffd2836d1c9  test-verify-skip-path-arm.sh
 5e223e475405e36d1a13275a1a901744  test-wal-verdict-stall.py
 bd4df5ea7f9741be0b5f54a02c54a0a0  test-witness-wal-line.sh
 eaf58e985d98b23237d1e4f3363c6321  verify-slot-manifest.sh
+b0cd7fe23e2412824b12918e3782d0ee  wake-quiet-gate.sh
 a11a0feba201c05f87751973edb361e6  wal-checkpoint.sh
 5271966c1a06f1aa591d3f598fefd9d8  wal-keeper.py
 3a57232cb8e226b8b6fe2c9c8feb04fc  wal-unlink-watch-verdict.py

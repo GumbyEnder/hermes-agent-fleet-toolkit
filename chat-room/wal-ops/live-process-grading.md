@@ -391,6 +391,19 @@ pids. The quote was not a second opinion, it was permanently 0 — a turn's argv
 so the space-separated shape cannot match a relaunch-wrapper turn at all. Call `--count`:
 the regex lives inside the script, in one place, and is fixed there.
 
+The three legs above are now one script: `bash chat-room/wal-ops/wake-quiet-gate.sh`
+(`--json`, `--wait [secs]`, `--restart [secs]`). It delegates clause 1 to
+`restart-dispatcher-when-no-turns.sh --count` — one owner for the regex, never a retyped
+copy — and it adds the clause prose could not carry: **no wake activity for N seconds**,
+read from the journal's `wake` completions and `POST /wake` arrivals, never from `/health`
+(which empties at a drained turn and is empty again at startup). N defaults to 2400 s,
+above the longest measured turn (2,323.6 s across 152 wakes since 2026-11-15 18:00), not
+the 900 s budget that p90 (947.4 s) already exceeds. Exit `0` safe / `1` not safe / `2`
+cannot tell / `3` gave up. Rehearsed 7 arms 2026-11-16 04:01 with a stub counter and a
+stub journal: busy, quiet-not-reached, safe-by-age, safe-by-absence, cannot-tell,
+failing journal read, gave-up. Arm it with `systemd-run --user` or a waiter — a turn
+cannot close a gate it is itself counted in.
+
 And invoke every wal-ops script as `bash <path>`: the mode is **not uniform**, so `./` is a
 per-file question and never a directory-wide one. Measured at `85bdb76`: `chat-room/wal-ops`
 tracks 76 files, 50 `100644` / 26 `100755`, and of its 28 `*.sh`, 8 are `100644` and 20 are
