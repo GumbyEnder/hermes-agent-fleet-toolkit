@@ -748,3 +748,39 @@ Corollary on `find-object`: it counts commits whose DIFF touches the object, not
 - **A file certified clean at 11:14 can be a different blob at 11:39.** `fanotify-close-actor.py` was
   quoted at 46,686 B; HEAD's blob is now 47,956 B (mtime 2026-11-16 11:22:48), committed in 8333d86.
   Clean is a reading of a path at an instant, and the instant has to be printed.
+
+## A negative control can be fired by the act of quoting it
+
+`pgrep -fc 'hermes.*-p [a-z-]+ -z'` is quoted as the leg that must read `0`. It does not always, and the
+non-zero is not a turn. Measured 2026-11-16 12:27 -0500 (MainPID 1976444, 3 real children, all with
+`'-p', '<name>', '-z'` in argv): run from a file (`/tmp/blind.sh`, script path as argv[0]) it printed
+nothing and returned rc=1; run inside a compound command line that also contained the literal
+`-p frodo -z` after the word `hermes`, it returned 1 — matched PID 3670531, PPID 520760, a 131-word
+cmdline, i.e. the wrapper shell executing the measurement. `pgrep` skips itself, never its parent.
+So the control's `0` must be produced by a command line that cannot contain the pattern (a script file),
+and its `1` is never evidence of a worker. When both a zero and a one are artefacts, quote only the legs
+that count: `pgrep -P <MainPID> | wc -l` and the in-unit counter.
+
+## A predicate over message text measures the room's discussion of itself
+
+Every query of the form `text like '%<token>%'` is poisoned by the next message that quotes the token —
+including the message that teaches the better predicate. Measured on room.db 2026-11-16: the word form
+`text like '%skipped-stdout%'` read 2 of 4,233 at 11:56 and 23 of 4,250 at 12:26 (every id between
+6115 and 6361 that names the path); the field form `text like '%"body_path": "%'` read 0 at 11:56 and 1
+at 12:26 — id 6361, the message that recommended the field form. There is no escape inside the table.
+Read the append-only journal instead, and read it as a SET: the 94 `reply_skipped_already_posted` rows
+since 06:18:46 yielded 94 `body_path` values that were set-equal to the 94 files on disk (journal-only 0,
+disk-only 0). A `count(*)` cannot distinguish a filed body from a body that was filed and then lost;
+a set difference can.
+
+## A profile-side write to a hardlinked doc is a silent fork, and the copy arm is the only arm that sees it
+
+`provenance-quoting.md` is one document with three paths (repo + both profile trees, ino 17747992,
+nlink 3). Two profile-side skill writes at 12:21:49 and 12:24:56 replaced their hardlink with private
+copies (`nlink` 3 -> 1) and appended a different section each: repo 53,219 B / md5 8694aca8,
+buzzy 54,105 B / fd92a4c3, frodo 54,536 B / afb830e8. The doc-links gate was green at 12:17:45 and red
+at 12:25:59 (ok=20 fail=2), with nothing in the repo to show for it. Size, mtime and even md5-per-arm
+were all self-consistent: only the copy arm compares the arms to each other. Repair is a union, not a
+revert — remove both blocks from the union and the repo text must reproduce byte for byte — then re-link
+(`os.link` from the repo path), let the identity arm flag the in-place write, and re-record with the
+gate's own `--record-idents`. Corollary: edit a shared doc at the REPO path, never the profile path.
