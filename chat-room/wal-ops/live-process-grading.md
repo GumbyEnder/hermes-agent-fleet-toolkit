@@ -1186,3 +1186,35 @@ the server: it survived the renumber), ino is recorded LAST and graded as
 bites -- an atomic swap changes btime even when it preserves bytes. Both shapes were
 rehearsed on an isolated roster: identical bytes through a temp-file-and-rename ->
 `moved=1` on the live leg; roster ino perturbed alone -> `ino_renumbered=1`, `rc=0`.
+
+## An armed arm can be silent: the mark is on an INODE, and a replaced root is never re-marked
+
+An `ActiveState=active SubState=running NRestarts=0 Restart=always` fanotify arm reported nothing for
+7 h 31 m and every one of those fields was true. The tell is not in the unit, it is in the mark:
+`/proc/<pid>/fdinfo/<n>` carries one `fanotify ino:...` line per mark, and the mount fd (fd 5) still
+resolved to `.../agent-chat-bus.rollback-broken/references (deleted)`. Measured 2026-11-16 on both
+seeder-watch arms, before the fix: buzzy mark `ino:16c0a21` against live dir `0x16a1614`, frodo
+`ino:981ccf` against `0x1027e34` -- ONE mark each, both on a directory that no longer exists. A file
+touched and opened in the live dir emitted no row AND was not gated (4.5 ms open), which separates
+"the mark is gone" from "the reader is behind"; a live OPEN_PERM arm blocks every open it sees.
+
+Why the rescan could not heal it: `_collect` is seeded with the root's own `(dev,ino)`, so the root is
+never in `discovered`, and with `--depth 1` there are no subdirectories at all -- the re-mark loop
+added nothing on each of the 1,129 (buzzy) / 1,130 (frodo) rescans the stop row counted. The failing
+shape is the one a FAILED `skill_manage` batch makes: `tools/skill_manager_batch.py:188` renames the
+skill dir to `.rollback-broken` and `:190` copytree's it back, and `references/` moves with it.
+
+Rules:
+- Grade a watcher by the MARK, never by the unit: `cat /proc/<pid>/fdinfo/<fanotify-fd>` and compare
+  `fanotify ino:` with `stat -c %i <dir>`. Equal is armed; anything else is a blind arm wearing a
+  healthy unit.
+- A negative from an arm whose mark you did not check is unaccountable -- it may be silence, not
+  absence. Check the arm before quoting any "no row in this window" from it.
+- Convergence is `--rescan` seconds only when the rescanned set includes the ROOT; a root replacement
+  is otherwise healed only by the next recycle (`--seconds 86400`), i.e. up to a day of blindness.
+- The stop row carries `marks:` and `rescans:`. A stop with `marks=0` after >1,000 rescans is the
+  signature, and it is written by the dying process, so it outlives the restart that repairs the arm.
+
+Fixed at `fac77f0` (`_rescan` re-marks `a.dir` unconditionally). Negative control on a throwaway tree
+(rename the watched dir away, copytree it back, then touch+open a file in the new root): HEAD 92576da
+-> 0 rows naming the probe, 2 rows total; fixed build -> 3 naming it, 5 total; same fixture.
