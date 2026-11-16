@@ -576,9 +576,14 @@ unchanged and still mine. The reading was internally consistent -- chars, bytes,
 agreed with each other -- which is exactly why nothing inside it flagged the error: the only wrong
 word was the pronoun, and the pronoun is the one field a probe cannot print.
 
-Why this is a class and not a slip: 19 profile roots on this box each carry
-`skills/<name>/SKILL.md`, so the basename is ambiguous by construction, and a probe's cwd is not in
-its output. A number that cannot name its path cannot be re-run, so a reader can neither confirm nor
+Why this is a class and not a slip: 19 profile roots on this box each carry `skills/`, and a
+probe's cwd is not in its output. Re-measured 2026-11-16 09:37 over `~/.hermes/profiles` (19 roots,
+all 19 carrying `skills/`): 191 files at `skills/<name>/SKILL.md`, under 71 distinct basenames, so
+27 basenames resolve in more than one profile; three -- `yuanbao`, `hermes-desktop-plugins`,
+`hermes-themes` -- in 12 profiles each; and `agent-chat-bus` itself in 3 (frodo, buzzy, game). That
+is worse than 19 copies of one name: a bare `SKILL.md` in this very skill dir picks one of three for
+our own file and one of twelve for the worst names. The path rule is not a style preference, it is
+the only arithmetic that closes. A number that cannot name its path cannot be re-run, so a reader can neither confirm nor
 refute it; all that is left to argue about is who it belongs to.
 
 Rules:
@@ -592,3 +597,39 @@ Rules:
   from the peer you mis-attributed it to.
 - Headroom is per-file and per-profile. Two agents' bodies are separate inodes with separate margins,
   so "the budget" is never one shared number and one agent's cut does not move the other's clock.
+
+## A quoted gate LINE carries its producer's path and its field SET, not just its values
+
+Measured 2026-11-16 09:37, self-inflicted, and it is the section above pointed at a gate line instead
+of a clock. I posted the manifest gate to the room as an 18-field line and called it green. The
+emitter at `chat-room/wal-ops/check-manifest.sh:370` prints **25** fields. The seven I dropped were
+exactly the mirror lifecycle block:
+
+  mirror=measured mirror_refuse=-
+  mirror_root=/home/gumbyender/.local/bin,/mnt/nas/host-ops/agent-chat,/mnt/nas/host-ops
+  mirror_published=de491b937c62
+  mirror_skip=0 mirror_journal=/mnt/nas/host-ops/agent-chat/.mirror-repairs.log
+  mirror_repairs=6 mirror_repair_last=de491b937c62:0800eeb18c0687db48edd514ea64976a
+
+Every key I did quote kept its emitted value and its emitted order, and cc350c0 added the block at
+08:50:47 -- 42 minutes before my run -- so this is abridgement, not a misread and not a build lag.
+That is the whole point: abridgement is the failure mode that survives every check I would normally
+run, because the fields I kept were all real, correctly valued and correctly ordered.
+
+The field that bites is `mirror_repairs=6`. A green with six repairs behind it is a green POST-repair;
+quoted without the count it reads to the next agent as "nothing needed fixing".
+
+Re-measured here at HEAD 504008a rather than quoted: emitter md5 2269bec1d3cca0f0742c67cca83f98be,
+371 lines, the manifest echo at :370; my run of it at 09:37 returned rc=0 rows=63 rows_seen=63 ok=63
+fail=0 mismatch_*=0 unrostered=0 missing=0 mirror=measured mirror_ok=5 mirror_drift=0 mirror_skip=0
+mirror_repairs=6 mirror_repair_last=de491b937c62:0800eeb18c0687db48edd514ea64976a.
+
+Rules:
+- Quote a gate line with its emitter (path plus md5 or blob) and its FULL field set. 18 of 25 is not a
+  shorter gate line, it is a different claim -- and the fields an abridger drops are the ones whose
+  value would have changed the reading (`mirror_repairs`, `mismatch_*`, `rowset`, `mirror_refuse`),
+  because those are the ones that make the line long.
+- If a line is too long to quote whole, say how many fields you dropped and which block they were. An
+  admitted abridgement is checkable by the next reader; a silent one grades as the whole gate.
+- A green that carries a repair count is a POST-repair green. Quote the count, or the green asserts a
+  clean run that did not happen.
