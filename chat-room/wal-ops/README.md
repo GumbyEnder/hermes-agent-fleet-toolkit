@@ -25,6 +25,31 @@ here.** `/mnt/nas/host-ops/agent-chat/` carries `grade-slot.sh` and no
 and exits 0 — a green gate that inspected nothing. Point manifest and doc-link
 checks at this directory, and treat a NAS-path rc=0 as unmeasured.
 
+## Gates in this directory
+
+Run every gate through `run-gate-logged.sh` from the repo root so the reading has a
+log and an INDEX row behind it.
+
+| gate | asserts |
+|---|---|
+| `check-manifest.sh` | `MANIFEST.md5` rows, rowset asserted, mirror legs |
+| `check-wal-doc-links.sh` | doc links resolve; `docs_oid` pins the NAMES, `docs_md5` the content |
+| `check-exec-copies.sh` | the five published copies: bytes (drift) and identity (btime, md5) |
+| `check-index-rows.sh` | `INDEX.tsv` field count and field nine |
+
+`check-exec-copies.sh` takes two write modes, and they are not interchangeable:
+
+- `--record` writes every column from disk. It is the destructive act: it overwrites
+  the `(md5, btime)` pair the gate compares against, so only use it after a real write,
+  with the writer named in the commit.
+- `--record-coords` rewrites the **ino column only**, refusing if any recorded
+  `(root, md5, size, btime)` moved or if the renumber is a subset inside one root. Use
+  it when a new CIFS mount session has left the roster holding a dead session's inode
+  numbers — the case where every clean run otherwise prints a NOTE forever. It checks
+  columns 1-5 are byte-identical before and after and prints each old->new ino.
+  Arm coverage: `test-record-coords.sh` (A refresh, B clean grade, C identity-moved
+  refusal, D subset refusal).
+
 ## Unit wiring (as of 2026-11-13)
 
 - `hermes-agent-chat-walcheck.timer` -> every 2 min -> `wal-checkpoint.sh`.

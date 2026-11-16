@@ -1,5 +1,5 @@
 d7da84c654abe1fd0503098dc83c3672  census-recheck.py
-5ba17b22c9e74ff9e799a9cb463c254f  check-exec-copies.sh
+6c03eaff3718581ef85143b8bda823c1  check-exec-copies.sh
 a15db06f3a95c69a54e39cf77f8bb1e5  check-grade-timer.sh
 86731b2196c0e53863652c9f9698ada1  check-index-rows.sh
 de356dd9abbe981f75cb68d7118f86ec  check-manifest.sh
@@ -42,6 +42,7 @@ b35ad32890834b68ab0e206f8f58f535  systemd/hermes-wal-unlink-watch.service
 94daec2cc9a7d250acbf6097fbd58a9e  test-actor-err-labels.py
 88ab9035620fe2688b84d3d71336c09a  test-grader-mixed-db.sh
 0209449fe9f0d3dbdbc89c8e87a91a75  test-live-turns-cgroup.py
+03664c592200a9cd03d81dd209363f7b  test-record-coords.sh
 bcfaae45a7431097906c5ffd2836d1c9  test-verify-skip-path-arm.sh
 78bbb0c2ff292c89a908bb122036dab5  test-waiter-e2e.sh
 6053951e1ed0091e00757c342f23f127  test-wal-class.sh
