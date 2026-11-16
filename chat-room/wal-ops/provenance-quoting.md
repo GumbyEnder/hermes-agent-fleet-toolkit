@@ -1567,7 +1567,7 @@ distance between the graded commit and the newest published one, not the health 
 tree. Grading an old commit with a mirror arm open is an anachronism, not a defect: it needs
 `mirror=stale-by-tip` (a NOTE keyed on head != published head), never a FAIL.
 
-## A window has two ends, both are slots, and every slot label needs its date (measured 2026-11-16 00:2x, 77 `pairsplit2-*.log`)
+## A window has two ends, both are slots, and every slot label needs its date (measured 2026-11-16 00:20-00:45 -0500, 77 `pairsplit2-*.log`, HEAD `31cedba`)
 
 The witnessed ladder, enumerated rather than eyeballed:
 
@@ -1587,7 +1587,10 @@ every label. **Do not read that gap as a 34m31s rotation.** `21:03:06 - 20:28:35
 slot that never existed: `ls pairsplit2-20261115T202835.log` is empty, while the journal shows seven
 ticks, 19:30:00 through 20:00:00, announcing `# deferred: next slot 2026-11-15T20:28:33` and the
 20:05:00 tick recomputing to `next slot 2026-11-15T21:03:04` because the bus MainPID had changed
-(3230257, start 20:03:04 EST). The slot formula is recomputed from `ExecMainStartTimestamp` on
+(3230257, start 20:03:04 EST). The slot second was not idle: the watcher logged `CLOSE_WRITE` on
+`room.db-wal` at `20:28:30.368777` (PID 1011876), and the only `20:28:33` string in the 77 logs is
+the 11-14 header -- so "no activity" and "no log" are different sentences. The slot formula is
+recomputed from `ExecMainStartTimestamp` on
 every tick, so a bus restart **strands an already-announced slot** — it is neither captured nor
 deferred and no line ever says it was missed. A grid derived from slot labels alone records that as
 a missed capture plus a tidy 34m31s rotation; both would be wrong. Quote the journal's
@@ -1596,9 +1599,15 @@ deferred/captured pair with the labels.
 `fd232d78`'s west slot is 7m14s after `d06857c` (commit time 23:21:21); its east margin is 16m27s on
 the commit clock (`4cdfa20` 08:45:02) or 17m21.641375s on the mtime clock (`08:45:56.641375`) — the
 often-quoted 17m21s is a truncation, and mixing the two clocks in one sentence is how "exact" stops
-being exact. `3bf2bbc6`'s east slot is 52m46s before `d06857c`.
+being exact. `3bf2bbc6`'s east slot is 52m46s before `d06857c`. All eight margins, commit-clock and
+label-to-label, so none has to be recomputed by a reader: `e8dafb6c` west 44m18s (`14f9f9c`
+18:44:17), east 11m39s (`65f2048` 20:40:14); `3bf2bbc6` west 48m21s, east 52m46s; `fd232d78` west
+7m14s, east 16m27s (17m21.641375s on the mtime clock); `4a46ccc3` west 42m45s to the label `09:28:35`
+and 42m43s to its slot `09:28:33` -- the same field choice as the 42m3x line, one paragraph down --
+east open. Four blobs, four different east margins: a single "the gap between the blob and its slot"
+is not a quantity this grid has.
 
-## A log filename is a CAPTURE stamp, not a slot — difference it against nothing (measured 2026-11-16 00:0x-00:2x, 77 logs)
+## A log filename is a CAPTURE stamp, not a slot — difference it against nothing (measured 2026-11-16 00:00-00:45 -0500, 77 logs, HEAD `31cedba`)
 
 Every witness header carries both fields: `# captured <ts>; slot <ts>`. Across all 77 logs the
 delta is **2.000s in 67, 6.000s in 8, 10.000s in 2** (all ten exceptions on 2026-11-13,
@@ -1616,20 +1625,37 @@ carries a whole day is a dropped date, not a fast rotation.
 
 ## "Resolved at <commit>", never "introduced at", and keep the whole commit set (same set)
 
-`4a46ccc3` is put in the tree by `61e21f2` (2026-11-15 08:45:50) and is still the path blob at HEAD
-`d924fd5` (2026-11-16 00:15:21, mode 100755) -- quoting a read-time HEAD such as `df55444`
+`4a46ccc3` is put in the tree by `61e21f2` (2026-11-15 08:45:50) and was the path blob at
+`d924fd5` (2026-11-16 00:15:21, mode 100755; it is also the path blob at `31cedba` 00:36:29) --
+say the commit you read it at, dated, and never "at HEAD": a read-time HEAD such as `df55444`
 (2026-11-15 22:50:21) as the binding commit binds nothing, and neither does quoting a HEAD that has
-since moved (`c6e5842` at 23:01:07 was the resolution point for eight commits). And one blob can be
+since moved (`c6e5842` at 23:01:07 was the resolution point for eight commits; `d924fd5` stood for
+one more; `31cedba` is a different read again). And one blob can be
 re-touched: `e8dafb6c` sits in `14f9f9c` (introducing) and
 `65f2048` (re-touch), so blob -> commit is a SET; say which resolution you mean. `fd232d78` is a set
 too -- `{4cdfa20, d06857c}` by `--find-object` -- but never read that set as the carriers.
 `--find-object` reports **change points**: added at `d06857c`, removed at `4cdfa20`. At `4cdfa20` the
 path blob is `faf8e2db` (100755), so there is no mode to quote for `fd232d78` at that commit — it is
 in no tree there. Carriers come from `git rev-parse <commit>:<path>`: `fd232d78` in 64 commits
-(`d06857c..4cdfa20^`, all 100644), `e8dafb6c` in 15 (`14f9f9c..65f2048^`), `3bf2bbc6` in 11
-(`65f2048..d06857c^`), `faf8e2db` in 1 (`4cdfa20`, 100755), `4a46ccc3` in 115
-(`61e21f2..d924fd5`, all 100755). Mode is a property of (commit, path), never of blob. The empty window is
-a legal answer and is clean when quoted as one: `faf8e2db` = `4cdfa20` 08:45:02 -> `61e21f2`
+(`d06857c^..4cdfa20^` inclusive, all 100644), `e8dafb6c` in 15 (`14f9f9c^..65f2048^`), `3bf2bbc6` in 11
+(`65f2048^..d06857c^`), `faf8e2db` in 1 (`4cdfa20`, 100755), `4a46ccc3` in 115
+(`61e21f2^..d924fd5`, all 100755; 117 at `31cedba`). Mode is a property of (commit, path), never of blob.
+Two scope traps ride on those numbers. (1) `A..B^` alone returns one fewer than the inclusive span
+(63 for `fd232d78`) because it excludes its left end -- say inclusive or quote the range form with the
+count you computed. (2) The count is scoped to a REF, not to the repository: `--branches` gives
+`fd232d78` 65, because side-branch `ffdf9ac` (2026-11-15 04:31:06, `scan-arm-census`) carries the same
+blob and is not an ancestor of master. A count without its ref is a number that moves.
+
+The share cannot answer the mode question at all: `/mnt/nas` is mounted `file_mode=0644,nounix`, so
+`stat` on the NAS path reads `644` while the same bytes in a worktree read `755` and the git tree says
+`100755`. A mode quoted from the share is a MOUNT property; `ls-tree` is the only mode claim.
+
+One more 40-hex to label: `git cat-file blob fd232d78 | sha1sum` = `fd0633105b9932f8ea28aa4b3a3ec7159a6b3c9a`,
+24,063 B, md5 `2335ff8a`. That is the digest of the CONTENT and can never equal the object id, which
+hashes `blob 24063\0` plus that content. Same body, several strings -- name the column, or the reader
+pairs a correct byte count with a hash that does not exist.
+
+The empty window is a legal answer and is clean when quoted as one: `faf8e2db` = `4cdfa20` 08:45:02 -> `61e21f2`
 08:45:50, 48 seconds alive, 0 capturing slots, `grep -l` over 77 logs = 0.
 
 ## ino is stable within a lookup generation, not across one (measured on the CIFS share)
