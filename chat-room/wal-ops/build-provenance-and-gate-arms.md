@@ -326,6 +326,18 @@ HEAD does. It does move: this binding was written when HEAD was `61e21f2`, and b
 are ancestors, so `>= 4cdfa20` partitions artifacts exactly as `>= 61e21f2` would; `>= HEAD`
 partitions them by the reader's checkout.
 
+**The `# WITNESS` header is not a post-cutover marker, and the census must not partition on
+it.** Fourteen of the 62 pre-trailer captures carry a `# WITNESS ... md5` header and still end
+on `# flush-retry: <n> extra read(s)` — the 11-14T19:28 → 11-15T08:28 era, written before
+`4cdfa20` taught the file to speak. They carry three earlier byte-identities: `2335ff8a…` ×10,
+`17a40c53…` ×2, `a33ea3e6…` ×2. Partitioning on the header rather than on the trailer
+therefore mis-splits the census by 14, and in the dangerous direction — it files a run that
+never wrote a verdict as post-cutover. `6c543893…` is a discriminator only because it is the
+*current* byte-identity, and it is one both ways: 16 of 78 captures carry it, all 16
+trailer-bearing and none of the 62 without a trailer (re-measured 2026-11-16 06:59Z). Read
+both signals: the header md5 says *which bytes ran*, the trailer says *whether the run reached
+its end*.
+
 **Pre-trailer (`< 4cdfa20`) — the last line is a marker of its era, and the verdict comes
 from the journal.** `tail -1` over the 62 pre-trailer captures on disk at 2026-11-16 06:44Z
 gives three classes: 42 `# keeper ` (zero-retry), 18 `# flush-retry:` (present only when
