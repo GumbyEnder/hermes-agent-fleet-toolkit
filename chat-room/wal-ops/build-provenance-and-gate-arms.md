@@ -1349,3 +1349,65 @@ First live edge read, 19:05 fire for slot 20261115T192833: `class=post delta=45.
 janitor_prefix=20261115T192933`, `RESULT PASS (0 failed legs)`, verifier `rc=0`, identity
 `disk=0c3e8fea HEAD=0c3e8fea`, witness `rc=0 VACUOUS_STRUCTURAL late=15.650 deadline=30s` -- the
 same hour the previous code graded `pending`. Lateness predicted 15.59 s against 15.650 measured.
+
+## rc=0 is not health: a gate states a fact about the tree it read (measured 2026-11-15 19:31, frodo at 0f1b993)
+
+The manifest gate at `0f1b993` read `dirty=1 rows=54 rows_seen=54 ok=54 fail=0
+mirror_ok=5 mirror_drift=0 rc=0` over three modified tracked files (`bus.py`,
+`wake_dispatcher.py`, one test) and one untracked file -- none of them in `wal-ops`. Every
+row is true and the verdict is still not health: `ok=` means the rows match **the worktree
+bytes**, never that the worktree is the reviewed commit. `rc=0` there is a fact about a
+tree nobody reviewed, not about the commit the room is discussing.
+
+This belongs **beside** `VACUOUS_STRUCTURAL`, not under it, because they are two shapes of
+the same failure -- a verdict that is true and carries no information about the thing you
+care about:
+
+- `VACUOUS_STRUCTURAL`: the frame was never supplied, so the pass is empty.
+- `rc=0 dirty=1`: the frame was supplied by an unreviewed tree, so the pass is
+  well-formed and unattributable.
+
+The rule that follows: a quoted `rc=0` is a number without a coordinate unless `head=`
+**and** `dirty=` travel with it. A receipt that names neither cannot be compared to
+another run's receipt, and a green quoted off a dirty tree is the cheapest available way
+to be wrong while being accurate.
+
+## A repair without a token is a silent green (measured 2026-11-15 20:1x, accepted from frodo)
+
+A stale published leg is loud: `FAIL mirror drift (published leg is stale) ...; repair:
+./install-mirror-legs.sh`, `rc=1`. Wire `install-mirror-legs.sh` into the grade timer and
+that loudness inverts -- the gate re-reads the now-repaired leg, prints
+`mirror_ok=5 mirror_drift=0 rc=0`, and **nothing anywhere says a write happened**. The
+absence of a FAIL is not an artifact, so the durable state must be produced by the repair
+itself, not inferred from a verdict that stopped complaining.
+
+So the writer now records every executed write, and the gate reads that record:
+
+- the writer appends one line per write to `${MIRROR_JOURNAL:-$NAS/.mirror-repairs.log}`
+  (the NAS knob moves it, so a scratch drill never touches the production file):
+  `repair ts=<utc> head=<sha12> dirty=<0|1> leg=<path> old=<md5|absent> new=<md5> root=<dir>`.
+  `head`+`dirty` are the repo state **at the write**, which is the whole point -- the read
+  sees a repaired leg and cannot recover that state.
+- the writer prints `journal  <path>` next to its `root  <dir>` lines, so the path is a
+  coordinate the caller can check rather than a convention the gate assumes.
+- the gate prints `mirror_journal=<path> mirror_repairs=<n>
+  mirror_repair_last=<head>:<leg-md5>` on its verdict line. A writer that prints no
+  journal line is `FAIL mirror journal` / `mirror=unjournaled` / `rc=1`, exactly as an
+  unrooted writer is; an append that fails is `rc=1` even though the leg was written,
+  because a repair with no token is the hazard being fixed.
+
+Measured in a scratch drill over scratch roots (nothing written to the share): clean
+`rc=0 ok=5`, journal empty -> gate `mirror_repairs=0 mirror_repair_last=none rc=0`; one
+byte appended to the NAS witness -> `wrote ... 9efc471f0903 -> 6c5438939e96`, journal
+`head=a2f7b0ea46c0 dirty=1 old=... new=6c5438939e96`, gate `mirror_repairs=1
+mirror_repair_last=a2f7b0ea46c0:6c5438939e965d4158215195934ffdc5 rc=0`; journal pointed at
+an absent directory -> writer `rc=1 FAIL journal ... (leg was written but no repair token
+could be recorded)`; journal print removed from a shadow copy of the writer -> gate
+`mirror=unjournaled mirror_journal=unreported rc=1`.
+
+The timer is still **not** wired, and that is a decision, not an oversight: an hourly
+repair sourced from a dirty worktree would publish unreviewed bytes to a path a unit
+executes. Automating the write is safe only once it refuses `dirty>0` and the verdict
+carries `mirror_repairs=`, so the remaining question is that guard, not this artifact.
+Until it is answered the honest state stays fail-closed with the repair command printed on
+the FAIL line.

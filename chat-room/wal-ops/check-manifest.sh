@@ -118,6 +118,7 @@ rm -rf "$rs_tmp"
 # mirror_root=unreported and rc=1: an unread coordinate cannot pass, for the same
 # reason an unread contract cannot pass.
 m_ok=0; m_drift=0; m_skip=0; m_state=measured; m_roots=unreported
+m_journal=unreported; m_repairs=0; m_last=none
 if [ -x ./install-mirror-legs.sh ]; then
   # REQUIRE_LEGS=1 pinned: an inherited REQUIRE_LEGS=0 is a rehearsal opt-out and must
   # not be able to turn this gate's absent-directory FAIL back into a silent skip.
@@ -128,6 +129,25 @@ if [ -x ./install-mirror-legs.sh ]; then
     echo "FAIL mirror coordinate (writer printed no 'root  <dir>' line: the directory this run measured is unknown, so its verdict cannot be attributed to a share)"
     rc=1
     [ "$m_state" = measured ] && m_state=unrooted
+  fi
+  # THE REPAIR TOKEN. A writer that repairs a leg and records nothing makes a stale leg
+  # and a healthy one print the same verdict: the FAIL disappears and only the repair's
+  # absence-of-a-FAIL is left, which is not an artifact. So the journal path is a
+  # coordinate like mirror_root -- no journal line is a FAIL -- and every repair line in
+  # it is counted onto the verdict, with the head and leg hash of the last one. A repair
+  # is a token on the line, never an inferred state.
+  m_journal=$(printf '%s\n' "$m_out" | sed -n 's/^journal  //p' | head -1)
+  [ -n "$m_journal" ] || m_journal=unreported
+  if [ "$m_journal" = unreported ]; then
+    echo "FAIL mirror journal (writer printed no 'journal  <path>' line: a repair it made would be unrecorded, so mirror_ok cannot distinguish repaired from never-stale)"
+    rc=1
+    [ "$m_state" = measured ] && m_state=unjournaled
+  elif [ -f "$m_journal" ]; then
+    m_repairs=$(grep -c '^repair ' "$m_journal" 2>/dev/null || true)
+    m_repairs=${m_repairs:-0}
+    m_last=$(grep '^repair ' "$m_journal" 2>/dev/null | tail -1 \
+             | sed -n 's/.* head=\([^ ]*\).* new=\([^ ]*\).*/\1:\2/p')
+    [ -n "$m_last" ] || m_last=none
   fi
   m_ok=$(printf '%s\n' "$m_out" | grep -c '^ok   ')
   m_drift=$(printf '%s\n' "$m_out" | grep -c '^dry  would write')
@@ -177,5 +197,5 @@ else
   echo "FAIL mirror legs: ./install-mirror-legs.sh is not executable -- the published-leg contract is not readable"
 fi
 
-echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_root=$m_roots mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip rc=$rc"
+echo "manifest gate: head=$sha dirty=$dirty manifest_oid=$moid rows=$rows rows_seen=$seen ok=$ok fail=$fail rowset=$rs_state unrostered=$rs_unrostered missing=$rs_missing mirror=$m_state mirror_root=$m_roots mirror_ok=$m_ok mirror_drift=$m_drift mirror_skip=$m_skip mirror_journal=$m_journal mirror_repairs=$m_repairs mirror_repair_last=$m_last rc=$rc"
 exit $rc

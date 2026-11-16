@@ -68,6 +68,22 @@ NAS=${NAS:-/mnt/nas/host-ops/agent-chat}
 # drill would write the production dir -- the "trustworthy 4/0 for the wrong root" hazard
 # this table exists to kill, re-armed. One knob (NAS) still moves every leg.
 HOSTOPS=${HOSTOPS:-$(dirname "$NAS")}
+# --- THE REPAIR JOURNAL -------------------------------------------------------
+# A repair is a state change; a repair nobody can see is indistinguishable from a leg
+# that never went stale. Measured 2026-11-15 (frodo, accepted): wiring this writer into
+# the grade timer without an artifact turns a LOUD stale leg (rc=1, FAIL + repair line)
+# into a SILENT green one -- the gate re-reads the repaired leg, prints mirror_ok=5, and
+# nothing anywhere says a write happened. So every executed write appends one line to a
+# journal that the gate reads and prints a count of:
+#     repair ts=<utc> head=<sha12> dirty=<0|1> leg=<path> old=<md5|absent> new=<md5> root=<dir>
+# head+dirty are the repo state AT THE WRITE, not at the read: that is the whole point.
+# The journal lives beside the legs ($NAS/.mirror-repairs.log) so the NAS knob moves it
+# with everything else and a scratch drill never touches the production file.
+# A failed append is rc=1 -- a write with no token is exactly the silent-green hazard.
+JOURNAL=${MIRROR_JOURNAL:-$NAS/.mirror-repairs.log}
+HOSTSHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then HOSTDIRTY=1; else HOSTDIRTY=0; fi
+
 LEG_TABLE="
 grade-slot.sh|$HOME/.local/bin:$NAS
 run-gate-logged.sh|$HOSTOPS
@@ -98,6 +114,9 @@ roots=$(printf '%s\n' "$LEG_TABLE" | sed '/^[[:space:]]*$/d' \
 while IFS= read -r d; do
   [ -n "$d" ] && echo "root  $d"
 done <<< "$roots"
+# The journal is a second coordinate: it says WHERE the repair token would land, so the
+# gate can read the same file this writer appends to instead of assuming a path.
+echo "journal  $JOURNAL"
 
 rc=0
 would=0
@@ -136,7 +155,16 @@ while IFS='|' read -r f legs; do
     # the destination in place (the in-place hazard is documented at the top of grade-slot.sh).
     tmp="$d/.$f.tmp-$$"
     if cp "$src" "$tmp" && mv -f "$tmp" "$m"; then
-      echo "wrote $m  ${have:-absent} -> $(md5sum "$m" | awk '{print $1}')"
+      newh=$(md5sum "$m" | awk '{print $1}')
+      echo "wrote $m  ${have:-absent} -> $newh"
+      # The token. If it cannot be written the repair is invisible, so the run fails:
+      # fail-closed is the same rule as an absent leg dir, applied to the artifact.
+      if ! printf 'repair ts=%s head=%s dirty=%s leg=%s old=%s new=%s root=%s\n' \
+             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$HOSTSHA" "$HOSTDIRTY" "$m" \
+             "${have:-absent}" "$newh" "$d" >> "$JOURNAL"; then
+        echo "FAIL journal $JOURNAL (leg was written but no repair token could be recorded)" >&2
+        rc=1
+      fi
     else
       echo "FAIL write $m" >&2 ; rm -f "$tmp" ; rc=1
     fi
