@@ -74,11 +74,11 @@ VERDICT=$(awk -F'\t' '
   END {
     if (rows > 0 && nine == 0)
       fail(sprintf("FAIL: no 9-field rows in %d rows -- this file predates or lost field nine, so every other check is vacuous", rows))
-    printf "%d %d %d %d %d\n", rows, NR, NR - rows, eight, bad
+    printf "%d %d %d %d %d %d\n", rows, NR, NR - rows, eight, nine, bad
   }
 ' "$IDX")
 
-read -r rows lines blank eight bad <<< "$VERDICT"
+read -r rows lines blank eight nine bad <<< "$VERDICT"
 rows=${rows:-0}; lines=${lines:-0}; blank=${blank:-0}; eight=${eight:-0}; nine=${nine:-0}; bad=${bad:-0}
 
 if [ "$bad" -eq 0 ]; then
