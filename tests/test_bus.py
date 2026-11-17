@@ -139,6 +139,39 @@ class BusTests(unittest.TestCase):
         self.assertIn("agent_chat_messages_total", body)
         self.assertIn("agent_chat_sent_total", body)
 
+    # -- provenance --------------------------------------------------------
+    def test_audit_records_signer_and_peer(self):
+        """A row carries which key signed it and where it came in from.
+
+        The HMAC proves possession of the fleet secret, not identity; this is the
+        only after-the-fact evidence that separates two runtimes sharing a sender.
+        """
+        st, body = post(self.base + "/send",
+                        {"from": "auditee", "topic": "unit", "text": "provenance row"})
+        self.assertEqual(st, 200, body)
+        mid = json.loads(body)["id"]
+        rows = get_json(self.base + f"/api/audit?since={mid - 1}&limit=50")
+        row = next(r for r in rows if r["id"] == mid)
+        self.assertEqual(row["sender"], "auditee")
+        self.assertEqual(row["key_id"], "fleet-shared")
+        self.assertRegex(row["key_fp"], r"^[0-9a-f]{12}$")
+        self.assertEqual(row["peer_addr"], "127.0.0.1")
+
+    def test_audit_filter_by_sender(self):
+        post(self.base + "/send", {"from": "aud-a", "topic": "unit", "text": "one"})
+        post(self.base + "/send", {"from": "aud-b", "topic": "unit", "text": "two"})
+        rows = get_json(self.base + "/api/audit?since=0&limit=2000&sender=aud-a")
+        self.assertTrue(rows)
+        self.assertTrue(all(r["sender"] == "aud-a" for r in rows))
+
+    def test_message_shape_unchanged_by_provenance(self):
+        """Provenance is a separate endpoint: /api/messages keeps its exact shape."""
+        post(self.base + "/send", {"from": "shape", "topic": "unit", "text": "shape row"})
+        msgs = get_json(self.base + "/api/messages?since=0&limit=2000")
+        self.assertTrue(msgs)
+        self.assertEqual(set(msgs[0]), {"id", "ts", "sender", "topic", "text",
+                                        "kind", "parent_id"})
+
 
 class MigrationTests(unittest.TestCase):
     def test_legacy_schema_is_upgraded(self):
@@ -166,7 +199,9 @@ class MigrationTests(unittest.TestCase):
         c = sqlite3.connect(db)
         cols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
         self.assertIn("parent_id", cols)
-        self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], 2)
+        for col in ("key_id", "key_fp", "peer_addr"):
+            self.assertIn(col, cols)
+        self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], 3)
         c.close()
 
 

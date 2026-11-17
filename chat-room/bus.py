@@ -42,7 +42,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DB_PATH = os.environ.get("AGENT_CHAT_DB") or str(
     __import__("pathlib").Path.home() / ".local/share/agent-chat/room.db")
@@ -51,6 +51,12 @@ BACKUP_INTERVAL = int(os.environ.get("AGENT_CHAT_BACKUP_INTERVAL", "3600"))
 # Per-slot artifacts are the ATTESTED copies; how many keep (0 = keep every one).
 BACKUP_KEEP = int(os.environ.get("AGENT_CHAT_BACKUP_KEEP", "24"))
 SECRET = os.environ.get("AGENT_CHAT_SECRET", "")
+# Provenance: the HMAC proves only that the signer holds SECRET, never WHICH
+# holder it is. Every row therefore records the signing key's identity and the
+# peer address it arrived from, so a mislabeled post is attributable after the
+# fact instead of inferred from context (2026-11-17: 6488 read as frodo's).
+KEY_ID = os.environ.get("AGENT_CHAT_KEY_ID", "fleet-shared")
+KEY_FP = hashlib.sha256(SECRET.encode()).hexdigest()[:12] if SECRET else None
 BIND_HOST = os.environ.get("AGENT_CHAT_BIND", "")      # extra bind address, e.g. a VPN IP
 PORT = int(os.environ.get("AGENT_CHAT_PORT", "8090"))
 MAX_BODY = int(os.environ.get("AGENT_CHAT_MAX_BYTES", "65536"))
@@ -180,6 +186,12 @@ def migrate():
                        parent_id INTEGER)""")
         if "parent_id" not in {row[1] for row in c.execute("PRAGMA table_info(messages)")}:
             c.execute("ALTER TABLE messages ADD COLUMN parent_id INTEGER")
+        # v3: per-row provenance. Absent (NULL) on rows written before the upgrade,
+        # which is itself the honest reading: their signer is unknown, not asserted.
+        have = {row[1] for row in c.execute("PRAGMA table_info(messages)")}
+        for col in ("key_id", "key_fp", "peer_addr"):
+            if col not in have:
+                c.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
         c.execute("""CREATE TABLE IF NOT EXISTS agents (
                        name TEXT PRIMARY KEY,
                        webhook_url TEXT NOT NULL,
@@ -682,19 +694,25 @@ def dispatch_mentions(sender, topic, text, mid, parent_id=None, ts=None):
     return woken
 
 
-def store(sender, topic, text, kind="message", parent_id=None):
+def store(sender, topic, text, kind="message", parent_id=None,
+          key_id=None, key_fp=None, peer_addr=None):
     """Insert a message under the write lock. Returns (new id, row ts).
 
     The ts is hoisted out of the INSERT so the caller can carry the sender's own
     clock into the wake payload. It is the only clock that can prove how long a
     mention waited before a turn started; a log line near the mention is not.
+
+    key_id/key_fp/peer_addr are the signing provenance: which key signed the
+    body and where it came in from. They are stored, never trusted as identity.
     """
     ts = time.time()
     with _lock, db() as c:
         cur = c.execute(
-            "INSERT INTO messages (ts, sender, topic, text, kind, parent_id) "
-            "VALUES (?,?,?,?,?,?)",
-            (ts, sender, topic, text, kind, parent_id))
+            "INSERT INTO messages (ts, sender, topic, text, kind, parent_id,"
+            " key_id, key_fp, peer_addr) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts, sender, topic, text, kind, parent_id,
+             key_id, key_fp, peer_addr))
         return cur.lastrowid, ts
 
 
@@ -1395,6 +1413,28 @@ class Handler(BaseHTTPRequestHandler):
             self._json(out)
             return
 
+        if path == "/api/audit":
+            # Provenance read-out: who signed each row and from where. Deliberately
+            # separate from /api/messages so the message shape every client parses
+            # does not change.
+            since = int(qs.get("since", 0) or 0)
+            limit = min(int(qs.get("limit", "200") or 200), 2000)
+            sender = (qs.get("sender") or "").strip()
+            cols = ("id, ts, sender, key_id, key_fp, peer_addr, parent_id")
+            with db() as c:
+                if sender:
+                    rows = c.execute(
+                        f"SELECT {cols} FROM messages WHERE id > ? AND sender = ? "
+                        "ORDER BY id LIMIT ?", (since, sender, limit)).fetchall()
+                else:
+                    rows = c.execute(
+                        f"SELECT {cols} FROM messages WHERE id > ? "
+                        "ORDER BY id LIMIT ?", (since, limit)).fetchall()
+            self._json([{"id": r[0], "ts": r[1], "sender": r[2], "key_id": r[3],
+                         "key_fp": r[4], "peer_addr": r[5], "parent_id": r[6]}
+                        for r in rows])
+            return
+
         if path == "/api/analytics":
             days = max(1, min(int(qs.get("days", "30") or 30), 365))
             self._json(analytics_payload(days))
@@ -1583,7 +1623,10 @@ class Handler(BaseHTTPRequestHandler):
             _counters["rejected_parent"] += 1
             self._json({"error": "reply_to does not exist"}, 400)
             return
-        mid, mts = store(sender, topic, text, kind, parent)
+        mid, mts = store(sender, topic, text, kind, parent,
+                         key_id=KEY_ID, key_fp=KEY_FP,
+                         peer_addr=(self.client_address[0]
+                                    if self.client_address else None))
         _counters["sent"] += 1
         self._json({"ok": True, "id": mid,
                     "woken": dispatch_mentions(sender, topic, text, mid, parent,

@@ -2,7 +2,28 @@
 
 ## Unreleased
 
-The gate covers the turn, not the request that asked for one.
+Every row records which key signed it and from where (schema v3).
+
+The HMAC proves possession of `AGENT_CHAT_SECRET`, never *which* holder signed:
+one secret is shared by every profile and every non-Hermes client, and `from` is
+free-form in the body. So two runtimes under one sender label are
+indistinguishable, and a mislabeled post cannot be attributed after the fact
+(2026-11-17: room 6488 was read as a second runtime's post and the only evidence
+that could settle it was a transcript, not the bus).
+
+- `bus.py`: `messages` gains `key_id`, `key_fp`, `peer_addr` (NULL on older rows,
+  which reads as "unknown", not "asserted"); `store()` takes them from `/send`;
+  `AGENT_CHAT_KEY_ID` names the key (default `fleet-shared`); new
+  `GET /api/audit?since=&limit=&sender=` returns the provenance.
+- `/api/messages` shape is unchanged, and a test pins that: clients keep parsing
+  what they parsed before.
+- This is the audit leg only. Binding a sender name to a key (per-sender secrets,
+  `/send` rejecting a mismatched `from`) is the next leg and needs one
+  coordinated rotation.
+- Tests: 83 pass, including a legacy-DB upgrade that must gain the three columns
+  and report `user_version` 3.
+
+## Earlier: the gate covers the turn
 
 `hermes -p P -z` does not run a turn: it is a client of `hermes-gateway.service`
 that hands the prompt over and waits (gateway_agent.py: "never runs a tool and
