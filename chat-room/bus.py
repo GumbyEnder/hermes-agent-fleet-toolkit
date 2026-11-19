@@ -759,13 +759,31 @@ def daily_usage(usage, days):
     return out
 
 
+def day_keys(days):
+    """Local-date labels for the last `days` days, oldest first, gaps included.
+
+    Built with datetime arithmetic rather than `start + n*86400` so a DST
+    transition inside the window does not duplicate or skip a calendar day.
+    """
+    today = datetime.date.today()
+    return [(today - datetime.timedelta(days=days - 1 - i)).isoformat()
+            for i in range(days)]
+
+
 def room_analytics(c, days):
     since = time.time() - days * 86400
-    per_day = c.execute(
+    keys = day_keys(days)
+    key_set = set(keys)
+    # per-day volume, zero-filled: a quiet day is a data point, not a gap.
+    raw_day = c.execute(
         "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, COUNT(*) n "
-        "FROM messages WHERE ts >= ? GROUP BY d ORDER BY d", (since,)).fetchall()
+        "FROM messages WHERE ts >= ? GROUP BY d", (since,)).fetchall()
+    day_count = {r[0]: r[1] for r in raw_day}
+    per_day = [{"date": k, "messages": day_count.get(k, 0)} for k in keys]
+
     by_sender = c.execute(
-        "SELECT sender, COUNT(*) n, MAX(ts) last, SUM(LENGTH(text)) chars "
+        "SELECT sender, COUNT(*) n, MAX(ts) last, MIN(ts) first, SUM(LENGTH(text)) chars, "
+        "  COUNT(parent_id) replies "
         "FROM messages WHERE ts >= ? GROUP BY sender ORDER BY n DESC LIMIT 40",
         (since,)).fetchall()
     by_topic = c.execute(
@@ -777,13 +795,63 @@ def room_analytics(c, days):
     threads = c.execute(
         "SELECT COUNT(DISTINCT parent_id) FROM messages WHERE parent_id IS NOT NULL").fetchone()[0]
     day_today = time.strftime("%Y-%m-%d")
-    today = sum(r[1] for r in per_day if r[0] == day_today)
+    today = day_count.get(day_today, 0)
+
+    # Volume split by speaker over time: the "who is talking" series.
+    lead = [r[0] for r in by_sender[:6]]
+    per_day_sender = c.execute(
+        "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, sender, COUNT(*) n "
+        "FROM messages WHERE ts >= ? GROUP BY d, sender", (since,)).fetchall()
+    grid = {name: dict.fromkeys(keys, 0) for name in lead}
+    for d, sender, n in per_day_sender:
+        if d in key_set and sender in grid:
+            grid[sender][d] = n
+    series = [{"sender": name, "counts": [grid[name][k] for k in keys]} for name in lead]
+    other = [max(0, (day_count.get(k, 0)) - sum(grid[s][k] for s in lead)) for k in keys]
+    if any(other):
+        series.append({"sender": "other", "counts": other})
+
+    # Conversation rhythm: which hours the room actually speaks in.
+    per_hour = [0] * 24
+    for (h, n) in c.execute(
+            "SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER) h, "
+            "COUNT(*) n FROM messages WHERE ts >= ? GROUP BY h", (since,)):
+        if 0 <= h < 24:
+            per_hour[h] = n
+
+    # Reply graph: who answers whom. Threads are stored as parent_id, so this
+    # is a real measured edge, not a proximity guess.
+    pair_rows = c.execute(
+        "SELECT p.sender, m.sender, COUNT(*) n FROM messages m "
+        "JOIN messages p ON m.parent_id = p.id "
+        "WHERE m.ts >= ? GROUP BY p.sender, m.sender ORDER BY n DESC LIMIT 24",
+        (since,)).fetchall()
+    starts = {r[0]: r[1] for r in c.execute(
+        "SELECT sender, COUNT(*) FROM messages WHERE ts >= ? AND parent_id IS NULL "
+        "GROUP BY sender", (since,))}
+
+    active = sum(1 for r in by_sender if r[1] > 0)
+    peak = max(per_day, key=lambda r: r["messages"]) if per_day else {"date": None, "messages": 0}
     return {
         "days": days, "since": since, "total": total, "first_ts": first, "last_ts": last,
         "window_messages": window, "today_messages": today, "threads": threads,
-        "per_day": [{"date": r[0], "messages": r[1]} for r in per_day],
+        "dates": keys,
+        "per_day": per_day,
+        "per_day_senders": series,
+        "per_hour": per_hour,
+        "reply_graph": [{"from": r[0], "to": r[1], "messages": r[2]} for r in pair_rows],
+        "stats": {
+            "avg_per_day": round(window / days, 1) if days else 0,
+            "peak": peak,
+            "active_senders": active,
+            "days_with_traffic": sum(1 for r in per_day if r["messages"] > 0),
+            "replies": sum(r[5] or 0 for r in by_sender),
+        },
         "by_sender": [{"sender": r[0], "messages": r[1], "last_ts": r[2],
-                       "chars": r[3]} for r in by_sender],
+                       "first_ts": r[3], "chars": r[4], "avg_chars":
+                       round((r[4] or 0) / r[1], 1) if r[1] else 0,
+                       "replies": r[5] or 0, "threads_started": starts.get(r[0], 0)}
+                      for r in by_sender],
         "by_topic": [{"topic": r[0], "messages": r[1]} for r in by_topic],
     }
 
@@ -1029,7 +1097,7 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
  <span class="brand"><span class="dot"></span>Agent Chat Room</span>
  <div class="tabs"><button class="tab on" data-tab="room">room</button><button class="tab" data-tab="analytics">analytics</button></div>
  <span class="spacer"></span>
- <span class="links"><a href="/api/messages?telemetry=1">json</a><span>&middot;</span><a href="/metrics">metrics</a><span>&middot;</span><span id="count" class="count"></span></span>
+ <span class="links"><a href="/analytics">analytics page</a><span>&middot;</span><a href="/api/messages?telemetry=1">json</a><span>&middot;</span><a href="/metrics">metrics</a><span>&middot;</span><span id="count" class="count"></span></span>
 </div>
 <div class="shell">
 <main>
@@ -1263,6 +1331,243 @@ function renderAnalytics(){
 window.addEventListener('resize',()=>document.documentElement.style.setProperty('--composeH',composeH()+'px'));
 loadAgents();boot();setInterval(()=>{if(tab==='analytics'){if(Date.now()-aAt>60000)loadAnalytics()}else if(!searching)poll()},3000);
 </script></body></html>""".replace("__TOKEN__", token).replace("__SENDER__", sender)
+
+
+# --- analytics page -------------------------------------------------------
+
+ANALYTICS_HTML = """
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Room — Analytics</title><link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+:root{
+ --bg:#0a0b0d;--panel:#101318;--line:#1b1f26;--text:#e9ebee;--dim:#9aa2ad;--dimmer:#6d7480;
+ --accent:#7aa2f7;--ok:#7fd1a0;--warn:#e0b341;
+ --r:9px;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+ --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14.5px/1.55 var(--sans);
+ -webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:2px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#232830;border-radius:10px;border:3px solid var(--bg)}
+.app{max-width:1220px;margin:0 auto;padding:0 20px 48px}
+.top{display:flex;align-items:center;gap:12px;padding:16px 0 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+.brand .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--ok);margin-right:8px;vertical-align:1px}
+.top .spacer{flex:1}
+.tabs{display:flex;gap:2px;margin-left:16px}
+.tab{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--dim);
+ font:11px var(--mono);letter-spacing:.12em;text-transform:uppercase;padding:4px 10px 3px;cursor:pointer}
+.tab.on{color:var(--text);border-bottom-color:var(--accent)}
+.tab:hover{color:var(--text);text-decoration:none}
+.top select{height:26px;background:transparent;border:1px solid var(--line);border-radius:7px;
+ color:var(--dim);font:12px var(--mono);padding:0 8px}
+.top select:focus{outline:none;border-color:#2f4a72;color:var(--text)}
+.asof{font:11px var(--mono);color:var(--dimmer)}
+h2{font:10px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--dimmer);
+ margin:26px 0 10px;font-weight:400}
+h2 .hint{letter-spacing:0;text-transform:none;color:#4e5560}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.kpi{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;background:var(--panel)}
+.kpi span{font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dimmer)}
+.kpi b{display:block;font:600 21px/1.2 var(--sans);margin:5px 0 3px;letter-spacing:-.01em}
+.kpi i{font:11px var(--mono);color:var(--dim);font-style:normal}
+figure{margin:0;border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;background:var(--panel)}
+figcaption{font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dimmer);margin-bottom:10px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.stackbox{height:130px;display:flex;align-items:flex-end;gap:3px;
+ background:repeating-linear-gradient(to top,#171b21 0 1px,transparent 1px 25%)}
+.sday{flex:1;display:flex;flex-direction:column-reverse;justify-content:flex-start;height:100%;min-width:0;position:relative}
+.sday i{display:block;width:100%;min-height:0}
+.sday:hover{outline:1px solid #33507a;outline-offset:1px}
+.axis{display:flex;gap:3px;margin-top:6px}
+.axis span{flex:1;font:9px var(--mono);color:var(--dimmer);text-align:center;overflow:hidden;white-space:nowrap}
+.legend{display:flex;gap:6px;flex-wrap:wrap;margin-top:11px}
+.lg{display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--line);
+ border-radius:6px;padding:2px 8px;font:11px var(--mono);color:var(--dim);cursor:pointer}
+.lg .sw{width:8px;height:8px;border-radius:2px;background:var(--c)}
+.lg.off{opacity:.35}
+.lg:hover{color:var(--text)}
+.legend .n{color:var(--dimmer)}
+.hours{display:flex;align-items:flex-end;gap:2px;height:96px}
+.hours .hb{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%}
+.hours .hb i{display:block;background:#2b3f60;border-radius:2px 2px 0 0;min-height:1px}
+.hours .hb:hover i{background:var(--accent)}
+.hours .hb span{font:8.5px var(--mono);color:var(--dimmer);text-align:center;margin-top:4px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+caption{caption-side:top;text-align:left;font:10px var(--mono);letter-spacing:.14em;
+ text-transform:uppercase;color:var(--dimmer);padding:0 0 9px}
+th{text-align:left;font:10px var(--mono);letter-spacing:.12em;text-transform:uppercase;
+ color:var(--dimmer);padding:0 8px 8px;border-bottom:1px solid var(--line);font-weight:400}
+td{padding:8px;border-bottom:1px solid #14181d;vertical-align:middle}
+td.num{font:12px var(--mono);color:var(--dim);text-align:right;font-variant-numeric:tabular-nums}
+.who{font-weight:600;color:var(--c,var(--text))}
+.share{height:4px;background:#1b2028;border-radius:3px;overflow:hidden;min-width:48px;margin-bottom:3px}
+.share i{display:block;height:100%;background:#3a5b88}
+.pct{font:10px var(--mono);color:var(--dimmer)}
+.spark{display:flex;align-items:flex-end;gap:1px;height:20px;width:96px}
+.spark i{flex:1;background:#3a5b88;border-radius:1px;min-height:1px}
+.list{display:grid;gap:7px;font-size:12.5px}
+.list .row2{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;
+ border-bottom:1px solid #14181d;padding-bottom:6px}
+.list .k{font:11.5px var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list .v{font:11.5px var(--mono);color:var(--text);white-space:nowrap}
+.list .row2 .bar{grid-column:1/-1;height:3px;background:#1b2028;border-radius:2px;overflow:hidden;margin-top:-2px}
+.list .row2 .bar i{display:block;height:100%;background:#2b3f60}
+.empty{border:1px dashed var(--line);border-radius:var(--r);padding:22px;text-align:center;
+ color:var(--dimmer);font:12px var(--mono)}
+.err{border:1px solid #4a2323;background:#1b1010;color:#ef8a8a;border-radius:var(--r);
+ padding:9px 12px;font:12px var(--mono)}
+@media(max-width:880px){.app{padding:0 14px 32px}.grid2{grid-template-columns:1fr}
+ .spark{display:none}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head><body><div class="app">
+<div class="top">
+ <span class="brand"><span class="dot"></span>Agent Chat Room</span>
+ <div class="tabs"><a class="tab" href="/">room</a><span class="tab on">analytics</span></div>
+ <span class="spacer"></span>
+ <label class="asof">range <select id="range">
+  <option value="7">7 days</option><option value="14">14 days</option>
+  <option value="30" selected>30 days</option><option value="90">90 days</option>
+  <option value="365">365 days</option></select></label>
+ <span class="asof" id="asof"></span>
+</div>
+<div id="root"><div class="empty">loading&hellip;</div></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+let days=30, data=null, hidden=new Set(), at=0;
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function hue(n){let h=0;for(const ch of String(n))h=(h*31+ch.charCodeAt(0))%360;return h}
+function col(n){return n==='other'?'hsl(0 0% 42%)':`hsl(${hue(n)} 48% 64%)`}
+function nf(n){n=Number(n)||0;if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';
+ if(n>=1e3)return (n/1e3).toFixed(n>=1e4?0:1)+'k';return String(Math.round(n))}
+function ago(ts){if(!ts)return '\\u2014';const s=(Date.now()/1000)-ts;if(s<90)return 'just now';
+ if(s<3600)return Math.round(s/60)+'m ago';if(s<86400)return Math.round(s/3600)+'h ago';
+ return Math.round(s/86400)+'d ago'}
+function shortDay(d){const p=d.split('-');return p[1]+'-'+p[2]}
+function longDay(d){const [y,m,dd]=d.split('-').map(Number);
+ return new Date(y,m-1,dd).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}
+async function load(){
+ $('asof').textContent='refreshing\\u2026';
+ try{
+  const r=await fetch('/api/analytics?days='+days);
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  data=await r.json();at=Date.now();render();
+ }catch(e){
+  $('root').innerHTML='<div class="err">analytics unavailable: '+esc(e.message||'fetch failed')+'</div>';
+  $('asof').textContent='';
+ }
+}
+function render(){
+ const d=data, room=d.room||{}, st=room.stats||{}, senders=room.by_sender||[];
+ if(!room.dates){$('root').innerHTML='<div class="empty">no data</div>';return}
+ const dates=room.dates, per=room.per_day||[], total=room.window_messages||0;
+ const grand=senders.reduce((a,s)=>a+(s.messages||0),0)||1;
+ const peak=st.peak||{};
+ const kpis=[
+  ['messages', nf(total), nf(days)+'-day window'],
+  ['today', nf(room.today_messages||0), room.today_messages?(nf(room.today_messages)+' so far'):'quiet so far'],
+  ['avg / day', nf(st.avg_per_day||0), 'peak '+nf(peak.messages||0)+(peak.date?' on '+shortDay(peak.date):'')],
+  ['speakers', nf(st.active_senders||0), (st.days_with_traffic||0)+' of '+days+' days active'],
+  ['threads', nf(room.threads||0), nf(st.replies||0)+' replies in window'],
+  ['all time', nf(room.total||0), 'since '+new Date((room.first_ts||0)*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})],
+ ];
+ const kpiHtml=kpis.map(k=>`<div class="kpi"><span>${k[0]}</span><b>${k[1]}</b><i>${esc(k[2])}</i></div>`).join('');
+
+ // ---- stacked daily volume by speaker
+ const series=(room.per_day_senders||[]).filter(s=>!hidden.has(s.sender));
+ const totals=dates.map((_,i)=>series.reduce((a,s)=>a+(s.counts[i]||0),0));
+ const maxT=Math.max(1,...totals);
+ const stack=dates.map((dt,i)=>{
+  const segs=series.map(s=>{
+   const v=s.counts[i]||0;if(!v)return '';
+   return `<i style="height:${(v/maxT*100).toFixed(2)}%;background:${col(s.sender)}" title="${esc(s.sender)} \\u00b7 ${v} on ${dt}"></i>`;
+  }).join('');
+  return `<div class="sday" title="${longDay(dt)} \\u00b7 ${totals[i]} messages">${segs}</div>`;
+ }).join('');
+ const showEvery=Math.max(1,Math.ceil(dates.length/10));
+ const axis=dates.map((dt,i)=>`<span>${(i%showEvery===0||i===dates.length-1)?shortDay(dt):''}</span>`).join('');
+ const legend=(room.per_day_senders||[]).map(s=>{
+  const tot=s.counts.reduce((a,b)=>a+b,0);
+  return `<button class="lg${hidden.has(s.sender)?' off':''}" data-s="${esc(s.sender)}" style="--c:${col(s.sender)}">
+   <span class="sw"></span>${esc(s.sender)} <span class="n">${nf(tot)}</span></button>`;
+ }).join('');
+
+ // ---- hour of day
+ const hours=room.per_hour||new Array(24).fill(0);
+ const maxH=Math.max(1,...hours);
+ const hourBars=hours.map((v,h)=>`<div class="hb" title="${String(h).padStart(2,'0')}:00 \\u00b7 ${v} messages">
+   <i style="height:${(v/maxH*100).toFixed(1)}%"></i><span>${h%3===0?String(h).padStart(2,'0'):''}</span></div>`).join('');
+ const busiest=hours.indexOf(maxH);
+
+ // ---- speakers table
+ const lead={};(room.per_day_senders||[]).forEach(s=>lead[s.sender]=s.counts);
+ const rows=senders.map(s=>{
+  const share=(s.messages||0)/grand*100;
+  const counts=lead[s.sender];
+  const spark=counts?`<div class="spark">${counts.map(v=>{const m=Math.max(1,...counts);
+    return `<i style="height:${Math.max(6,(v/m)*100)}%" title="${v}"></i>`}).join('')}</div>`:'';
+  return `<tr>
+   <td><span class="who" style="--c:${col(s.sender)}">${esc(s.sender)}</span></td>
+   <td class="num">${nf(s.messages||0)}</td>
+   <td><div class="share"><i style="width:${Math.max(share,1).toFixed(1)}%"></i></div><span class="pct">${share.toFixed(share>=10?0:1)}%</span></td>
+   <td>${spark}</td>
+   <td class="num">${nf(s.avg_chars||0)}</td>
+   <td class="num">${nf(s.threads_started||0)}</td>
+   <td class="num">${nf(s.replies||0)}</td>
+   <td class="num">${s.first_ts?ago(s.first_ts):'\\u2014'}</td>
+   <td class="num">${ago(s.last_ts)}</td></tr>`}).join('')
+  ||'<tr><td colspan="9" class="num">no traffic in window</td></tr>';
+
+ // ---- reply graph
+ const pairs=(room.reply_graph||[]).slice(0,10);
+ const maxP=Math.max(1,...pairs.map(p=>p.messages));
+ const pairHtml=pairs.map(p=>`<div class="row2">
+   <span class="k"><span style="color:${col(p.from)}">${esc(p.from)}</span> <span style="color:#4e5560">\\u2192</span> <span style="color:${col(p.to)}">${esc(p.to)}</span></span>
+   <span class="v">${nf(p.messages)}</span>
+   <span class="bar"><i style="width:${(p.messages/maxP*100).toFixed(1)}%"></i></span></div>`).join('')
+  ||'<div class="row2"><span class="k">no threaded replies yet</span></div>';
+
+ // ---- topics
+ const topics=(room.by_topic||[]).slice(0,10);
+ const maxTp=Math.max(1,...topics.map(t=>t.messages));
+ const topicHtml=topics.map(t=>`<div class="row2"><span class="k">#${esc(t.topic)}</span>
+   <span class="v">${nf(t.messages)}</span>
+   <span class="bar"><i style="width:${(t.messages/maxTp*100).toFixed(1)}%"></i></span></div>`).join('')
+  ||'<div class="row2"><span class="k">no traffic</span></div>';
+
+ $('root').innerHTML=`
+  <div class="kpis">${kpiHtml}</div>
+  <h2>conversation volume <span class="hint">\\u2014 messages per day, split by speaker</span></h2>
+  <figure><figcaption>daily volume</figcaption>
+   <div class="stackbox">${stack}</div><div class="axis">${axis}</div>
+   <div class="legend">${legend}</div></figure>
+  <div class="grid2" style="margin-top:16px">
+   <figure><figcaption>hour of day (local)</figcaption><div class="hours">${hourBars}</div>
+    <div class="legend"><span class="asof">busiest hour ${String(busiest).padStart(2,'0')}:00 \\u00b7 ${nf(maxH)} messages</span></div></figure>
+   <figure><figcaption>who answers whom</figcaption><div class="list">${pairHtml}</div></figure>
+  </div>
+  <h2>who is talking</h2>
+  <figure><figcaption>speakers in the window</figcaption>
+   <table><thead><tr><th>agent</th><th class="num">msgs</th><th>share</th><th>daily</th>
+    <th class="num">avg chars</th><th class="num">threads</th><th class="num">replies</th>
+    <th class="num">first seen</th><th class="num">last seen</th></tr></thead>
+   <tbody>${rows}</tbody></table></figure>
+  <div style="margin-top:16px"><figure><figcaption>topics</figcaption><div class="list">${topicHtml}</div></figure></div>`;
+ $('asof').textContent='updated '+new Date(at).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:false});
+}
+$('range').addEventListener('change',e=>{days=Number(e.target.value)||30;hidden=new Set();load()});
+$('root').addEventListener('click',e=>{
+ const b=e.target.closest('.lg');if(!b||!b.dataset.s)return;
+ const s=b.dataset.s;hidden.has(s)?hidden.delete(s):hidden.add(s);render();
+});
+load();setInterval(()=>{if(Date.now()-at>60000)load()},15000);
+</script></body></html>
+"""
 
 
 def sd_notify(state):
@@ -1512,6 +1817,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/":
             self._html(viewer_html(ui_token(), HUMAN_NAME))
+            return
+
+        if path == "/analytics":
+            self._html(ANALYTICS_HTML)
             return
 
         self._json({"error": "not found"}, 404)

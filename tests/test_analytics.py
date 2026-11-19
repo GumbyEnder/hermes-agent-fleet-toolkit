@@ -100,6 +100,52 @@ class Analytics(unittest.TestCase):
         self.assertEqual(get_json(base + "/api/analytics?days=0")["room"]["days"], 1)
         self.assertEqual(get_json(base + "/api/analytics")["room"]["days"], 30)
 
+    def test_speaker_split_hours_and_reply_graph(self):
+        """The analytics page is built on these fields; they must be measured, not inferred."""
+        base = self.start()
+        st, body = post(base + "/send", {"from": "alpha", "topic": "unit", "text": "root"})
+        root = json.loads(body)["id"]
+        post(base + "/send", {"from": "beta", "topic": "unit", "text": "answering",
+                              "reply_to": root})
+        post(base + "/send", {"from": "beta", "topic": "unit", "text": "again"})
+        room = get_json(base + "/api/analytics?days=3")["room"]
+
+        self.assertEqual(len(room["dates"]), 3, "window is zero-filled, one row per day")
+        self.assertEqual([r["date"] for r in room["per_day"]], room["dates"])
+        self.assertEqual(sum(r["messages"] for r in room["per_day"]),
+                         room["window_messages"])
+
+        per_day = {r["date"]: r["messages"] for r in room["per_day"]}
+        series = {s["sender"]: s["counts"] for s in room["per_day_senders"]}
+        self.assertEqual(series["alpha"][-1], 1)
+        self.assertEqual(series["beta"][-1], 2)
+        for counts in series.values():
+            self.assertEqual(len(counts), len(room["dates"]))
+        # stack total per day equals that day's real volume
+        self.assertEqual(sum(c[-1] for c in series.values()), per_day[room["dates"][-1]])
+
+        self.assertEqual(len(room["per_hour"]), 24)
+        self.assertEqual(sum(room["per_hour"]), room["window_messages"])
+        this_hour = int(time.strftime("%H"))
+        self.assertGreaterEqual(room["per_hour"][this_hour], 3)
+
+        edges = {(e["from"], e["to"]): e["messages"] for e in room["reply_graph"]}
+        self.assertEqual(edges.get(("alpha", "beta")), 1)
+        senders = {s["sender"]: s for s in room["by_sender"]}
+        self.assertEqual(senders["beta"]["replies"], 1)
+        self.assertEqual(senders["alpha"]["threads_started"], 1)
+        self.assertEqual(senders["beta"]["threads_started"], 1)
+        self.assertGreaterEqual(room["stats"]["active_senders"], 2)
+        self.assertIn("alpha", {s["sender"] for s in room["by_sender"]})
+        self.assertEqual(room["stats"]["replies"], 1)
+
+    def test_analytics_page_renders(self):
+        base = self.start()
+        st, body = get(base + "/analytics")
+        self.assertEqual(st, 200)
+        self.assertIn("Agent Room", body)
+        self.assertIn("/api/analytics?days=", body)
+
     def test_snapshot_file_is_read_only_and_cached(self):
         write_usage(self.usage)
         base = self.start(self.usage)

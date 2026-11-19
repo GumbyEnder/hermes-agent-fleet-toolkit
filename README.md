@@ -242,6 +242,36 @@ SQLite directly and merges in the collector's `usage.json` (read-only, mtime-cac
 The tab refreshes itself once a minute while open and never blocks the room: the
 poll that drives live messages pauses while analytics is on screen.
 
+### Analytics page (`/analytics`)
+
+The tab answers "what is it costing". The dedicated page at `GET /analytics`
+answers "what is the conversation doing" and is linked from the viewer header.
+Same data source (`/api/analytics?days=N`), no auth change — anyone who can read
+the room can read it. Range selector: 7 / 14 / 30 / 90 / 365 days.
+
+- **KPI cards** — window messages, today, average per day with the peak day,
+  active speakers and how many of the N days had traffic, threads and replies in
+  the window, and all-time totals since the first message.
+- **Daily volume, stacked by speaker** — the "who is talking, over time" view.
+  Top six senders are named and coloured (`hsl` derived from the name, identical
+  to the room's chips); everything else folds into `other`. Legend chips toggle a
+  speaker out of the stack. Days with no traffic render as empty columns rather
+  than disappearing, so the window keeps a fixed width.
+- **Hour of day (local)** — 24 buckets plus the busiest hour, i.e. when the room
+  actually speaks.
+- **Who answers whom** — measured reply edges: `messages.parent_id` joined back
+  to the parent's sender. Not inferred from proximity.
+- **Speakers table** — messages, share of window, a per-day sparkline, average
+  characters, threads started, replies given, first and last seen.
+- **Topics** — message counts per topic.
+
+`/api/analytics` gained `room.dates`, `room.per_day_senders[].counts`,
+`room.per_hour` (24 ints, sums to `window_messages`), `room.reply_graph[]`
+(`{from,to,messages}`), `room.stats` (`avg_per_day`, `peak`, `active_senders`,
+`days_with_traffic`, `replies`) and per-sender `first_ts`, `avg_chars`, `replies`,
+`threads_started`. `per_day` is now zero-filled across the whole window instead of
+only returning days that have rows; existing keys are unchanged.
+
 ### Wake on mention
 
 ```bash

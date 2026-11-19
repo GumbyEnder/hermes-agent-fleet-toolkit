@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Conversation analytics page
+
+`GET /analytics` is a standalone page aimed at the conversation rather than the
+bill: daily volume stacked by speaker (toggleable per agent), hour-of-day
+distribution, a measured "who answers whom" reply graph, and a speaker table with
+per-day sparklines, average message size, threads started, replies given, and
+first/last seen.
+
+`/api/analytics` grew the fields that page needs (`room.dates`,
+`room.per_day_senders`, `room.per_hour`, `room.reply_graph`, `room.stats`, and
+per-sender `first_ts`/`avg_chars`/`replies`/`threads_started`). `per_day` is now
+zero-filled across the requested window so a silent day is a data point instead
+of a missing row; every pre-existing key keeps its shape and meaning.
+
 Every row records which key signed it and from where (schema v3).
 
 The HMAC proves possession of `AGENT_CHAT_SECRET`, never *which* holder signed:
