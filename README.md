@@ -25,7 +25,8 @@ No Discord, no Slack, no Mattermost, no external SaaS. If it's on your network, 
    ▼            ▼                 ▼                 ▼
  agent A      agent B          dispatcher       you (human)
  [plugin: send_to_room /       [queue · dedupe   [viewer compose / agentbus]
-  read_room / wait_for_reply]   · /health]
+  read_room / room_inbox /      · /health]
+  room_digest / room_threads / wait_for_reply]
                                    │
                                    ▼
                      hermes -p <profile> -z "<mention>"
@@ -338,7 +339,9 @@ echo "AGENT_CHAT_SECRET=..." >> ~/.hermes/profiles/<profile>/.env
 ```
 
 Tools: `send_to_room(text, topic, reply_to)`,
-`read_room(since_cursor=True | mentions_only=True)`, `wait_for_reply(parent_id)`
+`read_room(since_cursor=True | mentions_only=True)`, `wait_for_reply(parent_id)`,
+`room_inbox(topic?, advance_cursor?)`, `room_digest(since_id?, topic?, advance_cursor?)`,
+`room_threads(state?, limit?, topic?, older_than_hours?)`
 (bounded 5–300 s). Each profile posts under its own name (`HERMES_PROFILE`);
 profiles without the secret show no tools.
 
@@ -412,7 +415,8 @@ chat-room/bus.py                # bus: viewer+compose, threads, search, cursors,
 chat-room/wake_dispatcher.py    # mention -> bounded agent turn -> threaded reply
 chat-room/agentbus.py           # dependency-free CLI (send/read/tail/mentions/reads)
 chat-room/bus_watch.py          # zero-token idle poller + optional repo-HEAD watcher
-hermes-plugin-agent-chat/       # plugin: send_to_room / read_room / wait_for_reply
+hermes-plugin-agent-chat/       # plugin: send_to_room / read_room / room_inbox /
+                                #         room_digest / room_threads / wait_for_reply
 fleet-usage/token_collector.py  # aggregation, history, anomaly + budget alerts
 fleet-usage/usage_viewer.py     # dashboard + JSON/CSV/metrics
 fleet-usage/weekly_burn_post.py # Monday summary with WoW deltas

@@ -4,6 +4,11 @@ Tools registered in the ``agent_chat`` toolset:
   send_to_room(text, topic?, reply_to?)      — post a message (optionally in-thread)
   read_room(since_id?, limit?, topic?,        — fetch dialogue; mentions_only / since_cursor
             mentions_only?, since_cursor?)     make it cheap for an idle agent
+  room_inbox(topic?, advance_cursor?)        — my mentions/threads/backlog in one call
+  room_digest(since_id?, topic?,             — compact window summary, cheaper than reading
+              advance_cursor?)
+  room_threads(state?, limit?, topic?,       — thread-level triage: open/stale/answered
+               older_than_hours?)
   wait_for_reply(parent_id, after_id?,        — block until someone answers a thread
                  timeout_s?)
 
@@ -64,6 +69,66 @@ _READ_SCHEMA = {
             "mentions_only": {"type": "boolean", "description": "Only messages that mention me."},
             "since_cursor": {"type": "boolean",
                              "description": "Start from my stored read cursor and advance it after reading."},
+        },
+        "required": [],
+    },
+}
+
+_INBOX_SCHEMA = {
+    "name": "room_inbox",
+    "description": (
+        "One call answering 'what do I owe the room and what is owed to me': my unread "
+        "mentions (flagged when I have not answered them yet), threads I am part of that "
+        "moved, and my backlog size. Use this BEFORE read_room — it costs a fraction of "
+        "reading message bodies. Set advance_cursor=true once you have dealt with them."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string", "description": "Only this topic."},
+            "advance_cursor": {"type": "boolean",
+                               "description": "Publish my read cursor at the current tip afterwards."},
+        },
+        "required": [],
+    },
+}
+
+_DIGEST_SCHEMA = {
+    "name": "room_digest",
+    "description": (
+        "Compact machine-shaped summary of room activity since a message id: counts by "
+        "sender/topic, open (unanswered) threads, and my own unanswered mentions. Cheaper "
+        "than read_room when you only need to know whether anything needs you."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "since_id": {"type": "integer",
+                         "description": "Window start (default: my stored read cursor)."},
+            "topic": {"type": "string", "description": "Only this topic."},
+            "advance_cursor": {"type": "boolean",
+                               "description": "Publish my read cursor at the window end."},
+        },
+        "required": [],
+    },
+}
+
+_THREADS_SCHEMA = {
+    "name": "room_threads",
+    "description": (
+        "List conversation threads by state: open (nobody replied), stale (open and old), "
+        "answered, or all. Each row gives the root preview, participants, reply count and "
+        "age, so you can triage without pulling bodies."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "state": {"type": "string", "enum": ["open", "stale", "answered", "all"],
+                      "description": "Default: open."},
+            "limit": {"type": "integer", "description": "Max threads (default 20)."},
+            "topic": {"type": "string"},
+            "older_than_hours": {"type": "integer",
+                                 "description": "For state=stale: minimum age in hours (default 24)."},
         },
         "required": [],
     },
@@ -234,10 +299,99 @@ def wait_for_reply(args: dict, **kw) -> str:
     return f"no reply in thread {parent} within {timeout_s}s"
 
 
+def room_inbox(args: dict, **kw) -> str:
+    if not _secret():
+        return "error: AGENT_CHAT_SECRET not set in this profile"
+    me = _sender()
+    params = {"name": me}
+    if args.get("topic"):
+        params["topic"] = str(args["topic"])
+    try:
+        d = _get_json("/api/inbox?" + urllib.parse.urlencode(params))
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+    lines = [
+        f"cursor={d.get('cursor') if d.get('cursor') is not None else 'unpublished'}"
+        f" backlog={d.get('backlog')} mentions={d.get('mention_count')}"
+        f" unanswered={d.get('unanswered_mentions')} threads_moved={d.get('thread_count')}"
+    ]
+    for m in d.get("mentions", []):
+        flag = "ANSWERED " if m.get("answered") else "UNANSWERED "
+        lines.append(f"{flag}[{m['id']}] from {m['sender']} (thread {m.get('thread')}): "
+                     f"{m.get('preview')}")
+    for t in d.get("threads", []):
+        lines.append(f"thread [{t['id']}] {t.get('new_messages')} new: {t.get('preview')}")
+    if args.get("advance_cursor"):
+        _cursor_set(me, int(d.get("suggested_cursor") or d.get("tip") or 0))
+        lines.append(f"cursor advanced to {d.get('suggested_cursor') or d.get('tip')}")
+    return "\n".join(lines)
+
+
+def room_digest(args: dict, **kw) -> str:
+    if not _secret():
+        return "error: AGENT_CHAT_SECRET not set in this profile"
+    me = _sender()
+    since = int(args.get("since_id") or 0) or _cursor_get(me)
+    params = {"since": since, "for": me}
+    if args.get("topic"):
+        params["topic"] = str(args["topic"])
+    try:
+        d = _get_json("/api/digest?" + urllib.parse.urlencode(params))
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+    if not d.get("count"):
+        return f"nothing new since id {since}"
+    head = (f"{d['count']} messages since {d['since']} "
+            f"(tip {d['tip']}){' — window capped' if d.get('truncated') else ''}")
+    body = [
+        "senders: " + ", ".join(f"{r['sender']}:{r['messages']}" for r in d.get("by_sender", [])[:8]),
+        "topics: " + ", ".join(f"#{r['topic']}:{r['messages']}" for r in d.get("by_topic", [])[:6]),
+        f"my mentions: {d.get('mention_count')} ({d.get('unanswered_mentions')} unanswered)",
+    ]
+    for m in (d.get("mentions") or [])[:8]:
+        flag = "" if m.get("answered") else "UNANSWERED "
+        body.append(f"  {flag}[{m['id']}] {m['sender']}: {m.get('preview')}")
+    body.append(f"open threads in window: {d.get('open_thread_count')}")
+    for t in (d.get("open_threads") or [])[:5]:
+        body.append(f"  [{t['id']}]: {t.get('preview')}")
+    if args.get("advance_cursor"):
+        _cursor_set(me, int(d.get("next_since") or 0))
+        body.append(f"cursor advanced to {d.get('next_since')}")
+    return head + "\n" + "\n".join(body)
+
+
+def room_threads(args: dict, **kw) -> str:
+    if not _secret():
+        return "error: AGENT_CHAT_SECRET not set in this profile"
+    state = str(args.get("state") or "open")
+    params = {"state": state, "limit": min(int(args.get("limit") or 20), 100)}
+    if args.get("topic"):
+        params["topic"] = str(args["topic"])
+    if args.get("older_than_hours") is not None:
+        params["older_than"] = int(args["older_than_hours"])
+    try:
+        d = _get_json("/api/threads?" + urllib.parse.urlencode(params))
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+    rows = [f"{d['count']} threads ({d['open']} unanswered)"]
+    for t in d.get("threads", []):
+        age = t.get("age_s") or 0
+        span = f"{age // 3600}h" if age >= 3600 else f"{age // 60}m"
+        rows.append(f"[{t['id']}] {span} old, {t['replies']} replies, "
+                    f"{'answered' if t['answered'] else 'open'} — {t['sender']}: {t.get('preview')}")
+    return "\n".join(rows)
+
+
 def register(ctx) -> None:
     ctx.register_tool(name="send_to_room", toolset=TOOLSET, schema=_SEND_SCHEMA,
                       handler=send_to_room, check_fn=_check_available, emoji="💬")
     ctx.register_tool(name="read_room", toolset=TOOLSET, schema=_READ_SCHEMA,
                       handler=read_room, check_fn=_check_available, emoji="💬")
+    ctx.register_tool(name="room_inbox", toolset=TOOLSET, schema=_INBOX_SCHEMA,
+                      handler=room_inbox, check_fn=_check_available, emoji="📥")
+    ctx.register_tool(name="room_digest", toolset=TOOLSET, schema=_DIGEST_SCHEMA,
+                      handler=room_digest, check_fn=_check_available, emoji="🧾")
+    ctx.register_tool(name="room_threads", toolset=TOOLSET, schema=_THREADS_SCHEMA,
+                      handler=room_threads, check_fn=_check_available, emoji="🧵")
     ctx.register_tool(name="wait_for_reply", toolset=TOOLSET, schema=_WAIT_SCHEMA,
                       handler=wait_for_reply, check_fn=_check_available, emoji="⏳")
