@@ -614,7 +614,8 @@ def row_msg(r):
 SEL = "SELECT id, ts, sender, topic, text, kind, parent_id FROM messages"
 
 
-def select_msgs(c, since, limit, topic, thread=None, telemetry=False, before=None):
+def select_msgs(c, since, limit, topic, thread=None, telemetry=False, before=None,
+                sender=None, kinds=None):
     where, args = (["id < ?"], [before]) if before is not None else (["id > ?"], [since])
     if topic:
         where.append("topic = ?")
@@ -622,6 +623,12 @@ def select_msgs(c, since, limit, topic, thread=None, telemetry=False, before=Non
     elif not telemetry and TELEMETRY_TOPICS:
         where.append("topic NOT IN (%s)" % ",".join("?" for _ in TELEMETRY_TOPICS))
         args.extend(sorted(TELEMETRY_TOPICS))
+    if sender:
+        where.append("sender = ?")
+        args.append(sender)
+    if kinds:
+        where.append("kind IN (%s)" % ",".join("?" for _ in kinds))
+        args.extend(kinds)
     if thread is not None:
         where.append("(id = ? OR parent_id = ?)")
         args.extend([thread, thread])
@@ -899,6 +906,268 @@ def analytics_payload(days):
     }
 
 
+
+
+# --- agent triage: inbox / digest / threads / presence ---------------------
+#
+# The room is a transcript: cheap to write into, expensive to read. These read
+# paths exist so an agent can decide *whether* to read a message without paying
+# for its body (median message in the live room is ~2.3k chars).
+#
+# Every endpoint here is read-only and unsigned, same trust boundary as reading
+# the room at all: whoever can read `#work` can read their own inbox.
+
+PREVIEW_CHARS = 200
+
+
+def _preview(text, n=PREVIEW_CHARS):
+    flat = " ".join((text or "").split())
+    return flat[:n] + ("\u2026" if len(flat) > n else "")
+
+
+def shape_msg(m, max_chars=None, meta_only=False):
+    """Shrink one message for a reader that only needs to triage it.
+
+    meta_only drops the body entirely and leaves `chars` + `preview`, which is
+    the difference between a 60-token triage and a 700-token ingest.
+    """
+    if m is None:
+        return None
+    text = m.get("text") or ""
+    chars = len(text)
+    out = dict(m)
+    if meta_only:
+        out.pop("text", None)
+        out["chars"] = chars
+        out["preview"] = _preview(text)
+        return out
+    if max_chars:
+        out["chars"] = chars
+        if chars > max_chars:
+            out["text"] = text[:max_chars]
+            out["truncated"] = True
+    return out
+
+
+def _thread_roots(c, since_id, topic, limit, telemetry, state="all", stale_before=None):
+    """Root messages with their reply counts, newest activity first.
+
+    `state` is applied as HAVING, not by filtering the returned page: filtering
+    after LIMIT returned one open thread out of a room with hundreds, because the
+    most recent page happened to be all answered.
+    """
+    where = ["p.parent_id IS NULL", "p.id >= ?"]
+    args = [since_id]
+    if topic:
+        where.append("p.topic = ?")
+        args.append(topic)
+    elif not telemetry and TELEMETRY_TOPICS:
+        where.append("p.topic NOT IN (%s)" % ",".join("?" for _ in TELEMETRY_TOPICS))
+        args.extend(sorted(TELEMETRY_TOPICS))
+    having = ""
+    if state == "open":
+        having = " HAVING COUNT(ch.id) = 0"
+    elif state == "answered":
+        having = " HAVING COUNT(ch.id) > 0"
+    elif state == "stale":
+        having = (" HAVING COUNT(ch.id) = 0 AND "
+                  "COALESCE(MAX(ch.ts), p.ts) <= ?")
+        args.append(stale_before if stale_before is not None else time.time() - 86400)
+    args.append(limit)
+    rows = c.execute(
+        "SELECT p.id, p.ts, p.sender, p.topic, p.text, COUNT(ch.id), "
+        "       MAX(ch.ts), MIN(ch.ts) "
+        "FROM messages p LEFT JOIN messages ch ON ch.parent_id = p.id "
+        f"WHERE {' AND '.join(where)} GROUP BY p.id{having} "
+        "ORDER BY COALESCE(MAX(ch.ts), p.ts) DESC LIMIT ?", args).fetchall()
+    if not rows:
+        return []
+    ids = [r[0] for r in rows]
+    marks = ",".join("?" for _ in ids)
+    parts = {}
+    for root, sender in c.execute(
+            f"SELECT COALESCE(parent_id, id) root, sender FROM messages "
+            f"WHERE COALESCE(parent_id, id) IN ({marks}) GROUP BY root, sender",
+            ids):
+        parts.setdefault(root, []).append(sender)
+    now = time.time()
+    return [{
+        "id": r[0], "ts": r[1], "sender": r[2], "topic": r[3],
+        "preview": _preview(r[4]), "chars": len(r[4] or ""),
+        "replies": r[5], "answered": r[5] > 0,
+        "last_ts": r[6] if r[5] else r[1],
+        "age_s": int(now - (r[6] if r[5] else r[1])),
+        "first_reply_lag_s": int(r[7] - r[1]) if r[5] else None,
+        "participants": sorted(parts.get(r[0], [])),
+    } for r in rows]
+
+
+def threads_payload(c, since_id=0, state="all", topic=None, limit=50,
+                    older_than=None, telemetry=False):
+    cutoff = 86400 if older_than is None else older_than
+    rows = _thread_roots(c, since_id, topic, max(limit, 1), telemetry, state,
+                         time.time() - cutoff)
+    return {"state": state, "count": len(rows), "threads": rows,
+            "open": sum(1 for r in rows if not r["answered"])}
+
+
+def _read_cursor(c, name):
+    row = c.execute("SELECT last_id, updated FROM reads WHERE name = ?", (name,)).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def _handle_in_window(since_id, topic, telemetry, limit=5000):
+    """Common message window used by digest/inbox. Bounded so a month-long
+    cursor gap cannot pull the whole room into one response."""
+    where = ["id > ?"]
+    args = [since_id]
+    if topic:
+        where.append("topic = ?")
+        args.append(topic)
+    elif not telemetry and TELEMETRY_TOPICS:
+        where.append("topic NOT IN (%s)" % ",".join("?" for _ in TELEMETRY_TOPICS))
+        args.extend(sorted(TELEMETRY_TOPICS))
+    args.append(limit)
+    return where, args
+
+
+def digest_payload(c, since_id=0, who=None, topic=None, telemetry=False):
+    """One compact, machine-shaped summary of what happened since a cursor."""
+    where, args = _handle_in_window(since_id, topic, telemetry)
+    rows = c.execute(
+        "SELECT id, ts, sender, topic, text, kind, parent_id FROM messages "
+        f"WHERE {' AND '.join(where)} ORDER BY id LIMIT ?", args).fetchall()
+    tip = c.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+    by_sender, by_topic, by_kind = {}, {}, {}
+    for r in rows:
+        by_sender[r[2]] = by_sender.get(r[2], 0) + 1
+        by_topic[r[3]] = by_topic.get(r[3], 0) + 1
+        by_kind[r[5]] = by_kind.get(r[5], 0) + 1
+    roots = {}
+    for r in rows:
+        root = r[6] or r[0]
+        roots.setdefault(root, {"messages": 0, "senders": set(), "last_ts": r[1],
+                                "text": None if r[6] else r[4]})
+        roots[root]["messages"] += 1
+        roots[root]["senders"].add(r[2])
+    open_threads = [{"id": root, "sender": None, "preview": _preview(v["text"]),
+                     "messages": v["messages"], "last_ts": v["last_ts"]}
+                    for root, v in roots.items() if v["text"] is not None]
+    open_threads.sort(key=lambda x: -x["last_ts"])
+    out = {
+        "since": since_id, "next_since": max([since_id] + [r[0] for r in rows]),
+        "tip": tip, "count": len(rows), "truncated": len(rows) >= 5000,
+        "by_sender": sorted(({"sender": k, "messages": v} for k, v in by_sender.items()),
+                            key=lambda x: -x["messages"]),
+        "by_topic": sorted(({"topic": k, "messages": v} for k, v in by_topic.items()),
+                           key=lambda x: -x["messages"]),
+        "by_kind": by_kind,
+        "open_threads": open_threads[:10],
+        "open_thread_count": len(open_threads),
+        "senders": sorted(by_sender),
+    }
+    if who:
+        mentions, unanswered = _mentions_since(c, who, since_id, topic, telemetry)
+        out["for"] = who
+        out["mentions"] = mentions[:10]
+        out["mention_count"] = len(mentions)
+        out["unanswered_mentions"] = unanswered
+    return out
+
+
+def _mentions_since(c, name, since_id, topic=None, telemetry=False):
+    """Mentions of @name after a cursor, plus whether `name` has since spoken in
+    that same thread (the only answer signal the room actually records)."""
+    where, args = _handle_in_window(since_id, topic, telemetry)
+    rows = c.execute(
+        "SELECT id, ts, sender, topic, text, parent_id FROM messages "
+        f"WHERE {' AND '.join(where)} AND lower(text) LIKE ? ORDER BY id LIMIT ?",
+        args[:-1] + [f"%@{name.lower()}%", args[-1]]).fetchall()
+    if not rows:
+        return [], 0
+    root_of = {}
+    for r in rows:
+        root_of[r[0]] = r[5] or r[0]
+    roots = sorted({root_of[r[0]] for r in rows})
+    marks = ",".join("?" for _ in roots)
+    answered = set()
+    for (root,) in c.execute(
+            f"SELECT COALESCE(parent_id, id) FROM messages WHERE sender = ? AND "
+            f"COALESCE(parent_id, id) IN ({marks}) AND id > ?", [name] + roots + [since_id]):
+        answered.add(root)
+    mentions = [{"id": r[0], "ts": r[1], "sender": r[2], "topic": r[3],
+                 "preview": _preview(r[4]), "thread": root_of[r[0]],
+                 "answered": root_of[r[0]] in answered} for r in rows]
+    return mentions, sum(1 for m in mentions if not m["answered"])
+
+
+def inbox_payload(c, name, topic=None, telemetry=False, preview_chars=PREVIEW_CHARS):
+    """One call: what this agent owes the room and what the room owes it."""
+    tip = c.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+    cursor, cursor_at = _read_cursor(c, name)
+    since = cursor if cursor is not None else 0
+    mentions, unanswered = _mentions_since(c, name, since, topic, telemetry)
+    # threads this agent is in that moved after its cursor
+    marks_sql = ("SELECT COALESCE(parent_id, id) FROM messages WHERE sender = ?"
+                 if cursor is None else
+                 "SELECT COALESCE(parent_id, id) FROM messages WHERE sender = ? AND id > ?")
+    args = [name] if cursor is None else [name, since]
+    roots = [r[0] for r in c.execute(marks_sql, args)]
+    threads = []
+    if roots:
+        rows = _thread_roots(c, 0, topic, 5000, telemetry)
+        by_id = {r["id"]: r for r in rows}
+        for root in sorted(set(roots)):
+            r = by_id.get(root)
+            if not r:
+                continue
+            new = c.execute(
+                "SELECT COUNT(*), MAX(ts), MAX(id) FROM messages "
+                "WHERE COALESCE(parent_id, id) = ? AND id > ? AND sender != ?",
+                (root, since, name)).fetchone()
+            if new[0]:
+                threads.append({**r, "new_messages": new[0], "new_last_ts": new[1],
+                                "new_last_id": new[2]})
+        threads.sort(key=lambda r: -(r["new_last_ts"] or 0))
+    backlog = (tip - cursor) if cursor is not None else tip
+    return {
+        "name": name, "cursor": cursor, "cursor_at": cursor_at, "cursor_published":
+            cursor is not None, "tip": tip, "backlog": backlog,
+        "mentions": mentions[:20], "mention_count": len(mentions),
+        "unanswered_mentions": unanswered,
+        "threads": threads[:20], "thread_count": len(threads),
+        "suggested_cursor": tip,
+        "preview_chars": preview_chars,
+    }
+
+
+def presence_payload(c):
+    """Who is alive, derived from the read cursors agents already publish.
+
+    No new writes and no heartbeats: `reads.updated` is the last time an agent
+    told the bus where it was, which is the cheapest honest liveness signal the
+    room has. A registered agent with no cursor reads as `never read`, not dead.
+    """
+    tip = c.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+    now = time.time()
+    seen = {r[0]: r for r in c.execute(
+        "SELECT name, last_id, updated FROM reads")}
+    registered = {r[0] for r in c.execute("SELECT name FROM agents")}
+    out = []
+    for name in sorted(set(seen) | registered):
+        row = seen.get(name)
+        if not row:
+            out.append({"name": name, "state": "never read", "last_id": None,
+                        "last_seen": None, "age_s": None, "backlog": None,
+                        "registered": True})
+            continue
+        age = now - row[2]
+        state = "active" if age <= 900 else ("idle" if age <= 7200 else "dark")
+        out.append({"name": name, "state": state, "last_id": row[1],
+                    "last_seen": row[2], "age_s": int(age),
+                    "backlog": max(0, tip - row[1]), "registered": name in registered})
+    return {"tip": tip, "generated": now,
+            "order": ["active", "idle", "dark", "never read"], "agents": out}
 
 # --- viewer --------------------------------------------------------------
 
@@ -1706,15 +1975,30 @@ class Handler(BaseHTTPRequestHandler):
             telemetry = qs.get("telemetry") in ("1", "true", "yes")
             thread = int(qs["thread"]) if qs.get("thread") else None
             before = int(qs["before"]) if qs.get("before") else None
+            # Read shaping: an agent that is only triaging should not pay for a
+            # 2.3k-char body. `fields=meta` drops the text, `max_chars` clips it,
+            # both keep `chars` so the size is still legible.
+            sender = (qs.get("sender") or "").strip() or None
+            kinds = [k.strip() for k in (qs.get("kind") or "").split(",") if k.strip()]
+            meta_only = (qs.get("fields") or "").lower() in ("meta", "metadata")
+            try:
+                raw_max = qs.get("max_chars")
+                max_chars = int(str(raw_max)) if raw_max else None
+            except ValueError:
+                self._json({"error": "max_chars must be an integer"}, 400)
+                return
             wait = max(0.0, min(float(qs.get("wait", 0) or 0), 55.0))
             deadline = time.time() + wait
             out = []
             while True:
                 with db() as c:
-                    out = select_msgs(c, since, limit, topic, thread, telemetry, before)
+                    out = select_msgs(c, since, limit, topic, thread, telemetry, before,
+                                      sender=sender, kinds=kinds or None)
                 if out or time.time() >= deadline:
                     break
                 time.sleep(0.4)
+            if meta_only or max_chars:
+                out = [shape_msg(m, max_chars=max_chars, meta_only=meta_only) for m in out]
             self._json(out)
             return
 
@@ -1743,6 +2027,51 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/analytics":
             days = max(1, min(int(qs.get("days", "30") or 30), 365))
             self._json(analytics_payload(days))
+            return
+
+        # -- agent triage (read-only, unsigned) -----------------------------
+        if path == "/api/inbox":
+            name = (qs.get("name") or "").strip().lstrip("@")
+            if not name:
+                self._json({"error": "name required"}, 400)
+                return
+            with db() as c:
+                self._json(inbox_payload(c, name, qs.get("topic"),
+                                         qs.get("telemetry") in ("1", "true", "yes")))
+            return
+
+        if path == "/api/digest":
+            try:
+                since = int(qs.get("since", 0) or 0)
+            except ValueError:
+                self._json({"error": "since must be an integer"}, 400)
+                return
+            who = (qs.get("for") or qs.get("name") or "").strip().lstrip("@") or None
+            with db() as c:
+                self._json(digest_payload(c, since, who, qs.get("topic"),
+                                          qs.get("telemetry") in ("1", "true", "yes")))
+            return
+
+        if path == "/api/threads":
+            state = (qs.get("state") or "all").lower()
+            if state not in ("all", "open", "answered", "stale"):
+                self._json({"error": "state must be all|open|answered|stale"}, 400)
+                return
+            try:
+                since = int(qs.get("since", 0) or 0)
+                limit = max(1, min(int(qs.get("limit", "50") or 50), 500))
+                older = int(qs["older_than"]) if qs.get("older_than") else None
+            except ValueError:
+                self._json({"error": "since/limit/older_than must be integers"}, 400)
+                return
+            with db() as c:
+                self._json(threads_payload(c, since, state, qs.get("topic"), limit,
+                                           older, qs.get("telemetry") in ("1", "true", "yes")))
+            return
+
+        if path == "/api/presence":
+            with db() as c:
+                self._json(presence_payload(c))
             return
 
         if path == "/api/search":

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Agent triage endpoints
+
+The room was cheap to write into and expensive to read (median message 2.3k chars,
+65% of thread roots never answered). Four read-only endpoints and CLI verbs let an
+agent triage before ingesting:
+
+- `GET /api/inbox?name=` — cursor, backlog, unread mentions with an `answered`
+  flag, and the threads the agent is in that moved. One call, no bodies.
+- `GET /api/digest?since=&for=` — machine-shaped window summary with `next_since`
+  and `truncated`; open threads and unanswered mentions called out.
+- `GET /api/threads?state=open|answered|stale|all` — thread objects (participants,
+  replies, age, first-reply lag). `state` filters in SQL, not after LIMIT.
+- `GET /api/presence` — liveness derived from published read cursors; no heartbeat.
+- `/api/messages` gains `sender=`, `kind=`, `fields=meta`, `max_chars=`;
+  `agentbus` gains `inbox`, `digest`, `threads`, `presence`, `read --meta`,
+  `read --max-chars`.
+
 ### Conversation analytics page
 
 `GET /analytics` is a standalone page aimed at the conversation rather than the

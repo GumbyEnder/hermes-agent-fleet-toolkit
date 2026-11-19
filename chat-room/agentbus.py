@@ -21,6 +21,10 @@ Usage:
   agentbus tail [--since ID] [--interval 3] [--topic T] [--wait 25]
   agentbus mentions --name NAME [--since ID]
   agentbus reads
+  agentbus inbox [--name N] [--topic T] [--mark] [--json]
+  agentbus digest [--since ID] [--for NAME] [--mark] [--json]
+  agentbus threads [--state open|answered|stale|all] [--limit N] [--older-than H]
+  agentbus presence [--active-only]
   agentbus register --name N --webhook URL
 
 Pull-mode (outbound-only hosts that expose no inbound ports):
@@ -121,11 +125,15 @@ def _print_msg(m):
         if isinstance(ts, (int, float)) else str(ts or "")
     who = m.get("sender") or m.get("from") or "?"
     reply = f" (↳{m['parent_id']})" if m.get("parent_id") else ""
-    print(f"[{m.get('id')}]{reply} {when} <{who}> #{m.get('topic', 'general')}: "
-          f"{m.get('text', '')}")
+    if "text" in m:
+        body = m.get("text") or ""
+    else:  # --meta: the body was dropped on purpose, print the preview + real size
+        body = f"({m.get('chars', 0)} chars) {m.get('preview', '')}"
+    print(f"[{m.get('id')}]{reply} {when} <{who}> #{m.get('topic', 'general')}: {body}")
 
 
-def _fetch(since, limit, topic, wait=0, thread=None, telemetry=False):
+def _fetch(since, limit, topic, wait=0, thread=None, telemetry=False,
+           meta=False, max_chars=None):
     q = {"since": since, "limit": limit}
     if topic:
         q["topic"] = topic
@@ -135,6 +143,10 @@ def _fetch(since, limit, topic, wait=0, thread=None, telemetry=False):
         q["thread"] = thread
     if telemetry:
         q["telemetry"] = 1
+    if meta:
+        q["fields"] = "meta"
+    if max_chars:
+        q["max_chars"] = max_chars
     return _get("/api/messages?" + urllib.parse.urlencode(q))
 
 
@@ -178,7 +190,8 @@ def cmd_read(a):
             st, tip_body = _get("/api/tip")
             tip = int(json.loads(tip_body).get("max_id", 0)) if st == 200 else 0
             since, limit = max(0, tip - a.last), a.last
-        st, body = _fetch(since, limit, a.topic, a.wait, a.thread, a.telemetry)
+        st, body = _fetch(since, limit, a.topic, a.wait, a.thread, a.telemetry,
+                          getattr(a, "meta", False), getattr(a, "max_chars", None))
         if st != 200:
             print(f"read failed {st}: {body}", file=sys.stderr)
             return 1
@@ -221,6 +234,140 @@ def cmd_reads(a):
         for r in rows:
             when = time.strftime("%m-%d %H:%M", time.localtime(r.get("updated") or 0))
             print(f"{r.get('name', '?'):<20} last_id={r.get('last_id')} ({when})")
+    return 0
+
+
+def _when(ts):
+    return time.strftime("%m-%d %H:%M", time.localtime(ts)) if ts else "?"
+
+
+def _age(sec):
+    if sec is None:
+        return "?"
+    sec = int(sec)
+    if sec < 90:
+        return f"{sec}s"
+    if sec < 5400:
+        return f"{sec // 60}m"
+    if sec < 172800:
+        return f"{sec // 3600}h"
+    return f"{sec // 86400}d"
+
+
+def cmd_inbox(a):
+    """What I owe the room and what the room owes me, in one call."""
+    name = a.name or _name(a.sender)
+    q = {"name": name}
+    if a.topic:
+        q["topic"] = a.topic
+    if a.telemetry:
+        q["telemetry"] = 1
+    st, body = _get("/api/inbox?" + urllib.parse.urlencode(q))
+    if st != 200:
+        print(f"inbox failed {st}: {body}", file=sys.stderr)
+        return 1
+    d = json.loads(body)
+    if a.json:
+        print(json.dumps(d, indent=2))
+    else:
+        cur = d.get("cursor")
+        print(f"{name}: cursor={cur if cur is not None else 'unpublished'}"
+              f" backlog={d.get('backlog')} mentions={d.get('mention_count')}"
+              f" unanswered={d.get('unanswered_mentions')}"
+              f" threads={d.get('thread_count')}")
+        for m in d.get("mentions", []):
+            flag = "  " if m.get("answered") else "!!"
+            print(f"{flag}[{m['id']}] {_when(m['ts'])} <{m['sender']}> "
+                  f"thread={m.get('thread')}: {m.get('preview')}")
+        for t in d.get("threads", []):
+            print(f"   ~[{t['id']}] {_age(t.get('age_s'))} "
+                  f"{t.get('new_messages')} new from {','.join(t.get('participants', []))}: "
+                  f"{t.get('preview')}")
+    if a.mark:
+        _mark_read(name, d.get("suggested_cursor") or d.get("tip") or 0)
+    return 0
+
+
+def cmd_digest(a):
+    q = {"since": a.since}
+    who = a.who or a.name
+    if who:
+        q["for"] = who
+    if a.topic:
+        q["topic"] = a.topic
+    if a.telemetry:
+        q["telemetry"] = 1
+    st, body = _get("/api/digest?" + urllib.parse.urlencode(q))
+    if st != 200:
+        print(f"digest failed {st}: {body}", file=sys.stderr)
+        return 1
+    d = json.loads(body)
+    if a.json:
+        print(json.dumps(d, indent=2))
+    else:
+        print(f"since={d['since']} next_since={d['next_since']} "
+              f"count={d['count']}{' (capped)' if d.get('truncated') else ''} tip={d['tip']}")
+        print("  senders " + ", ".join(f"{r['sender']}:{r['messages']}"
+                                       for r in d.get("by_sender", [])[:8]))
+        print("  topics  " + ", ".join(f"#{r['topic']}:{r['messages']}"
+                                       for r in d.get("by_topic", [])[:6]))
+        if d.get("for"):
+            print(f"  for {d['for']}: {d.get('mention_count')} mentions, "
+                  f"{d.get('unanswered_mentions')} unanswered")
+            for m in d.get("mentions", []):
+                flag = "  " if m.get("answered") else "!!"
+                print(f"{flag}[{m['id']}] <{m['sender']}> {m.get('preview')}")
+        print(f"  open threads in window: {d.get('open_thread_count')}")
+        for t in d.get("open_threads", [])[:5]:
+            print(f"    [{t['id']}] {_when(t['last_ts'])}: {t.get('preview')}")
+    if a.mark and d.get("next_since"):
+        _mark_read(who or _name(a.sender), d["next_since"])
+    return 0
+
+
+def cmd_threads(a):
+    q = {"state": a.state, "limit": a.limit}
+    if a.since:
+        q["since"] = a.since
+    if a.topic:
+        q["topic"] = a.topic
+    if a.older_than is not None:
+        q["older_than"] = a.older_than
+    if a.telemetry:
+        q["telemetry"] = 1
+    st, body = _get("/api/threads?" + urllib.parse.urlencode(q))
+    if st != 200:
+        print(f"threads failed {st}: {body}", file=sys.stderr)
+        return 1
+    d = json.loads(body)
+    if a.json:
+        print(json.dumps(d, indent=2))
+        return 0
+    print(f"{d['state']}: {d['count']} threads ({d['open']} unanswered)")
+    for t in d["threads"]:
+        lag = f"lag {_age(t['first_reply_lag_s'])}" if t.get("first_reply_lag_s") is not None \
+            else f"open {_age(t['age_s'])}"
+        print(f"[{t['id']}] {_when(t['last_ts'])} {lag} "
+              f"{t['replies']}r <{t['sender']}> {t.get('preview')}")
+    return 0
+
+
+def cmd_presence(a):
+    st, body = _get("/api/presence")
+    if st != 200:
+        print(f"presence failed {st}: {body}", file=sys.stderr)
+        return 1
+    d = json.loads(body)
+    if a.json:
+        print(json.dumps(d, indent=2))
+        return 0
+    print(f"tip={d['tip']}")
+    for row in d["agents"]:
+        if a.active_only and row["state"] not in ("active",):
+            continue
+        print(f"{row['name']:<18} {row['state']:<11} "
+              f"backlog={row['backlog'] if row['backlog'] is not None else '-'} "
+              f"last_seen={_age(row['age_s']) if row['age_s'] is not None else '-'}")
     return 0
 
 
@@ -279,6 +426,10 @@ def main(argv=None):
     r.add_argument("--mark", action="store_true",
                    help="store a read cursor for my sender name")
     r.add_argument("--from", dest="sender", help="sender name used by --mark")
+    r.add_argument("--meta", action="store_true",
+                   help="drop bodies; return id/sender/chars/preview only")
+    r.add_argument("--max-chars", dest="max_chars", type=int,
+                   help="clip each body to N chars (chars keeps the real size)")
     r.add_argument("--json", action="store_true")
     r.set_defaults(fn=cmd_read)
 
@@ -292,6 +443,42 @@ def main(argv=None):
     rd = sub.add_parser("reads", help="per-agent read cursors")
     rd.add_argument("--json", action="store_true")
     rd.set_defaults(fn=cmd_reads)
+
+    ib = sub.add_parser("inbox", help="my mentions, threads and backlog in one call")
+    ib.add_argument("--name", help="defaults to AGENT_NAME/$USER")
+    ib.add_argument("--from", dest="sender")
+    ib.add_argument("--topic")
+    ib.add_argument("--telemetry", action="store_true")
+    ib.add_argument("--mark", action="store_true", help="publish cursor at the tip")
+    ib.add_argument("--json", action="store_true")
+    ib.set_defaults(fn=cmd_inbox)
+
+    dg = sub.add_parser("digest", help="compact summary of a window since a cursor")
+    dg.add_argument("--since", type=int, default=0)
+    dg.add_argument("--for", dest="who", metavar="NAME",
+                    help="also report that agent's mentions (default: --name)")
+    dg.add_argument("--name")
+    dg.add_argument("--topic")
+    dg.add_argument("--telemetry", action="store_true")
+    dg.add_argument("--mark", action="store_true", help="publish cursor at next_since")
+    dg.add_argument("--json", action="store_true")
+    dg.set_defaults(fn=cmd_digest)
+
+    th = sub.add_parser("threads", help="thread-level view: answered, open, stale")
+    th.add_argument("--state", default="open", choices=["all", "open", "answered", "stale"])
+    th.add_argument("--since", type=int, default=0)
+    th.add_argument("--limit", type=int, default=25)
+    th.add_argument("--topic")
+    th.add_argument("--older-than", dest="older_than", type=int,
+                    help="hours, for --state stale (default 24)")
+    th.add_argument("--telemetry", action="store_true")
+    th.add_argument("--json", action="store_true")
+    th.set_defaults(fn=cmd_threads)
+
+    pr = sub.add_parser("presence", help="who is alive, from published read cursors")
+    pr.add_argument("--active-only", action="store_true")
+    pr.add_argument("--json", action="store_true")
+    pr.set_defaults(fn=cmd_presence)
 
     t = sub.add_parser("tail")
     t.add_argument("--since", type=int, default=0)
