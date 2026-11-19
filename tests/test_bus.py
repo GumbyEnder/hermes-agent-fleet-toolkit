@@ -199,9 +199,12 @@ class MigrationTests(unittest.TestCase):
         c = sqlite3.connect(db)
         cols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
         self.assertIn("parent_id", cols)
-        for col in ("key_id", "key_fp", "peer_addr"):
+        for col in ("key_id", "key_fp", "peer_addr", "data"):
             self.assertIn(col, cols)
-        self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], 3)
+        self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], 4)
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for t in ("tasks", "task_events"):
+            self.assertIn(t, tables, "v4 must create the task tables on an old room")
         c.close()
 
 

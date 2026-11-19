@@ -42,7 +42,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 DB_PATH = os.environ.get("AGENT_CHAT_DB") or str(
     __import__("pathlib").Path.home() / ".local/share/agent-chat/room.db")
@@ -192,6 +192,38 @@ def migrate():
         for col in ("key_id", "key_fp", "peer_addr"):
             if col not in have:
                 c.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
+        # v4: structured envelope. NULL means "no envelope", which is exactly what
+        # every pre-v4 row is — not an empty object pretending to be one.
+        if "data" not in have:
+            c.execute("ALTER TABLE messages ADD COLUMN data TEXT")
+        c.execute("""CREATE TABLE IF NOT EXISTS tasks (
+                       id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                       created_ts    REAL NOT NULL,
+                       updated_ts    REAL NOT NULL,
+                       creator       TEXT NOT NULL,
+                       owner         TEXT,
+                       claimed_by    TEXT,
+                       claim_expires REAL,
+                       title         TEXT NOT NULL,
+                       detail        TEXT,
+                       topic         TEXT,
+                       ref           TEXT,
+                       state         TEXT NOT NULL DEFAULT 'open',
+                       outcome       TEXT,
+                       evidence      TEXT,
+                       data          TEXT,
+                       root_id       INTEGER)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS task_events (
+                       id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                       task_id INTEGER NOT NULL,
+                       ts      REAL NOT NULL,
+                       actor   TEXT NOT NULL,
+                       action  TEXT NOT NULL,
+                       note    TEXT,
+                       data    TEXT)""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state, updated_ts)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner, claimed_by)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_task_events ON task_events(task_id)")
         c.execute("""CREATE TABLE IF NOT EXISTS agents (
                        name TEXT PRIMARY KEY,
                        webhook_url TEXT NOT NULL,
@@ -607,11 +639,18 @@ def ui_token_ok(token):
 
 
 def row_msg(r):
-    return {"id": r[0], "ts": r[1], "sender": r[2], "topic": r[3],
-            "text": r[4], "kind": r[5], "parent_id": r[6]}
+    """Message wire shape. `data` is the v4 envelope: parsed when present, and
+    omitted entirely on rows written before v4 (unknown, not empty)."""
+    out = {"id": r[0], "ts": r[1], "sender": r[2], "topic": r[3],
+           "text": r[4], "kind": r[5], "parent_id": r[6]}
+    if len(r) > 7 and r[7]:
+        parsed = _data_obj(r[7])
+        if parsed is not None:
+            out["data"] = parsed
+    return out
 
 
-SEL = "SELECT id, ts, sender, topic, text, kind, parent_id FROM messages"
+SEL = "SELECT id, ts, sender, topic, text, kind, parent_id, data FROM messages"
 
 
 def select_msgs(c, since, limit, topic, thread=None, telemetry=False, before=None,
@@ -650,7 +689,7 @@ def search(c, q, topic, limit):
         args.append(limit)
         try:
             rows = c.execute(
-                "SELECT m.id, m.ts, m.sender, m.topic, m.text, m.kind, m.parent_id "
+                "SELECT m.id, m.ts, m.sender, m.topic, m.text, m.kind, m.parent_id, m.data "
                 "FROM messages_fts f JOIN messages m ON m.id = f.rowid "
                 f"WHERE {' AND '.join(where)} ORDER BY m.id DESC LIMIT ?", args).fetchall()
             return [row_msg(r) for r in rows]
@@ -702,7 +741,7 @@ def dispatch_mentions(sender, topic, text, mid, parent_id=None, ts=None):
 
 
 def store(sender, topic, text, kind="message", parent_id=None,
-          key_id=None, key_fp=None, peer_addr=None):
+          key_id=None, key_fp=None, peer_addr=None, data=None):
     """Insert a message under the write lock. Returns (new id, row ts).
 
     The ts is hoisted out of the INSERT so the caller can carry the sender's own
@@ -716,10 +755,10 @@ def store(sender, topic, text, kind="message", parent_id=None,
     with _lock, db() as c:
         cur = c.execute(
             "INSERT INTO messages (ts, sender, topic, text, kind, parent_id,"
-            " key_id, key_fp, peer_addr) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            " key_id, key_fp, peer_addr, data) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (ts, sender, topic, text, kind, parent_id,
-             key_id, key_fp, peer_addr))
+             key_id, key_fp, peer_addr, data))
         return cur.lastrowid, ts
 
 
@@ -1169,6 +1208,335 @@ def presence_payload(c):
     return {"tip": tip, "generated": now,
             "order": ["active", "idle", "dark", "never read"], "agents": out}
 
+
+# --- structured envelopes, tasks, artifacts (schema v4) --------------------
+#
+# The room was a transcript: prose in, prose out, and every piece of state
+# (a PB id, a VERDICT, an ACCEPT/BOUNCE) hand-rolled inside message text — 967
+# messages carry a PB id, 306 a VERDICT. These tables make that state queryable
+# instead of greppable, without taking the transcript away from humans.
+
+KINDS = frozenset({
+    "message", "system", "note", "task", "claim", "status", "verdict",
+    "outcome", "artifact", "amendment", "ack", "reply", "report", "post",
+    "chat", "text",
+})
+TASK_STATES = ("open", "claimed", "done", "bounced")
+MAX_DATA = int(os.environ.get("AGENT_CHAT_MAX_DATA", "4096"))
+ARTIFACT_DIR = os.environ.get("AGENT_CHAT_ARTIFACTS") or str(
+    __import__("pathlib").Path.home() / ".local/share/agent-chat/artifacts")
+ARTIFACT_AUTO_CHARS = int(os.environ.get("AGENT_CHAT_ARTIFACT_OVER", "0"))
+DEFAULT_LEASE = 3600
+MAX_LEASE = 86400
+
+
+def _envelope(raw):
+    """Validate a message `data` envelope. Returns (json_text|None, error|None)."""
+    if raw in (None, "", {}):
+        return None, None
+    if not isinstance(raw, dict):
+        return None, "data must be a JSON object"
+    try:
+        text = json.dumps(raw, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None, "data is not JSON-serialisable"
+    if len(text) > MAX_DATA:
+        return None, f"data larger than {MAX_DATA} bytes"
+    return text, None
+
+
+def _data_obj(raw):
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def artifact_write(text, name=None):
+    """Store a body on disk and return its handle. Content-addressed, so the
+    same report posted twice costs one file and the sha is the identity."""
+    os.makedirs(ARTIFACT_DIR, exist_ok=True)
+    raw = text.encode("utf-8")
+    sha = hashlib.sha256(raw).hexdigest()
+    path = os.path.join(ARTIFACT_DIR, sha + (".md" if not name else
+                                             "-" + re.sub(r"[^A-Za-z0-9._-]", "_", name)[:60]))
+    with open(path, "wb") as fh:
+        fh.write(raw)
+    return {"sha256": sha, "bytes": len(raw), "path": path,
+            "url": "/artifact/" + sha}
+
+
+def artifact_path(sha):
+    if not re.fullmatch(r"[0-9a-f]{64}", sha or ""):
+        return None
+    p = os.path.join(ARTIFACT_DIR, sha + ".md")
+    return p if os.path.exists(p) else None
+
+
+def maybe_route_large(text, data, force=False):
+    """Fold an oversized body into an artifact and keep a readable head.
+
+    A 2.3k-char median is already expensive; a 10k-char paste is a document. The
+    message keeps the first 400 chars and the handle, so the room stays readable
+    and the full text is one GET away.
+    """
+    # `route_large: true` on the post forces the behaviour even when the server
+    # has no auto threshold configured; 2,000 chars is the floor for that path.
+    threshold = ARTIFACT_AUTO_CHARS or (2000 if force else 0)
+    if not threshold or len(text) <= threshold:
+        return text, data
+    handle = artifact_write(text)
+    head = text[:400].rstrip()
+    body = (head + f"\n\n[{len(text)} chars — full text: {handle['url']} "
+            f"sha256:{handle['sha256'][:12]}]")
+    payload = dict(data or {})
+    payload["artifact"] = {"sha256": handle["sha256"], "bytes": handle["bytes"],
+                           "url": handle["url"], "chars": len(text)}
+    return body, payload
+
+
+# --- tasks ----------------------------------------------------------------
+
+def _now():
+    return time.time()
+
+
+def task_row(r, now=None):
+    now = now or _now()
+    if isinstance(r, (tuple, list)):
+        r = dict(zip(TASK_COLS, r))
+    expires = r["claim_expires"]
+    expired = bool(expires and expires <= now)
+    state = r["state"]
+    effective = "open" if (state == "claimed" and expired) else state
+    return {
+        "id": r["id"], "title": r["title"], "detail": r["detail"],
+        "topic": r["topic"], "ref": r["ref"],
+        "creator": r["creator"], "owner": r["owner"],
+        "claimed_by": r["claimed_by"], "claim_expires": expires,
+        "lease_s_left": int(max(0, expires - now)) if (expires and not expired) else 0,
+        "lease_expired": expired,
+        "state": state, "effective_state": effective,
+        "outcome": r["outcome"], "evidence": r["evidence"],
+        "created_ts": r["created_ts"], "updated_ts": r["updated_ts"],
+        "root_id": r["root_id"], "data": _data_obj(r["data"]),
+    }
+
+
+TASK_COLS = ("id", "created_ts", "updated_ts", "creator", "owner", "claimed_by",
+             "claim_expires", "title", "detail", "topic", "ref", "state",
+             "outcome", "evidence", "data", "root_id")
+
+
+def _task_get(c, task_id):
+    """Row as a dict keyed by TASK_COLS — explicit columns, no row_factory games."""
+    row = c.execute("SELECT %s FROM tasks WHERE id = ?" % ",".join(TASK_COLS),
+                    (task_id,)).fetchone()
+    return dict(zip(TASK_COLS, row)) if row else None
+
+
+def _task_event(c, task_id, actor, action, note=None, data=None):
+    c.execute("INSERT INTO task_events (task_id, ts, actor, action, note, data) "
+              "VALUES (?,?,?,?,?,?)",
+              (task_id, _now(), actor, action, (note or "")[:2000],
+               json.dumps(data) if data else None))
+
+
+def create_task(sender, m):
+    title = str(m.get("title") or "").strip()[:300]
+    if not title:
+        return None, "title required", 400
+    data, err = _envelope(m.get("data"))
+    if err:
+        return None, err, 400
+    now = _now()
+    with _lock, db() as c:
+        cur = c.execute(
+            "INSERT INTO tasks (created_ts, updated_ts, creator, owner, title, detail,"
+            " topic, ref, state, data) VALUES (?,?,?,?,?,?,?,?,'open',?)",
+            (now, now, sender, (str(m.get("owner") or "").strip()[:64] or None),
+             title, str(m.get("detail") or "")[:8000],
+             str(m.get("topic") or "work")[:64],
+             (str(m.get("ref") or "").strip()[:64] or None), data))
+        task_id = cur.lastrowid
+        _task_event(c, task_id, sender, "create", title)
+        row = _task_get(c, task_id)
+    return task_row(row), None, 200
+
+
+def claim_task(sender, m):
+    try:
+        task_id = int(m.get("id"))
+    except (TypeError, ValueError):
+        return None, "id must be an integer", 400
+    try:
+        lease = int(m.get("lease_s") or DEFAULT_LEASE)
+    except (TypeError, ValueError):
+        return None, "lease_s must be an integer", 400
+    lease = max(60, min(lease, MAX_LEASE))
+    now = _now()
+    with _lock, db() as c:
+        row = _task_get(c, task_id)
+        if not row:
+            return None, "task not found", 404
+        state = row["state"]
+        expired = row["claim_expires"] and row["claim_expires"] <= now
+        if state in ("done", "bounced"):
+            return None, f"task is {state}", 409
+        if state == "claimed" and not expired and row["claimed_by"] != sender:
+            return None, (f"held by {row['claimed_by']} for another "
+                          f"{int(row['claim_expires'] - now)}s"), 409
+        c.execute("UPDATE tasks SET state='claimed', claimed_by=?, claim_expires=?,"
+                  " updated_ts=? WHERE id=?", (sender, now + lease, now, task_id))
+        _task_event(c, task_id, sender, "claim", f"lease {lease}s")
+        out = task_row(_task_get(c, task_id))
+    return out, None, 200
+
+
+def renew_task(sender, m):
+    try:
+        task_id = int(m.get("id"))
+        lease = int(m.get("lease_s") or DEFAULT_LEASE)
+    except (TypeError, ValueError):
+        return None, "id and lease_s must be integers", 400
+    lease = max(60, min(lease, MAX_LEASE))
+    now = _now()
+    with _lock, db() as c:
+        row = _task_get(c, task_id)
+        if not row:
+            return None, "task not found", 404
+        if row["claimed_by"] != sender:
+            return None, f"not yours (claimed_by={row['claimed_by']})", 409
+        if row["state"] == "done":
+            return None, "task is done", 409
+        c.execute("UPDATE tasks SET state='claimed', claim_expires=?, updated_ts=? "
+                  "WHERE id=?", (now + lease, now, task_id))
+        _task_event(c, task_id, sender, "renew", f"lease {lease}s")
+        out = task_row(_task_get(c, task_id))
+    return out, None, 200
+
+
+def complete_task(sender, m):
+    try:
+        task_id = int(m.get("id"))
+    except (TypeError, ValueError):
+        return None, "id must be an integer"
+    outcome = str(m.get("outcome") or "done")[:64]
+    evidence = str(m.get("evidence") or "").strip()[:500] or None
+    data, err = _envelope(m.get("data"))
+    if err:
+        return None, err, 400
+    now = _now()
+    with _lock, db() as c:
+        row = _task_get(c, task_id)
+        if not row:
+            return None, "task not found", 404
+        if row["state"] == "done":
+            return None, "already done", 409
+        if row["claimed_by"] and row["claimed_by"] != sender and row["owner"] != sender:
+            return None, f"claimed by {row['claimed_by']}", 409
+        c.execute("UPDATE tasks SET state='done', outcome=?, evidence=?, updated_ts=?,"
+                  " data=COALESCE(?, data) WHERE id=?",
+                  (outcome, evidence, now, data, task_id))
+        _task_event(c, task_id, sender, "complete", outcome,
+                    {"evidence": evidence} if evidence else None)
+        out = task_row(_task_get(c, task_id))
+    return out, None, 200
+
+
+def bounce_task(sender, m):
+    try:
+        task_id = int(m.get("id"))
+    except (TypeError, ValueError):
+        return None, "id must be an integer", 400
+    reason = str(m.get("reason") or "").strip()[:2000]
+    if not reason:
+        return None, ("reason required — a bounce without one is just a "
+                      "disappearance"), 400
+    now = _now()
+    with _lock, db() as c:
+        row = _task_get(c, task_id)
+        if not row:
+            return None, "task not found", 404
+        if row["state"] == "done":
+            return None, "already done", 409
+        c.execute("UPDATE tasks SET state='bounced', claimed_by=NULL, claim_expires=NULL,"
+                  " outcome=?, updated_ts=? WHERE id=?", (reason, now, task_id))
+        _task_event(c, task_id, sender, "bounce", reason)
+        out = task_row(_task_get(c, task_id))
+    return out, None, 200
+
+
+def release_task(sender, m):
+    """Put a claimed task back in the pool without branding it rejected.
+
+    `bounce` means "this was wrong"; `release` means "I stopped". Without the
+    distinction an agent that runs out of turn has to choose between a false
+    rejection and a lease that expires under someone else's name.
+    """
+    try:
+        task_id = int(m.get("id"))
+    except (TypeError, ValueError):
+        return None, "id must be an integer", 400
+    reason = str(m.get("reason") or "").strip()[:2000] or None
+    now = _now()
+    with _lock, db() as c:
+        row = _task_get(c, task_id)
+        if not row:
+            return None, "task not found", 404
+        if row["state"] == "done":
+            return None, "task is done — release does not reopen completed work", 409
+        if row["claimed_by"] and row["claimed_by"] != sender:
+            return None, f"claimed by {row['claimed_by']}", 409
+        c.execute("UPDATE tasks SET state='open', claimed_by=NULL, claim_expires=NULL,"
+                  " updated_ts=? WHERE id=?", (now, task_id))
+        _task_event(c, task_id, sender, "release", reason)
+        out = task_row(_task_get(c, task_id))
+    return out, None, 200
+
+
+def list_tasks(c, state="all", owner=None, topic=None, ref=None, limit=100, since=0):
+    where, args = ["1=1"], []
+    if since:
+        where.append("updated_ts >= ?")
+        args.append(since)
+    if owner:
+        where.append("(owner = ? OR claimed_by = ?)")
+        args.extend([owner, owner])
+    if topic:
+        where.append("topic = ?")
+        args.append(topic)
+    if ref:
+        where.append("ref = ?")
+        args.append(ref)
+    args.append(max(1, min(int(limit), 500)))
+    rows = c.execute("SELECT %s FROM tasks WHERE %s ORDER BY updated_ts DESC LIMIT ?"
+                     % (",".join(TASK_COLS), " AND ".join(where)), args).fetchall()
+    now = _now()
+    tasks = [task_row(r, now) for r in rows]
+    if state and state != "all":
+        tasks = [t for t in tasks if t["effective_state"] == state]
+    counts = {}
+    for t in tasks:
+        counts[t["effective_state"]] = counts.get(t["effective_state"], 0) + 1
+    return {"state": state, "count": len(tasks), "counts": counts, "tasks": tasks}
+
+
+def task_detail(c, task_id):
+    row = _task_get(c, task_id)
+    if not row:
+        return None
+    events = c.execute("SELECT ts, actor, action, note, data FROM task_events "
+                       "WHERE task_id = ? ORDER BY id", (task_id,)).fetchall()
+    out = task_row(row)
+    out["events"] = [{"ts": e[0], "actor": e[1], "action": e[2], "note": e[3],
+                      "data": _data_obj(e[4])} for e in events]
+    if out.get("root_id"):
+        out["thread"] = select_msgs(c, 0, 200, None, out["root_id"], True)
+    return out
+
 # --- viewer --------------------------------------------------------------
 
 def viewer_html(token, sender="you"):
@@ -1346,6 +1714,19 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
 .list .k{color:var(--dim);font:11.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .list .v{font:11.5px var(--mono);color:var(--text);white-space:nowrap}
 .warnstrip{border:1px solid #4a3a1f;background:#1b1610;color:#e0b341;border-radius:var(--r);padding:9px 12px;font:12px var(--mono)}
+/* --- task board --- */
+#tasks-pane{padding:18px 0 40px}
+.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.bcol{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:10px;min-height:120px}
+.bcol h3{margin:0 0 9px;font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dimmer);display:flex;justify-content:space-between}
+.bcol h3 b{color:var(--dim);font-weight:400}
+.tcard{border:1px solid var(--line);border-radius:7px;padding:8px 9px;margin-bottom:8px;background:#0c0f13}
+.tcard .tt{font-size:13px;line-height:1.35;color:var(--text);margin-bottom:4px}
+.tcard .tm{font:10.5px var(--mono);color:var(--dimmer);display:flex;gap:8px;flex-wrap:wrap}
+.tcard .tm .ref{color:var(--accent)}
+.tcard .tm .own{color:var(--ok)}
+.tcard.done .tt{color:var(--dim);text-decoration:line-through;text-decoration-color:#2a3038}
+@media(max-width:880px){.board{grid-template-columns:1fr 1fr}}
 @media(max-width:880px){
  .app{padding:0 14px 30px}
  .shell{grid-template-columns:1fr;gap:0}
@@ -1364,7 +1745,7 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
 </style></head><body><div class="app">
 <div class="top">
  <span class="brand"><span class="dot"></span>Agent Chat Room</span>
- <div class="tabs"><button class="tab on" data-tab="room">room</button><button class="tab" data-tab="analytics">analytics</button></div>
+ <div class="tabs"><button class="tab on" data-tab="room">room</button><button class="tab" data-tab="tasks">tasks</button><button class="tab" data-tab="analytics">analytics</button></div>
  <span class="spacer"></span>
  <span class="links"><a href="/analytics">analytics page</a><span>&middot;</span><a href="/api/messages?telemetry=1">json</a><span>&middot;</span><a href="/metrics">metrics</a><span>&middot;</span><span id="count" class="count"></span></span>
 </div>
@@ -1390,6 +1771,7 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
 <div id="chips" class="speakers"></div>
 <div id="feed"></div><div id="stale" class="stale">connection stale &mdash; retrying&hellip;</div>
 </div>
+<div id="tasks-pane" hidden></div>
 <div id="analytics-pane" hidden></div>
 </main>
 <aside id="cal" class="cal" aria-label="Calendar"></aside>
@@ -1544,8 +1926,10 @@ let tab='room',adata=null,aAt=0;
 function setTab(t){tab=t;
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
  $('room-pane').hidden=(t!=='room');$('analytics-pane').hidden=(t!=='analytics');
+ $('tasks-pane').hidden=(t!=='tasks');
  const cal=$('cal');if(cal)cal.style.display=(t==='room')?'':'none';
- if(t==='analytics')loadAnalytics();}
+ if(t==='analytics')loadAnalytics();
+ if(t==='tasks')loadTasks();}
 document.addEventListener('click',e=>{const b=e.target.closest('[data-tab]');if(b)setTab(b.dataset.tab)});
 function nf(n){n=Number(n)||0;if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return Math.round(n/1e3)+'k';return String(Math.round(n))}
 function money(n){n=Number(n)||0;return '$'+(n>=1000?(n/1000).toFixed(1)+'k':n.toFixed(2))}
@@ -1597,7 +1981,27 @@ function renderAnalytics(){
   <figure><figcaption>topics</figcaption><div class="list">${topics||'<div class="row2"><span class="k">no traffic</span></div>'}</div></figure>
  </div>`;
 }
-window.addEventListener('resize',()=>document.documentElement.style.setProperty('--composeH',composeH()+'px'));
+let tdata=null,tAt=0;
+async function loadTasks(){
+ try{tdata=await fetch('/api/tasks?state=all&limit=200').then(r=>r.json());tAt=Date.now();renderTasks()}
+ catch(err){$('tasks-pane').innerHTML='<div class="warnstrip">tasks unavailable: '+esc(err.message||'fetch failed')+'</div>'}
+}
+function renderTasks(){
+ const d=tdata;if(!d)return;
+ const by={open:[],claimed:[],bounced:[],done:[]};
+ for(const t of (d.tasks||[])){(by[t.effective_state]||by.open).push(t)}
+ const card=t=>{
+  const ref=t.ref?'<span class="ref">'+esc(t.ref)+'</span>':'';
+  const own=t.claimed_by?'<span class="own">@'+esc(t.claimed_by)+'</span>':'';
+  const who=t.owner?'<span>\u2192 '+esc(t.owner)+'</span>':'';
+  return '<div class="tcard'+(t.effective_state==='done'?' done':'')+'">'
+   +'<div class="tt">'+esc(t.title)+'</div>'
+   +'<div class="tm">#'+t.id+' '+ref+' '+own+' '+who+' <span>'+ago(t.updated_ts)+'</span></div></div>'};
+ $('tasks-pane').innerHTML='<div class="board">'+[['open','open'],['claimed','claimed'],['bounced','bounced'],['done','done']].map(([k,label])=>
+  '<div class="bcol"><h3>'+label+'<b>'+(by[k]||[]).length+'</b></h3>'
+  +((by[k]||[]).map(card).join('')||'<div class="count">nothing here</div>')+'</div>').join('')+'</div>';
+}
+window.addEventListener('resize',()=>{document.documentElement.style.setProperty('--composeH',composeH()+'px')});
 loadAgents();boot();setInterval(()=>{if(tab==='analytics'){if(Date.now()-aAt>60000)loadAnalytics()}else if(!searching)poll()},3000);
 </script></body></html>""".replace("__TOKEN__", token).replace("__SENDER__", sender)
 
@@ -2074,6 +2478,57 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(presence_payload(c))
             return
 
+        if path == "/api/tasks":
+            if qs.get("id"):
+                try:
+                    tid = int(qs["id"])
+                except ValueError:
+                    self._json({"error": "id must be an integer"}, 400)
+                    return
+                with db() as c:
+                    task = task_detail(c, tid)
+                if not task:
+                    self._json({"error": "task not found"}, 404)
+                    return
+                self._json(task)
+                return
+            state = (qs.get("state") or "all").lower()
+            if state not in ("all",) + TASK_STATES:
+                self._json({"error": "state must be all|open|claimed|done|bounced"}, 400)
+                return
+            try:
+                limit = int(qs.get("limit", "100") or 100)
+                since = float(qs.get("since", 0) or 0)
+            except ValueError:
+                self._json({"error": "limit/since must be numbers"}, 400)
+                return
+            with db() as c:
+                self._json(list_tasks(c, state, (qs.get("owner") or "").strip() or None,
+                                      (qs.get("topic") or "").strip() or None,
+                                      (qs.get("ref") or "").strip() or None,
+                                      limit, since))
+            return
+
+        if path.startswith("/artifact/"):
+            sha = path[len("/artifact/"):].strip("/")
+            fp = artifact_path(sha)
+            if not fp:
+                self._json({"error": "artifact not found"}, 404)
+                return
+            try:
+                with open(fp, "rb") as fh:
+                    body = fh.read()
+            except OSError as e:
+                self._json({"error": f"artifact unreadable: {e}"}, 500)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-SHA256", sha)
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if path == "/api/search":
             q = (qs.get("q") or "").strip()
             if not q:
@@ -2228,6 +2683,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "registered": name})
             return
 
+        if path in ("/api/tasks", "/api/tasks/claim", "/api/tasks/renew",
+                    "/api/tasks/complete", "/api/tasks/bounce", "/api/tasks/release",
+                    "/api/artifacts", "/api/amend"):
+            self._task_post(path)
+            return
+
         if path != "/send":
             self._json({"error": "not found"}, 404)
             return
@@ -2240,7 +2701,22 @@ class Handler(BaseHTTPRequestHandler):
         sender = canon_sender(raw_from)
         topic = str(m.get("topic", "general"))[:64]
         text = str(m.get("text", ""))[:20000]
-        kind = str(m.get("kind", "message"))[:16]
+        kind = (str(m.get("kind", "message"))[:16].strip().lower() or "message")
+        if kind not in KINDS:
+            self._json({"error": f"unknown kind {kind!r}",
+                        "allowed": sorted(KINDS)}, 400)
+            return
+        data_text, derr = _envelope(m.get("data"))
+        if derr:
+            self._json({"error": derr}, 400)
+            return
+        # Oversized bodies become artifacts: the room keeps a readable head and
+        # the full text stays one GET away (content-addressed, so reposts dedupe).
+        if m.get("route_large") or ARTIFACT_AUTO_CHARS:
+            text, routed = maybe_route_large(text, _data_obj(data_text),
+                                             force=bool(m.get("route_large")))
+            if routed:
+                data_text = json.dumps(routed, separators=(",", ":"))
         # Count the refusal before the text check: a probe with an empty body and
         # a bad sender returns the combined 400 and used to leave the counter at 0,
         # which made the metric evidence for only one of the two refusal shapes.
@@ -2264,11 +2740,133 @@ class Handler(BaseHTTPRequestHandler):
         mid, mts = store(sender, topic, text, kind, parent,
                          key_id=KEY_ID, key_fp=KEY_FP,
                          peer_addr=(self.client_address[0]
-                                    if self.client_address else None))
+                                    if self.client_address else None),
+                         data=data_text)
         _counters["sent"] += 1
         self._json({"ok": True, "id": mid,
                     "woken": dispatch_mentions(sender, topic, text, mid, parent,
                                                ts=mts)})
+
+    def _task_post(self, path):
+        """Signed writes for tasks, artifacts and amendments.
+
+        Kept in one method so the identity rules are in one place: every write
+        records the sender the signature proves (not a name the body claims), and
+        every state change appends a task_event — the board is a projection, the
+        events are the record.
+        """
+        m, err = self._signed_body()
+        if err:
+            return
+        raw_from = m.get("from", "")
+        sender_err = sender_error(raw_from)
+        if sender_err:
+            _counters["rejected_sender"] = _counters.get("rejected_sender", 0) + 1
+            self._json({"error": sender_err}, 400)
+            return
+        sender = canon_sender(raw_from)
+        if not rate_ok(sender):
+            _counters["rejected_rate"] += 1
+            self._json({"error": "rate limited"}, 429, {"Retry-After": "5"})
+            return
+
+        if path == "/api/artifacts":
+            text = str(m.get("text", ""))
+            if not text.strip():
+                self._json({"error": "text required"}, 400)
+                return
+            handle = artifact_write(text, m.get("name"))
+            _counters["artifacts"] = _counters.get("artifacts", 0) + 1
+            self._json({"ok": True, **handle})
+            return
+
+        if path == "/api/amend":
+            try:
+                target = int(m.get("id"))
+            except (TypeError, ValueError):
+                self._json({"error": "id must be an integer"}, 400)
+                return
+            with db() as c:
+                row = c.execute(f"{SEL} WHERE id = ?", (target,)).fetchone()
+            if not row:
+                self._json({"error": "message not found"}, 404)
+                return
+            if row[2] != sender:
+                self._json({"error": "only the original sender can amend"}, 403)
+                return
+            text = str(m.get("text", ""))[:20000]
+            if not text.strip():
+                self._json({"error": "text required"}, 400)
+                return
+            envelope, derr = _envelope(m.get("data"))
+            if derr:
+                self._json({"error": derr}, 400)
+                return
+            base = _data_obj(envelope) or {}
+            base["supersedes"] = target
+            body = (f"[amendment to #{target}] " + text)
+            mid, mts = store(sender, row[3], body, "amendment", row[6],
+                             key_id=KEY_ID, key_fp=KEY_FP,
+                             peer_addr=(self.client_address[0]
+                                        if self.client_address else None),
+                             data=json.dumps(base, separators=(",", ":")))
+            _counters["amended"] = _counters.get("amended", 0) + 1
+            self._json({"ok": True, "id": mid, "supersedes": target,
+                        "woken": dispatch_mentions(sender, row[3], body, mid, row[6],
+                                                   ts=mts)})
+            return
+
+        if path == "/api/tasks":
+            task, err, code = create_task(sender, m)
+            if err:
+                self._json({"error": err}, code)
+                return
+            body = task["title"] + (("\n\n" + task["detail"]) if task["detail"] else "")
+            data = {"task": task["id"], "ref": task.get("ref"),
+                    "owner": task.get("owner"), "state": "open"}
+            mid, mts = store(sender, task["topic"] or "work", body, "task", None,
+                             key_id=KEY_ID, key_fp=KEY_FP,
+                             peer_addr=(self.client_address[0]
+                                        if self.client_address else None),
+                             data=json.dumps(data, separators=(",", ":")))
+            with _lock, db() as c:
+                c.execute("UPDATE tasks SET root_id = ? WHERE id = ?", (mid, task["id"]))
+            task["root_id"] = mid
+            _counters["tasks_created"] = _counters.get("tasks_created", 0) + 1
+            self._json({"ok": True, "task": task, "id": mid, "woken": dispatch_mentions(
+                sender, task["topic"] or "work", body, mid, None, ts=mts)})
+            return
+
+        fn = {"/api/tasks/claim": claim_task,
+              "/api/tasks/renew": renew_task,
+              "/api/tasks/complete": complete_task,
+              "/api/tasks/bounce": bounce_task,
+              "/api/tasks/release": release_task}[path]
+        task, err, code = fn(sender, m)
+        if err:
+            self._json({"error": err}, code)
+            return
+        _counters["tasks_" + path.rsplit("/", 1)[1]] = (
+            _counters.get("tasks_" + path.rsplit("/", 1)[1], 0) + 1)
+        # Completing announces in the room (the outcome is room news); claiming
+        # does not, or the room becomes a status bar.
+        posted = None
+        if path == "/api/tasks/complete" and m.get("announce", True):
+            body = f"[task {task['id']} done] {task['title']}"
+            if task.get("outcome"):
+                body += f" — {task['outcome']}"
+            if task.get("evidence"):
+                body += f"\nevidence: {task['evidence']}"
+            posted, _ = store(sender, task["topic"] or "work", body, "outcome",
+                              task.get("root_id"), key_id=KEY_ID, key_fp=KEY_FP,
+                              peer_addr=(self.client_address[0]
+                                         if self.client_address else None),
+                              data=json.dumps({"task": task["id"], "state": "done",
+                                               "outcome": task.get("outcome"),
+                                               "evidence": task.get("evidence")},
+                                              separators=(",", ":")))
+        self._json({"ok": True, "task": task, "posted": posted})
+        return
 
     def _unsigned_body(self):
         try:

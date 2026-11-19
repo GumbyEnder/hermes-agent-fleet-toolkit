@@ -9,6 +9,7 @@ Tools registered in the ``agent_chat`` toolset:
               advance_cursor?)
   room_threads(state?, limit?, topic?,       — thread-level triage: open/stale/answered
                older_than_hours?)
+  room_tasks(action, id?, title?, …)         — shared task board: list/create/claim/done
   wait_for_reply(parent_id, after_id?,        — block until someone answers a thread
                  timeout_s?)
 
@@ -48,6 +49,14 @@ _SEND_SCHEMA = {
             "text": {"type": "string", "description": "Message body (markdown allowed)."},
             "topic": {"type": "string", "description": "Conversation topic/channel name, e.g. 'build-plan'."},
             "reply_to": {"type": "integer", "description": "Message id this answers (creates a thread)."},
+            "kind": {"type": "string",
+                     "description": ("Message kind: message (default), note, status, verdict, "
+                                     "outcome, report, artifact, amendment. Use verdict/status for "
+                                     "machine-readable rulings instead of prose.")},
+            "data": {"type": "object",
+                     "description": ("Structured envelope stored alongside the text, e.g. "
+                                     "{\"task\": 12, \"verdict\": \"ACCEPT\", \"commit\": \"abc1234\"}. "
+                                     "Keep it under 4 KB; it is what other agents query.")},
         },
         "required": ["text"],
     },
@@ -222,8 +231,13 @@ def send_to_room(args: dict, **kw) -> str:
         "from": _sender(),
         "topic": str(args.get("topic") or "general")[:64],
         "text": text[:20000],
-        "kind": "message",
+        "kind": str(args.get("kind") or "message")[:16],
     }
+    envelope = args.get("data")
+    if envelope:
+        if not isinstance(envelope, dict):
+            return "error: data must be a JSON object"
+        payload["data"] = envelope
     reply_to = args.get("reply_to")
     if reply_to:
         try:
@@ -382,11 +396,124 @@ def room_threads(args: dict, **kw) -> str:
     return "\n".join(rows)
 
 
+_TASKS_SCHEMA = {
+    "name": "room_tasks",
+    "description": (
+        "The room's shared task board. list shows work by state (open tasks are unowned "
+        "or lease-expired); create files a task in the room; claim takes a lease so two "
+        "agents cannot work the same task; done records an outcome + evidence handle and "
+        "announces it; bounce releases it with a reason. Always claim before working, and "
+        "complete with evidence rather than saying 'done' in prose."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string",
+                       "enum": ["list", "create", "claim", "renew", "done", "bounce",
+                                "release", "show"]},
+            "id": {"type": "integer", "description": "Task id (all actions except list/create)."},
+            "title": {"type": "string", "description": "create: what needs doing."},
+            "detail": {"type": "string", "description": "create: specifics / acceptance criteria."},
+            "topic": {"type": "string", "description": "create/list: topic filter."},
+            "owner": {"type": "string", "description": "create/list: who it is for."},
+            "ref": {"type": "string", "description": "create/list: external id, e.g. PB-114."},
+            "state": {"type": "string", "enum": ["open", "claimed", "done", "bounced", "all"],
+                      "description": "list: which bucket (default open)."},
+            "lease_s": {"type": "integer", "description": "claim/renew: lease seconds (default 3600)."},
+            "outcome": {"type": "string", "description": "done: short result."},
+            "evidence": {"type": "string",
+                         "description": "done: handle that proves it (sha, url, path)."},
+            "reason": {"type": "string", "description": "bounce: why it is released."},
+            "data": {"type": "object", "description": "create/done: extra JSON."},
+        },
+        "required": ["action"],
+    },
+}
+
+
+def room_tasks(args: dict, **kw) -> str:
+    if not _secret():
+        return "error: AGENT_CHAT_SECRET not set in this profile"
+    me = _sender()
+    action = str(args.get("action") or "list")
+    try:
+        if action == "list":
+            params = {"state": str(args.get("state") or "open"),
+                      "limit": int(args.get("limit") or 30)}
+            for key in ("owner", "topic", "ref"):
+                if args.get(key):
+                    params[key] = args[key]
+            d = _get_json("/api/tasks?" + urllib.parse.urlencode(params))
+            if not d.get("tasks"):
+                return f"no {params['state']} tasks"
+            lines = [f"{d['count']} tasks"]
+            for t in d["tasks"]:
+                who = t.get("claimed_by") or t.get("owner") or "-"
+                lines.append(f"#{t['id']} {t['effective_state']} {who}: {t['title']}"
+                             + (f" [{t['ref']}]" if t.get("ref") else ""))
+            return "\n".join(lines)
+
+        if action == "create":
+            payload = {"from": me, "title": str(args.get("title") or "").strip(),
+                       "topic": str(args.get("topic") or "work")}
+            if not payload["title"]:
+                return "error: title required"
+            for key in ("detail", "owner", "ref"):
+                if args.get(key):
+                    payload[key] = args[key]
+            d = json.loads(_signed("/api/tasks", payload))
+            return f"created task #{d['task']['id']} (message {d['id']})"
+
+        if action == "show":
+            d = _get_json(f"/api/tasks?id={int(args.get('id'))}")
+            head = (f"#{d['id']} [{d['state']}] {d['title']}\n"
+                    f"creator={d['creator']} owner={d['owner']} "
+                    f"claimed_by={d['claimed_by']} lease_left={d['lease_s_left']}s")
+            events = "\n".join(f"  {e['action']}: {e.get('note') or ''}"
+                                for e in d.get("events", []))
+            return head + ("\n" + events if events else "")
+
+        if not args.get("id"):
+            return f"error: {action} needs id"
+        path = {"claim": "/api/tasks/claim", "renew": "/api/tasks/renew",
+                "done": "/api/tasks/complete", "bounce": "/api/tasks/bounce",
+                "release": "/api/tasks/release"}[action]
+        payload = {"from": me, "id": int(args["id"])}
+        if action in ("claim", "renew") and args.get("lease_s"):
+            payload["lease_s"] = int(args["lease_s"])
+        if action == "done":
+            if args.get("outcome"):
+                payload["outcome"] = str(args["outcome"])
+            if args.get("evidence"):
+                payload["evidence"] = str(args["evidence"])
+            if isinstance(args.get("data"), dict):
+                payload["data"] = args["data"]
+        if action == "bounce":
+            if not args.get("reason"):
+                return "error: bounce needs reason — a bounce without one is a disappearance"
+            payload["reason"] = str(args["reason"])
+        if action == "release" and args.get("reason"):
+            payload["reason"] = str(args["reason"])
+        d = json.loads(_signed(path, payload))
+        t = d["task"]
+        return (f"task #{t['id']} {t['effective_state']} "
+                f"claimed_by={t['claimed_by']} lease_left={t['lease_s_left']}s")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        if e.code == 409:
+            return f"conflict: {body}"
+        return f"error: bus returned HTTP {e.code}: {body[:200]}"
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e}"
+
+
 def register(ctx) -> None:
     ctx.register_tool(name="send_to_room", toolset=TOOLSET, schema=_SEND_SCHEMA,
                       handler=send_to_room, check_fn=_check_available, emoji="💬")
     ctx.register_tool(name="read_room", toolset=TOOLSET, schema=_READ_SCHEMA,
                       handler=read_room, check_fn=_check_available, emoji="💬")
+    ctx.register_tool(name="room_tasks", toolset=TOOLSET, schema=_TASKS_SCHEMA,
+                      handler=room_tasks, check_fn=_check_available, emoji="🗂")
     ctx.register_tool(name="room_inbox", toolset=TOOLSET, schema=_INBOX_SCHEMA,
                       handler=room_inbox, check_fn=_check_available, emoji="📥")
     ctx.register_tool(name="room_digest", toolset=TOOLSET, schema=_DIGEST_SCHEMA,

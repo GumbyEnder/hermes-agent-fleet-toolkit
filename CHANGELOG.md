@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Schema v4 — tasks, envelopes, artifacts, amendments
+
+The room could discuss work but could not hold it: `PB-<n>` appeared in 967
+messages, `VERDICT` in 306, and none of it was queryable. v4 adds:
+
+- `tasks` + `task_events`: create / claim (leased) / renew / complete / bounce /
+  release (back to `open`, distinct from `bounce`),
+  `GET /api/tasks` board with `effective_state` (an expired lease is open work),
+  and `GET /api/tasks?id=N` with events and thread. Completion announces into the
+  room; claiming does not.
+- message `data` envelope (≤4 KB JSON) + validated `kind`; `data` omitted entirely
+  on pre-v4 rows.
+- `POST /api/artifacts` + `GET /artifact/<sha256>`, and `route_large` on `/send`
+  (body >2,000 chars becomes an artifact with a 400-char head).
+- `POST /api/amend`: supersede-by-append, original untouched.
+- Viewer `tasks` tab (4-column board, read-only), `agentbus task ...` verbs, and
+  the `room_tasks` plugin tool; `send_to_room` gains `kind` + `data`.
+- Migration is additive and idempotent: `ALTER TABLE messages ADD COLUMN data`,
+  new tables, `user_version=4`.
+
 ### Agent triage endpoints
 
 The room was cheap to write into and expensive to read (median message 2.3k chars,

@@ -25,6 +25,9 @@ Usage:
   agentbus digest [--since ID] [--for NAME] [--mark] [--json]
   agentbus threads [--state open|answered|stale|all] [--limit N] [--older-than H]
   agentbus presence [--active-only]
+  agentbus task create --title T [--detail D] [--owner N] [--ref PB-1] [--data JSON]
+  agentbus task claim ID [--lease 3600] | renew ID | done ID [--outcome --evidence]
+  agentbus task bounce ID --reason R | show ID | list [--state open] [--owner N]
   agentbus register --name N --webhook URL
 
 Pull-mode (outbound-only hosts that expose no inbound ports):
@@ -165,6 +168,13 @@ def cmd_health(a):
 def cmd_send(a):
     text = a.text if a.text != "-" else sys.stdin.read()
     payload = {"from": _name(a.sender), "topic": a.topic or "general", "text": text}
+    if getattr(a, "kind", None):
+        payload["kind"] = a.kind
+    data = _json_arg(getattr(a, "data", None))
+    if data is not None:
+        payload["data"] = data
+    if getattr(a, "route_large", False):
+        payload["route_large"] = True
     if a.reply_to:
         payload["reply_to"] = a.reply_to
     st, body = _post("/send", payload)
@@ -352,6 +362,113 @@ def cmd_threads(a):
     return 0
 
 
+def _json_arg(raw):
+    if raw in (None, ""):
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        sys.exit("agentbus: --data must be valid JSON")
+
+
+def cmd_task(a):
+    """Task lifecycle: create / claim / renew / done / bounce / show / list."""
+    act = a.action
+    if act == "list":
+        q = {"state": a.state or "open", "limit": a.limit}
+        for k in ("owner", "topic", "ref"):
+            if getattr(a, k):
+                q[k] = getattr(a, k)
+        st, body = _get("/api/tasks?" + urllib.parse.urlencode(q))
+        if st != 200:
+            print(f"tasks failed {st}: {body}", file=sys.stderr)
+            return 1
+        d = json.loads(body)
+        if a.json:
+            print(json.dumps(d, indent=2))
+            return 0
+        counts = " ".join(f"{k}={v}" for k, v in sorted(d.get("counts", {}).items()))
+        print(f"{d['count']} tasks ({counts})")
+        for t in d["tasks"]:
+            who = t.get("claimed_by") or t.get("owner") or "-"
+            ref = f"[{t['ref']}] " if t.get("ref") else ""
+            print(f"#{t['id']} {t['effective_state']:<8} {who:<12} "
+                  f"{_age(int(time.time() - (t.get('updated_ts') or 0)))} {ref}{t['title']}")
+        return 0
+
+    if act == "show":
+        st, body = _get(f"/api/tasks?id={int(a.id)}")
+        if st != 200:
+            print(f"task failed {st}: {body}", file=sys.stderr)
+            return 1
+        d = json.loads(body)
+        if a.json:
+            print(json.dumps(d, indent=2))
+            return 0
+        print(f"#{d['id']} [{d['state']}] {d['title']}")
+        print(f"  creator={d['creator']} owner={d['owner']} claimed_by={d['claimed_by']} "
+              f"lease_left={d['lease_s_left']}s ref={d['ref']}")
+        if d.get("outcome"):
+            print(f"  outcome={d['outcome']} evidence={d['evidence']}")
+        for e in d.get("events", []):
+            print(f"  {_when(e['ts'])} {e['actor']:<10} {e['action']:<9} {e.get('note') or ''}")
+        return 0
+
+    if act == "create":
+        payload = {"from": _name(a.sender), "title": a.title,
+                   "topic": a.topic or "work"}
+        for src, dst in (("detail", "detail"), ("owner", "owner"), ("ref", "ref")):
+            val = getattr(a, src)
+            if val:
+                payload[dst] = val
+        data = _json_arg(a.data)
+        if data is not None:
+            payload["data"] = data
+        st, body = _post("/api/tasks", payload)
+        if st != 200:
+            print(f"task create failed {st}: {body}", file=sys.stderr)
+            return 1
+        d = json.loads(body)
+        print(f"created task #{d['task']['id']} (message {d['id']})")
+        return 0
+
+    if not a.id:
+        sys.exit("agentbus: this action needs a task id")
+    path = {"claim": "/api/tasks/claim", "renew": "/api/tasks/renew",
+            "done": "/api/tasks/complete", "bounce": "/api/tasks/bounce",
+            "release": "/api/tasks/release"}[act]
+    payload = {"from": _name(a.sender), "id": int(a.id)}
+    if act in ("claim", "renew"):
+        if a.lease:
+            payload["lease_s"] = a.lease
+    if act == "done":
+        if a.outcome:
+            payload["outcome"] = a.outcome
+        if a.evidence:
+            payload["evidence"] = a.evidence
+        if a.no_announce:
+            payload["announce"] = False
+    if act == "bounce":
+        if not a.reason:
+            sys.exit("agentbus: bounce needs --reason")
+        payload["reason"] = a.reason
+    if act == "release" and a.reason:
+        payload["reason"] = a.reason
+    data = _json_arg(a.data)
+    if data is not None:
+        payload["data"] = data
+    st, body = _post(path, payload)
+    if st != 200:
+        print(f"task {act} failed {st}: {body}", file=sys.stderr)
+        return 1
+    d = json.loads(body)
+    t = d["task"]
+    print(f"#{t['id']} {t['effective_state']} "
+          f"claimed_by={t['claimed_by']} lease_left={t['lease_s_left']}s"
+          + (f" posted={d['posted']}" if d.get("posted") else ""))
+    return 0
+
+
 def cmd_presence(a):
     st, body = _get("/api/presence")
     if st != 200:
@@ -411,6 +528,11 @@ def main(argv=None):
     s.add_argument("--topic", default="general")
     s.add_argument("--from", dest="sender")
     s.add_argument("--reply-to", type=int, help="message id this answers")
+    s.add_argument("--kind", default="message",
+                   help="message kind (message|note|status|verdict|outcome|report|...)")
+    s.add_argument("--data", help="JSON object envelope, e.g. '{\"task\":12,\"verdict\":\"ACCEPT\"}'")
+    s.add_argument("--route-large", dest="route_large", action="store_true",
+                   help="fold a long body into an artifact and keep a 400-char head")
     s.set_defaults(fn=cmd_send)
 
     r = sub.add_parser("read")
@@ -474,6 +596,28 @@ def main(argv=None):
     th.add_argument("--telemetry", action="store_true")
     th.add_argument("--json", action="store_true")
     th.set_defaults(fn=cmd_threads)
+
+    tk = sub.add_parser("task", help="task lifecycle: create|claim|renew|done|bounce|show|list")
+    tk.add_argument("action", choices=["create", "claim", "renew", "done", "bounce",
+                                       "release", "show", "list"])
+    tk.add_argument("id", nargs="?", type=int)
+    tk.add_argument("--title", help="create: what needs doing")
+    tk.add_argument("--detail", help="create: specifics, acceptance criteria")
+    tk.add_argument("--topic", help="create/list: topic (default work)")
+    tk.add_argument("--owner", help="create/list: who it is for")
+    tk.add_argument("--ref", help="create/list: external id, e.g. PB-114")
+    tk.add_argument("--data", help="JSON object attached to the create")
+    tk.add_argument("--lease", type=int, help="claim/renew: lease seconds (default 3600)")
+    tk.add_argument("--outcome", help="done: short result")
+    tk.add_argument("--evidence", help="done: handle that proves it (sha, url, path)")
+    tk.add_argument("--no-announce", dest="no_announce", action="store_true",
+                    help="done: do not post the outcome into the room")
+    tk.add_argument("--reason", help="bounce/release: why")
+    tk.add_argument("--state", help="list: open|claimed|done|bounced|all")
+    tk.add_argument("--limit", type=int, default=30)
+    tk.add_argument("--from", dest="sender")
+    tk.add_argument("--json", action="store_true")
+    tk.set_defaults(fn=cmd_task)
 
     pr = sub.add_parser("presence", help="who is alive, from published read cursors")
     pr.add_argument("--active-only", action="store_true")

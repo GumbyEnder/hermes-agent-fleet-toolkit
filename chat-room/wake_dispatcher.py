@@ -927,7 +927,13 @@ def _run_one(profile, payload, lock_fd=-1):
                     break
         rc = p.returncode
         reply = (out or "").strip()[-4000:]
-        err = (errs or "")[:400] if rc != 0 or not reply else ""
+        # Keep the TAIL of stderr, not the head: startup warnings (serve-restart
+        # reminders, plugin chatter) are printed first and used to eat the whole
+        # 400-char budget, so a fatal line further down was invisible -- measured
+        # 2026-11-16/17, every game wake logged the same "⚠ dashboard ... restart
+        # still pending" text while the real cause (a hung `hermes update` making
+        # the CLI exit 1) never reached the journal.
+        err = (errs or "").strip()[-600:] if rc != 0 or not reply else ""
         if abandoned:
             err = f"{err or ''} killed at hard cap {hard}s (budget {budget}s)"
     except Exception as e:  # noqa: BLE001  (no argv in the message: it is the prompt)
