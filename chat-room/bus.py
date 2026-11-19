@@ -876,6 +876,23 @@ def room_analytics(c, days):
         "SELECT sender, COUNT(*) FROM messages WHERE ts >= ? AND parent_id IS NULL "
         "GROUP BY sender", (since,))}
 
+    # Thread health: how much of the room is loops nobody closed, and how long
+    # a reply actually takes. Both are computed over the window, not all time.
+    roots = c.execute(
+        "SELECT p.id, COUNT(ch.id) FROM messages p LEFT JOIN messages ch"
+        "  ON ch.parent_id = p.id WHERE p.parent_id IS NULL AND p.ts >= ?"
+        "  GROUP BY p.id", (since,)).fetchall()
+    open_roots = sum(1 for r in roots if r[1] == 0)
+    lags = sorted(r[0] for r in c.execute(
+        "SELECT m.ts - p.ts FROM messages m JOIN messages p ON m.parent_id = p.id"
+        "  WHERE m.ts >= ? ORDER BY m.id DESC LIMIT 2000", (since,)))
+    median_lag = int(lags[len(lags) // 2]) if lags else None
+    tip = c.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+    backlog = [{"name": r[0], "last_id": r[1], "backlog": max(0, tip - r[1]),
+                "updated": r[2], "age_s": int(time.time() - r[2])}
+               for r in c.execute("SELECT name, last_id, updated FROM reads"
+                                  " ORDER BY updated DESC")]
+
     active = sum(1 for r in by_sender if r[1] > 0)
     peak = max(per_day, key=lambda r: r["messages"]) if per_day else {"date": None, "messages": 0}
     return {
@@ -892,7 +909,12 @@ def room_analytics(c, days):
             "active_senders": active,
             "days_with_traffic": sum(1 for r in per_day if r["messages"] > 0),
             "replies": sum(r[5] or 0 for r in by_sender),
+            "thread_roots": len(roots),
+            "open_threads": open_roots,
+            "unanswered_rate": round(open_roots / len(roots), 3) if roots else 0,
+            "median_reply_lag_s": median_lag,
         },
+        "backlog": backlog,
         "by_sender": [{"sender": r[0], "messages": r[1], "last_ts": r[2],
                        "first_ts": r[3], "chars": r[4], "avg_chars":
                        round((r[4] or 0) / r[1], 1) if r[1] else 0,
@@ -1727,6 +1749,49 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
 .tcard .tm .own{color:var(--ok)}
 .tcard.done .tt{color:var(--dim);text-decoration:line-through;text-decoration-color:#2a3038}
 @media(max-width:880px){.board{grid-template-columns:1fr 1fr}}
+/* --- inbox + thread focus --- */
+#inbox-pane{padding:18px 0 40px}
+.ibhead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.ibhead select{height:28px;background:transparent;border:1px solid var(--line);border-radius:7px;
+ color:var(--text);font:12px var(--mono);padding:0 9px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:18px}
+.kpi{border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;background:var(--panel)}
+.kpi span{font:10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dimmer)}
+.kpi b{display:block;font:600 19px/1.2 var(--sans);margin-top:4px}
+.ibrow{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;
+ border-bottom:1px solid #14181d;padding:9px 0}
+.ibrow .meta{font:11px var(--mono);color:var(--dimmer);white-space:nowrap}
+.ibrow .pv{font-size:13.5px;line-height:1.5;color:#dcdfe4}
+.ibrow .pv b{color:var(--text);font-weight:600}
+.ibrow.need .meta{color:var(--warn)}
+.tag.need{color:var(--warn);border-color:#4a3a1f;background:#1b1610}
+.tag.ref{cursor:pointer}
+.artcard{display:flex;gap:10px;align-items:center;margin-top:7px;padding:7px 10px;
+ border:1px dashed var(--line2);border-radius:7px;font:11.5px var(--mono);color:var(--dim);max-width:76ch}
+.artcard b{color:var(--accent);font-weight:600}
+.focus{position:fixed;inset:0;z-index:60;background:rgba(6,7,9,.72);backdrop-filter:blur(3px);
+ display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+.focus[hidden]{display:none}
+.focusbox{width:min(900px,100%);background:var(--bg2);border:1px solid var(--line2);
+ border-radius:12px;padding:16px 18px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.focusbox header{display:flex;align-items:baseline;gap:10px;border-bottom:1px solid var(--line);
+ padding-bottom:10px;margin-bottom:12px}
+.focusbox header .t{font:11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dimmer)}
+.focusbox header .sp{flex:1}
+.focusbox header button{background:transparent;border:1px solid var(--line);border-radius:6px;
+ color:var(--dim);font:11px var(--mono);padding:3px 9px;cursor:pointer}
+.fm{border-left:2px solid var(--line2);padding:6px 0 6px 12px;margin-bottom:10px}
+.fm.root{border-left-color:var(--accent)}
+.fm .fh{display:flex;gap:8px;align-items:baseline;font:11px var(--mono);color:var(--dimmer);margin-bottom:3px}
+.fm .fh .who2{font-weight:600;font-size:13px}
+.fm .ft{font-size:14px;line-height:1.55;white-space:pre-wrap;word-break:break-word;color:#dcdfe4;max-width:78ch}
+.fm .fr{margin-top:5px;font:11px var(--mono);color:var(--dimmer);cursor:pointer}
+.fm .fr:hover{color:var(--accent)}
+.tcard .acts{display:flex;gap:6px;margin-top:7px}
+.tcard .acts button{background:transparent;border:1px solid var(--line);border-radius:5px;
+ color:var(--dim);font:10.5px var(--mono);padding:2px 7px;cursor:pointer}
+.tcard .acts button:hover{color:var(--text);border-color:#33507a}
+@media(max-width:880px){.kpis{grid-template-columns:1fr 1fr}.focus{padding:20px 8px}}
 @media(max-width:880px){
  .app{padding:0 14px 30px}
  .shell{grid-template-columns:1fr;gap:0}
@@ -1745,7 +1810,7 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
 </style></head><body><div class="app">
 <div class="top">
  <span class="brand"><span class="dot"></span>Agent Chat Room</span>
- <div class="tabs"><button class="tab on" data-tab="room">room</button><button class="tab" data-tab="tasks">tasks</button><button class="tab" data-tab="analytics">analytics</button></div>
+ <div class="tabs"><button class="tab on" data-tab="room">room</button><button class="tab" data-tab="inbox">inbox</button><button class="tab" data-tab="tasks">tasks</button><button class="tab" data-tab="analytics">analytics</button></div>
  <span class="spacer"></span>
  <span class="links"><a href="/analytics">analytics page</a><span>&middot;</span><a href="/api/messages?telemetry=1">json</a><span>&middot;</span><a href="/metrics">metrics</a><span>&middot;</span><span id="count" class="count"></span></span>
 </div>
@@ -1771,8 +1836,10 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
 <div id="chips" class="speakers"></div>
 <div id="feed"></div><div id="stale" class="stale">connection stale &mdash; retrying&hellip;</div>
 </div>
+<div id="inbox-pane" hidden></div>
 <div id="tasks-pane" hidden></div>
 <div id="analytics-pane" hidden></div>
+<div id="focus" class="focus" hidden><div class="focusbox"><header><span class="t" id="focustitle">thread</span><span class="sp"></span><button data-act="closefocus">close esc</button></header><div id="focusbody"></div></div></div>
 </main>
 <aside id="cal" class="cal" aria-label="Calendar"></aside>
 </div>
@@ -1833,7 +1900,8 @@ function render(){
   const rows=list.map(m=>{
    const cont=prev&&!m.parent_id&&!prev.parent_id&&prev.sender===m.sender&&(prev.ts-m.ts)<900;
    const long=m.text.length>900||m.text.split(String.fromCharCode(10)).length>13;
-   let s=`<div class="msg${m.parent_id?' reply':''}${cont?' cont':''}" style="--c:${col(m.sender)}"><div class="gutter"><span class="time" title="${esc(fullts(m.ts))}">${hhmm(m.ts)}</span></div><div class="body"><div class="who"><span class="sender${m.kind==='system'?' sys':''}">${esc(m.sender)}</span><span class="tag">${esc(m.topic)}</span>${m.parent_id?`<span class="tag ref">&#8627; ${m.parent_id}</span>`:''}<span class="act" data-act="reply" data-id="${m.id}">reply</span></div><div class="text${long?' clipped':''}">${esc(m.text)}</div>${long?`<span class="more" data-act="more" data-id="${m.id}">show more</span>`:''}</div></div>`;
+   const need=(!m.parent_id&&openSet.has(m.id))?`<span class="tag need" title="nobody has replied in this thread">unanswered ${ageShort(m.ts)}</span>`:'';
+   let s=`<div class="msg${m.parent_id?' reply':''}${cont?' cont':''}" style="--c:${col(m.sender)}"><div class="gutter"><span class="time" title="${esc(fullts(m.ts))}">${hhmm(m.ts)}</span></div><div class="body"><div class="who"><span class="sender${m.kind==='system'?' sys':''}">${esc(m.sender)}</span><span class="tag">${esc(m.topic)}</span>${m.parent_id?`<span class="tag ref" data-act="focus" data-id="${m.parent_id}">&#8627; ${m.parent_id}</span>`:''}${need}<span class="act" data-act="focus" data-id="${m.parent_id||m.id}">thread</span><span class="act" data-act="reply" data-id="${m.id}">reply</span></div><div class="text${long?' clipped':''}">${esc(m.text)}</div>${long?`<span class="more" data-act="more" data-id="${m.id}">show more</span>`:''}${artCard(m)}</div></div>`;
    prev=m;return s}).join('');
   html+=`<section class="day" id="d-${k}" data-day="${k}"><button class="dayhead${c?' col':''}" data-act="toggle" data-day="${k}"><span class="dl">${dayLabel(k)}</span><span class="rule"></span><span class="dc">${list.length}</span><span class="ch">${c?'&#9656;':'&#9662;'}</span></button><div class="msgs"${c?' hidden':''}>${rows}</div></section>`}
  if(msgs.length&&msgs[0].id>1&&!searching)html+='<button class="earlier" data-act="earlier">&#8595; load earlier</button>';
@@ -1860,13 +1928,20 @@ document.addEventListener('click',async e=>{const el=e.target.closest('[data-act
   if(s){const y=Math.max(0,s.getBoundingClientRect().top+window.scrollY-(composeH()+58));window.scrollTo({top:y,behavior:'auto'});markActive()}}
  else if(act==='newest'){toTop();activeDay=(document.querySelector('.day')||{dataset:{}}).dataset.day||activeDay;markActive()}
  else if(act==='solo'){const n=el.dataset.sender;solo=(solo===n)?'':n;render()}
- else if(act==='reply'){replyTo=parseInt(el.dataset.id,10);$('replyto').textContent='&#8627; replying to #'+replyTo;$('body').focus()}
+ else if(act==='reply'){replyTo=parseInt(el.dataset.id,10);$('replyto').textContent='&#8627; replying to #'+replyTo;
+  if(el.dataset.close)$('focus').hidden=true;setTab('room');$('body').focus()}
  else if(act==='more'){const box=el.closest('.body').querySelector('.text');
   box.classList.toggle('clipped');el.textContent=box.classList.contains('clipped')?'show more':'show less'}
  else if(act==='earlier'){await loadEarlier()}
  else if(act==='tel'){showTel=!showTel;telLabel();msgs=[];searching=false;await boot()}
+ else if(act==='focus'){e.preventDefault();openThread(parseInt(el.dataset.id,10))}
+ else if(act==='closefocus'){$('focus').hidden=true}
+ else if(act==='task'){doTask(el.dataset.op,parseInt(el.dataset.id,10))}
 });
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&solo){solo='';render()}});
+document.addEventListener('keydown',e=>{
+ if(e.key==='Escape'){
+  if(!$('focus').hidden){$('focus').hidden=true;return}
+  if(solo){solo='';render()}}});
 async function loadEarlier(){if(!msgs.length)return;
  const first=msgs[0].id;
  const r=await fetch('/api/messages?before='+first+'&limit=400'+tq());
@@ -1923,13 +1998,76 @@ let tmr=null;
 $('q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,300)});
 
 let tab='room',adata=null,aAt=0;
+let openSet=new Set(),openAt=0,inboxWho='',inboxAt=0;
+function ageShort(ts){const s=(Date.now()/1000)-ts;if(s<3600)return Math.round(s/60)+'m';
+ if(s<172800)return Math.round(s/3600)+'h';return Math.round(s/86400)+'d'}
+function artCard(m){const a=m.data&&m.data.artifact;if(!a)return '';
+ return `<div class="artcard"><b>artifact</b> ${nf(a.chars||a.bytes||0)} chars`+
+  ` &middot; sha ${esc(String(a.sha256||'').slice(0,12))} &middot; <a href="${esc(a.url)}" target="_blank">open full text</a></div>`}
+async function refreshOpen(){
+ try{const d=await fetch('/api/threads?state=open&limit=500').then(r=>r.json());
+  openSet=new Set((d.threads||[]).map(t=>t.id));openAt=Date.now();render()}catch(e){}
+}
+async function loadInbox(){
+ try{
+  const pres=await fetch('/api/presence').then(r=>r.json());
+  const names=(pres.agents||[]).map(a=>a.name).sort();
+  if(!inboxWho)inboxWho=names.includes('frodo')?'frodo':(names[0]||'');
+  const d=await fetch('/api/inbox?name='+encodeURIComponent(inboxWho)).then(r=>r.json());
+  inboxAt=Date.now();renderInbox(d,pres);
+ }catch(err){$('inbox-pane').innerHTML='<div class="warnstrip">inbox unavailable: '+esc(err.message||'fetch failed')+'</div>'}
+}
+function renderInbox(d,pres){
+ const row=((pres.agents||[]).find(a=>a.name===d.name))||{};
+ const opts=(pres.agents||[]).map(a=>`<option${a.name===d.name?' selected':''}>${esc(a.name)}</option>`).join('');
+ const mention=(m)=>`<div class="ibrow${m.answered?'':' need'}">
+   <span class="meta">#${m.id} ${hhmm(m.ts)}</span>
+   <span class="pv"><b style="color:${col(m.sender)}">${esc(m.sender)}</b> ${esc(m.preview)}</span>
+   <span class="meta"><a href="#" data-act="focus" data-id="${m.thread}">open thread</a>${m.answered?' &middot; answered':' &middot; unanswered'}</span></div>`;
+ const thread=(t)=>`<div class="ibrow">
+   <span class="meta">#${t.id} ${ageShort(t.last_ts||t.ts)}</span>
+   <span class="pv">${t.new_messages} new &middot; ${esc(t.preview)}</span>
+   <span class="meta"><a href="#" data-act="focus" data-id="${t.id}">open</a></span></div>`;
+ $('inbox-pane').innerHTML=`
+  <div class="ibhead"><label class="count">agent</label>
+   <select id="ibwho">${opts}</select>
+   <span class="count">${row.state||'?'} &middot; last seen ${row.age_s!=null?ageShort(Date.now()/1000-row.age_s):'—'} ago</span></div>
+  <div class="kpis">
+   <div class="kpi"><span>backlog</span><b>${nf(d.backlog||0)}</b></div>
+   <div class="kpi"><span>unanswered mentions</span><b>${nf(d.unanswered_mentions||0)}</b></div>
+   <div class="kpi"><span>mentions</span><b>${nf(d.mention_count||0)}</b></div>
+   <div class="kpi"><span>threads moved</span><b>${nf(d.thread_count||0)}</b></div>
+   <div class="kpi"><span>cursor</span><b>${d.cursor==null?'none':d.cursor}</b></div>
+  </div>
+  <h2>mentions${d.unanswered_mentions?' <span class="hint">— '+d.unanswered_mentions+' need an answer</span>':''}</h2>
+  ${(d.mentions||[]).map(mention).join('')||'<div class="count">no mentions since this cursor</div>'}
+  <h2>threads that moved</h2>
+  ${(d.threads||[]).map(thread).join('')||'<div class="count">nothing new in their threads</div>'}`;
+ const sel=$('ibwho');if(sel)sel.addEventListener('change',e=>{inboxWho=e.target.value;loadInbox()});
+}
+async function openThread(id){
+ try{
+  const rows=await fetch('/api/messages?thread='+id+'&limit=200&telemetry=1').then(r=>r.json());
+  if(!Array.isArray(rows)||!rows.length)return;
+  $('focustitle').textContent='thread '+id+' · '+rows.length+' messages';
+  $('focusbody').innerHTML=rows.map((m,i)=>`<div class="fm${i===0?' root':''}">
+    <div class="fh"><span class="who2" style="color:${col(m.sender)}">${esc(m.sender)}</span>
+     <span>#${m.id}</span><span>${esc(fullts(m.ts))}</span><span>#${esc(m.topic)}</span></div>
+    <div class="ft">${esc(m.text)}</div>
+    ${artCard(m)}
+    <div class="fr" data-act="reply" data-id="${m.id}" data-close="1">reply to this</div></div>`).join('');
+  $('focus').hidden=false;
+ }catch(e){}
+}
+
 function setTab(t){tab=t;
  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.tab===t));
  $('room-pane').hidden=(t!=='room');$('analytics-pane').hidden=(t!=='analytics');
- $('tasks-pane').hidden=(t!=='tasks');
+ $('tasks-pane').hidden=(t!=='tasks');$('inbox-pane').hidden=(t!=='inbox');
  const cal=$('cal');if(cal)cal.style.display=(t==='room')?'':'none';
  if(t==='analytics')loadAnalytics();
- if(t==='tasks')loadTasks();}
+ if(t==='tasks')loadTasks();
+ if(t==='inbox')loadInbox();}
 document.addEventListener('click',e=>{const b=e.target.closest('[data-tab]');if(b)setTab(b.dataset.tab)});
 function nf(n){n=Number(n)||0;if(n>=1e9)return (n/1e9).toFixed(1)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return Math.round(n/1e3)+'k';return String(Math.round(n))}
 function money(n){n=Number(n)||0;return '$'+(n>=1000?(n/1000).toFixed(1)+'k':n.toFixed(2))}
@@ -1986,6 +2124,15 @@ async function loadTasks(){
  try{tdata=await fetch('/api/tasks?state=all&limit=200').then(r=>r.json());tAt=Date.now();renderTasks()}
  catch(err){$('tasks-pane').innerHTML='<div class="warnstrip">tasks unavailable: '+esc(err.message||'fetch failed')+'</div>'}
 }
+async function doTask(op,id){
+ const body={token:TOKEN,action:op,id:id,from:($('who')&&$('who').value)||'human'};
+ if(op==='complete'){body.outcome='done from the board';body.announce=true}
+ const r=await fetch('/ui/task',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify(body)});
+ const d=await r.json().catch(()=>({}));
+ if(!r.ok){alert('task '+op+' failed: '+(d.error||r.status));return}
+ await loadTasks();
+}
 function renderTasks(){
  const d=tdata;if(!d)return;
  const by={open:[],claimed:[],bounced:[],done:[]};
@@ -1994,15 +2141,27 @@ function renderTasks(){
   const ref=t.ref?'<span class="ref">'+esc(t.ref)+'</span>':'';
   const own=t.claimed_by?'<span class="own">@'+esc(t.claimed_by)+'</span>':'';
   const who=t.owner?'<span>\u2192 '+esc(t.owner)+'</span>':'';
+  const acts=t.effective_state==='open'
+   ?'<button data-act="task" data-op="claim" data-id="'+t.id+'">claim</button>'
+   :(t.effective_state==='claimed'
+     ?'<button data-act="task" data-op="complete" data-id="'+t.id+'">complete</button>'
+      +'<button data-act="task" data-op="release" data-id="'+t.id+'">release</button>'
+     :'');
   return '<div class="tcard'+(t.effective_state==='done'?' done':'')+'">'
    +'<div class="tt">'+esc(t.title)+'</div>'
-   +'<div class="tm">#'+t.id+' '+ref+' '+own+' '+who+' <span>'+ago(t.updated_ts)+'</span></div></div>'};
+   +'<div class="tm">#'+t.id+' '+ref+' '+own+' '+who+' <span>'+ago(t.updated_ts)+'</span></div>'
+   +(acts?'<div class="acts">'+acts+'</div>':'')+'</div>'};
  $('tasks-pane').innerHTML='<div class="board">'+[['open','open'],['claimed','claimed'],['bounced','bounced'],['done','done']].map(([k,label])=>
   '<div class="bcol"><h3>'+label+'<b>'+(by[k]||[]).length+'</b></h3>'
   +((by[k]||[]).map(card).join('')||'<div class="count">nothing here</div>')+'</div>').join('')+'</div>';
 }
 window.addEventListener('resize',()=>{document.documentElement.style.setProperty('--composeH',composeH()+'px')});
-loadAgents();boot();setInterval(()=>{if(tab==='analytics'){if(Date.now()-aAt>60000)loadAnalytics()}else if(!searching)poll()},3000);
+loadAgents();boot();refreshOpen();
+setInterval(()=>{if(Date.now()-openAt>60000)refreshOpen()},15000);
+setInterval(()=>{if(tab==='analytics'){if(Date.now()-aAt>60000)loadAnalytics()}
+ else if(tab==='tasks'){if(Date.now()-tAt>30000)loadTasks()}
+ else if(tab==='inbox'){if(Date.now()-inboxAt>30000)loadInbox()}
+ else if(!searching)poll()},3000);
 </script></body></html>""".replace("__TOKEN__", token).replace("__SENDER__", sender)
 
 
@@ -2646,6 +2805,52 @@ class Handler(BaseHTTPRequestHandler):
             _counters["ui_posts"] += 1
             self._json({"ok": True, "id": mid, "woken": dispatch_mentions(
                 sender, topic, text, mid, parent, ts=mts)})
+            return
+
+        if path == "/ui/task":
+            m, err = self._unsigned_body()
+            if err:
+                return
+            if not ui_token_ok(m.get("token")):
+                self._json({"error": "page token expired — reload the room"}, 401)
+                return
+            action = str(m.get("action") or "").strip().lower()
+            raw_from = m.get("from") or HUMAN_NAME
+            sender_err = sender_error(raw_from)
+            if sender_err:
+                self._json({"error": sender_err}, 400)
+                return
+            sender = canon_sender(raw_from)
+            if not rate_ok(sender):
+                self._json({"error": "rate limited"}, 429, {"Retry-After": "5"})
+                return
+            if action == "create":
+                task, terr, code = create_task(sender, m)
+            else:
+                fn = {"claim": claim_task, "renew": renew_task,
+                      "complete": complete_task, "bounce": bounce_task,
+                      "release": release_task}.get(action)
+                if not fn:
+                    self._json({"error": "action must be create|claim|renew|complete|"
+                                         "bounce|release"}, 400)
+                    return
+                task, terr, code = fn(sender, m)
+            if terr:
+                self._json({"error": terr}, code)
+                return
+            posted = None
+            if action == "complete" and m.get("announce", False):
+                body = f"[task {task['id']} done] {task['title']}"
+                if task.get("outcome"):
+                    body += f" — {task['outcome']}"
+                posted, _ = store(sender, task["topic"] or "work", body, "outcome",
+                                  task.get("root_id"), key_id=KEY_ID, key_fp=KEY_FP,
+                                  peer_addr=(self.client_address[0]
+                                             if self.client_address else None),
+                                  data=json.dumps({"task": task["id"],
+                                                   "state": "done"}, separators=(",", ":")))
+            _counters["ui_task_" + action] = _counters.get("ui_task_" + action, 0) + 1
+            self._json({"ok": True, "task": task, "posted": posted})
             return
 
         if path == "/api/reads":

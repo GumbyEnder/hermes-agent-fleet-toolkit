@@ -262,5 +262,61 @@ class Tasks(unittest.TestCase):
         self.assertEqual(orig["text"], "typo here")
 
 
+class UiTaskEndpoint(unittest.TestCase):
+    """The board is clickable: /ui/task is the page-token path, same actions."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="fleet-uitask-")
+        self.ctx = bus(AGENT_CHAT_RATE_PER_MIN="600", AGENT_CHAT_RATE_BURST="1000",
+                       AGENT_CHAT_ARTIFACTS=os.path.join(self.tmp, "artifacts"))
+        self.base, self.tmpdir, _svc = self.ctx.__enter__()
+        self.addCleanup(self.ctx.__exit__, None, None, None)
+
+    def make_task(self):
+        st, body = post(self.base + "/api/tasks",
+                        {"from": "alice", "title": "board click", "topic": "unit"})
+        self.assertEqual(st, 200, body)
+        return json.loads(body)["task"]
+
+    def token(self):
+        import re
+        _st, body = fetch(self.base + "/")
+        m = re.search(r'const TOKEN="([^"]+)"', body)
+        self.assertIsNotNone(m, "viewer page must mint a token")
+        return m.group(1)
+
+    def ui(self, payload):
+        st, body = post(self.base + "/ui/task", payload, signed=False)
+        return st, (json.loads(body) if body.strip().startswith("{") else body)
+
+    def test_ui_task_requires_the_page_token(self):
+        t = self.make_task()
+        st, _d = self.ui({"action": "claim", "id": t["id"], "from": "shane"})
+        self.assertEqual(st, 401)
+        st, _d = self.ui({"token": "bogus.0", "action": "claim", "id": t["id"],
+                          "from": "shane"})
+        self.assertEqual(st, 401)
+
+    def test_ui_task_claims_and_completes(self):
+        t = self.make_task()
+        tok = self.token()
+        st, d = self.ui({"token": tok, "action": "claim", "id": t["id"], "from": "shane"})
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["task"]["claimed_by"], "shane")
+        st, d = self.ui({"token": tok, "action": "complete", "id": t["id"],
+                         "from": "shane", "outcome": "clicked through", "announce": True})
+        self.assertEqual(st, 200, d)
+        self.assertEqual(d["task"]["state"], "done")
+        self.assertTrue(d["posted"])
+        st, _d = self.ui({"token": tok, "action": "release", "id": t["id"], "from": "shane"})
+        self.assertEqual(st, 409, "a done task cannot be released")
+
+    def test_unknown_ui_action_is_400(self):
+        tok = self.token()
+        st, d = self.ui({"token": tok, "action": "teleport", "id": 1, "from": "shane"})
+        self.assertEqual(st, 400)
+        self.assertIn("action must be", d["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

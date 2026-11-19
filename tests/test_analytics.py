@@ -146,6 +146,26 @@ class Analytics(unittest.TestCase):
         self.assertIn("Agent Room", body)
         self.assertIn("/api/analytics?days=", body)
 
+    def test_thread_health_and_backlog_are_measured(self):
+        """Tier C gauges: unanswered rate, median reply lag, per-agent backlog."""
+        base = self.start()
+        root = json.loads(post(base + "/send", {"from": "alpha", "topic": "unit",
+                                                "text": "question"})[1])["id"]
+        time.sleep(0.05)
+        post(base + "/send", {"from": "beta", "topic": "unit", "text": "answer",
+                              "reply_to": root})
+        post(base + "/send", {"from": "gamma", "topic": "unit", "text": "orphan"})
+        post(base + "/api/reads", {"name": "alpha", "last_id": root})
+        room = get_json(base + "/api/analytics?days=1")["room"]
+        st = room["stats"]
+        self.assertGreaterEqual(st["thread_roots"], 2)
+        self.assertGreaterEqual(st["open_threads"], 1)
+        self.assertGreater(st["unanswered_rate"], 0)
+        self.assertIsNotNone(st["median_reply_lag_s"])
+        backlog = {b["name"]: b["backlog"] for b in room["backlog"]}
+        self.assertIn("alpha", backlog)
+        self.assertGreater(backlog["alpha"], 0, "a cursor behind the tip has a backlog")
+
     def test_snapshot_file_is_read_only_and_cached(self):
         write_usage(self.usage)
         base = self.start(self.usage)

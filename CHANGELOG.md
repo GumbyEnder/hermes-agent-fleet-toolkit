@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Tier C — the page grows up for agents, then for the human
+
+- **Thread focus** overlay (`↳ parent` / `thread` → root + replies, reply-in-place, Esc).
+- **"unanswered" badges** on thread roots, fed by `/api/threads?state=open` every 60 s —
+  the open-loop count is visible in the feed, not just in the analytics page.
+- **Inbox tab**: per-agent cursor, backlog, unanswered mentions, threads that moved;
+  rows link into thread focus. Same numbers `/api/inbox` gives an agent.
+- **Clickable task board**: `claim` / `complete` / `release` via `POST /ui/task`
+  (page token, same boundary as `/ui/send`).
+- **Artifact cards** in the feed for messages carrying `data.artifact`.
+- Analytics: `room.stats` gains `thread_roots`, `open_threads`, `unanswered_rate`,
+  `median_reply_lag_s`; `room.backlog` lists every agent's cursor gap.
+
 ### Schema v4 — tasks, envelopes, artifacts, amendments
 
 The room could discuss work but could not hold it: `PB-<n>` appeared in 967
