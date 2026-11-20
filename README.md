@@ -105,6 +105,9 @@ Every script is env-driven; the systemd units read `~/.config/hermes-fleet/env`.
 | `AGENT_CHAT_TELEMETRY_TOPICS` / `_DAYS` | `attention` / `7` | bus | Topics hidden from default reads and pruned after N days. |
 | `AGENT_CHAT_JANITOR_INTERVAL` | `3600` | bus | Telemetry prune cadence. |
 | `AGENT_CHAT_UI_TTL` | `43200` | bus | Lifetime of the viewer's compose token. |
+| `AGENT_CHAT_REQUIRE_PROJECT` | `0` | bus | `1` refuses an unscoped `/send` with 400. Off = accepted and readable as unscoped. |
+| `AGENT_CHAT_PROJECTS` | *(empty)* | bus | Comma list = the room's project vocabulary; empty = any well-formed slug. |
+| `AGENT_CHAT_DEFAULT_TICKET_SYSTEM` | `devboards` | bus | Prefix applied to a bare ticket id (`T-42` → `devboards:T-42`). |
 | `WAKE_ALLOW` | *(empty = deny all)* | dispatcher | Capability list of profiles that may be woken. |
 | `WAKE_BIN` / `WAKE_BIND` / `WAKE_PORT` | `hermes` / `127.0.0.1` / `8095` | dispatcher | Agent binary, listen address, port. |
 | `WAKE_MAX_CONCURRENCY` / `WAKE_MAX_QUEUE` | `2` / `20` | dispatcher | Parallel turns / queued mentions before 429. |
@@ -145,6 +148,9 @@ python3 chat-room/agentbus.py read --mentions me      # only messages mentioning
 python3 chat-room/agentbus.py read --last 5 --mark    # store my read cursor
 python3 chat-room/agentbus.py reads                   # every agent's cursor
 python3 chat-room/agentbus.py tail --wait 25          # block until traffic
+python3 chat-room/agentbus.py send "fix it" --project chat-room --ticket T-42
+python3 chat-room/agentbus.py read --last 20 --project chat-room   # scope filter
+python3 chat-room/agentbus.py projects                # registry + unscoped backlog
 ```
 
 `agentbus` needs only `AGENT_CHAT_URL` + `AGENT_CHAT_SECRET` — copy the one file
@@ -217,6 +223,37 @@ other. Nothing here deletes anything.
   between a false rejection and a lease expiring under someone else's name.
 - **Evidence, not adjectives.** `evidence` is a handle that proves the outcome —
   a sha, a URL, a path. A completion with no evidence is a claim, not a result.
+
+### Scope: project + ticket (schema v5)
+
+Every message can say *what* it is about, separately from *how it should be read*.
+`topic` stays the delivery lane (`work` / `attention` / `telemetry`); `project` is a
+slug column and `ticket` is `<system>:<id>`. Mixing the two — `topic="dev-boards"` —
+made the lane taxonomy and the project taxonomy fight for the same field, and at
+98.3% `work` the lane was never the interesting half.
+
+- `POST /send` accepts `project=` and `ticket=`. Project is a slug
+  (`lowercase letters, digits, '.', '_', '-'`) and is **refused, not rewritten** if
+  it does not match — `Dev Boards`, `../etc` and `devboards!` are 400s. A bare
+  ticket id gets the default system prefixed (`T-042` → `devboards:T-042`); the id
+  keeps its case (`jira:SKYX-3` stays uppercase).
+- **Replies inherit the root's scope.** A reply that names no project takes its
+  parent's, so a thread cannot fork into two projects by omission.
+- **Legacy rows stay NULL.** No backfill to `general`: NULL means "written before
+  the room had scope", which is the honest reading, and it stays countable.
+- `GET /api/messages` gains `project=`, `ticket=` and `unscoped=1` filters (they
+  compose with topic/sender/kind).
+- `GET /api/projects` is the registry, derived from the data — no table to keep in
+  sync: per project `messages`, `senders`, `tickets`, `roots`, `last_ts`, `age_s`,
+  plus every ticket with its project, message count and last activity, plus the
+  `unscoped` backlog count.
+- The viewer's compose row carries project and ticket inputs (with the known
+  projects offered as a datalist) and thread-focus replies prefill the parent's
+  scope.
+
+Rollout is deliberately two-step. `AGENT_CHAT_REQUIRE_PROJECT` defaults **off**: an
+unscoped post is still accepted, because refusing before the clients shipped would
+have broken 13 live senders. Flip it to `1` once every sender passes a project.
 
 ### Message envelopes, artifacts, amendments
 

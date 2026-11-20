@@ -132,14 +132,26 @@ def _print_msg(m):
         body = m.get("text") or ""
     else:  # --meta: the body was dropped on purpose, print the preview + real size
         body = f"({m.get('chars', 0)} chars) {m.get('preview', '')}"
-    print(f"[{m.get('id')}]{reply} {when} <{who}> #{m.get('topic', 'general')}: {body}")
+    scope = "".join(
+        x for x in (
+            f" {{{m['project']}}}" if m.get("project") else "",
+            f" [{m['ticket']}]" if m.get("ticket") else "",
+        )
+    )
+    print(f"[{m.get('id')}]{reply} {when} <{who}> #{m.get('topic', 'general')}{scope}: {body}")
 
 
 def _fetch(since, limit, topic, wait=0, thread=None, telemetry=False,
-           meta=False, max_chars=None):
+           meta=False, max_chars=None, project=None, ticket=None, unscoped=False):
     q = {"since": since, "limit": limit}
     if topic:
         q["topic"] = topic
+    if project:
+        q["project"] = project
+    if ticket:
+        q["ticket"] = ticket
+    if unscoped:
+        q["unscoped"] = 1
     if wait:
         q["wait"] = wait
     if thread:
@@ -167,7 +179,11 @@ def cmd_health(a):
 
 def cmd_send(a):
     text = a.text if a.text != "-" else sys.stdin.read()
-    payload = {"from": _name(a.sender), "topic": a.topic or "general", "text": text}
+    payload = {"from": _name(a.sender), "topic": a.topic or "work", "text": text}
+    if getattr(a, "project", None):
+        payload["project"] = a.project
+    if getattr(a, "ticket", None):
+        payload["ticket"] = a.ticket
     if getattr(a, "kind", None):
         payload["kind"] = a.kind
     data = _json_arg(getattr(a, "data", None))
@@ -201,7 +217,9 @@ def cmd_read(a):
             tip = int(json.loads(tip_body).get("max_id", 0)) if st == 200 else 0
             since, limit = max(0, tip - a.last), a.last
         st, body = _fetch(since, limit, a.topic, a.wait, a.thread, a.telemetry,
-                          getattr(a, "meta", False), getattr(a, "max_chars", None))
+                          getattr(a, "meta", False), getattr(a, "max_chars", None),
+                          getattr(a, "project", None), getattr(a, "ticket", None),
+                          getattr(a, "unscoped", False))
         if st != 200:
             print(f"read failed {st}: {body}", file=sys.stderr)
             return 1
@@ -517,6 +535,54 @@ def cmd_register(a):
     return 0 if st in (200, 201) else 1
 
 
+def cmd_search(a):
+    q = {"q": a.query, "limit": a.limit}
+    for k in ("topic", "project", "ticket"):
+        v = getattr(a, k, None)
+        if v:
+            q[k] = v
+    st, body = _get("/api/search?" + urllib.parse.urlencode(q))
+    if st != 200:
+        print(f"search failed {st}: {body}", file=sys.stderr)
+        return 1
+    hits = _parse(body)
+    if a.json:
+        print(json.dumps(hits, indent=2))
+        return 0
+    if not hits:
+        print("no hits")
+        return 0
+    for m in hits:
+        _print_msg(m)
+    print(f"-- {len(hits)} hit(s), newest first", file=sys.stderr)
+    return 0
+
+
+def cmd_projects(a):
+    st, body = _get("/api/projects")
+    if st != 200:
+        print(f"projects failed {st}: {body}", file=sys.stderr)
+        return 1
+    d = json.loads(body)
+    if a.json:
+        print(json.dumps(d, indent=2))
+        return 0
+    rows = d.get("projects") or []
+    if not rows:
+        print("no projects yet (every message is unscoped)")
+        return 0
+    for r in rows:
+        tk = f" tickets={r['tickets']}" if r.get("tickets") else ""
+        age = r.get("age_s")
+        since = f"{int(age // 3600)}h ago" if isinstance(age, int) else ""
+        print(f"{r['project']:<28} msgs={r['messages']:<5} senders={r.get('senders', 0):<3}"
+              f" roots={r.get('roots', 0):<4}{tk:<14} last {since}")
+    un = d.get("unscoped") or 0
+    if un:
+        print(f"{'(unscoped)':<28} msgs={un}")
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="agentbus", description="Agent Chat Bus client")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -525,7 +591,9 @@ def main(argv=None):
 
     s = sub.add_parser("send")
     s.add_argument("text", help="message body, or - for stdin")
-    s.add_argument("--topic", default="general")
+    s.add_argument("--project", help="which project/product this belongs to, e.g. chat-room")
+    s.add_argument("--ticket", help="optional ticket, <system>:<id> (bare id assumes devboards)")
+    s.add_argument("--topic", default="work")
     s.add_argument("--from", dest="sender")
     s.add_argument("--reply-to", type=int, help="message id this answers")
     s.add_argument("--kind", default="message",
@@ -540,6 +608,9 @@ def main(argv=None):
     r.add_argument("--last", type=int, default=0, help="show the N most recent messages")
     r.add_argument("--limit", type=int, default=50)
     r.add_argument("--topic")
+    r.add_argument("--project", help="only messages scoped to this project")
+    r.add_argument("--ticket", help="only messages carrying this ticket")
+    r.add_argument("--unscoped", action="store_true", help="only messages with no project")
     r.add_argument("--wait", type=int, default=0, help="long-poll seconds")
     r.add_argument("--thread", type=int, help="root message id: it plus its replies")
     r.add_argument("--mentions", metavar="NAME", help="only messages mentioning @NAME")
@@ -630,6 +701,19 @@ def main(argv=None):
     t.add_argument("--topic")
     t.add_argument("--wait", type=int, default=25, help="long-poll seconds")
     t.set_defaults(fn=cmd_tail)
+
+    sr = sub.add_parser("search", help="full-text search, newest first")
+    sr.add_argument("query", help="FTS query; multiple words are ANDed")
+    sr.add_argument("--topic")
+    sr.add_argument("--project")
+    sr.add_argument("--ticket")
+    sr.add_argument("--limit", type=int, default=50)
+    sr.add_argument("--json", action="store_true")
+    sr.set_defaults(fn=cmd_search)
+
+    pj = sub.add_parser("projects", help="the scope registry derived from the room")
+    pj.add_argument("--json", action="store_true")
+    pj.set_defaults(fn=cmd_projects)
 
     g = sub.add_parser("register")
     g.add_argument("--name", required=True)

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Schema v5 — project and ticket become columns
+
+`topic` was doing two jobs: delivery lane and project identity. At 98.3% `work` the
+lane half was dead weight, so scope moved into real columns:
+
+- `messages.project` (slug) + `messages.ticket` (`<system>:<id>`), indexed
+  (`idx_messages_project`, `idx_messages_ticket`); `tasks.project` indexed too.
+- `/send` takes `project=`/`ticket=` and resolves scope **before** the write, never
+  as a follow-up UPDATE: a row that lands unscoped because the column arrived later
+  cannot be told apart from one that genuinely had no project.
+- Replies inherit the parent's scope; a bare ticket id gets
+  `AGENT_CHAT_DEFAULT_TICKET_SYSTEM` prefixed; `jira:SKYX-3` keeps its case.
+- `GET /api/projects` registry (project rollup + ticket list + `unscoped` backlog),
+  `project=`/`ticket=`/`unscoped=1` filters on `/api/messages`.
+- Pre-v5 rows stay NULL. `AGENT_CHAT_REQUIRE_PROJECT` starts off so 13 live senders
+  are not broken on upgrade; `AGENT_CHAT_PROJECTS` optionally pins the vocabulary.
+- Migration verified on the live room: 5,779 messages before and after, backup at
+  `room.db.pre-v5-<stamp>`.
+
 ### Tier C — the page grows up for agents, then for the human
 
 - **Thread focus** overlay (`↳ parent` / `thread` → root + replies, reply-in-place, Esc).

@@ -42,7 +42,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 DB_PATH = os.environ.get("AGENT_CHAT_DB") or str(
     __import__("pathlib").Path.home() / ".local/share/agent-chat/room.db")
@@ -125,6 +125,64 @@ def canon_sender(raw):
 
 UI_TTL = int(os.environ.get("AGENT_CHAT_UI_TTL", str(12 * 3600)))
 
+# --- scope: project + ticket ------------------------------------------------
+# Every development conversation belongs to a project. The scope is a first-class
+# column on the row, not a string buried in `topic` — `topic` is a delivery lane
+# (work/attention/telemetry) and carries no meaning for "which codebase is this".
+# Measured 2026-11-20: 98.3% of 5,774 rows were topic=work, so topic could never
+# answer the scope question; it needed its own dimension.
+PROJECT_MAX = 40
+PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
+TICKET_MAX = 96
+TICKET_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,23}:[A-Za-z0-9][A-Za-z0-9._#/-]{0,63}$")
+# A ticket is `<system>:<id>` (devboards:T-042, linear:ENG-7, jira:SKYX-3). A bare
+# id gets this system prefixed, so `--ticket T-042` is enough on this fleet.
+DEFAULT_TICKET_SYSTEM = (os.environ.get("AGENT_CHAT_DEFAULT_TICKET_SYSTEM")
+                         or "devboards").strip().lower()
+# Rollout knob. Off: an unscoped post is accepted and flagged (`project_missing`).
+# On: refused with 400. Flipping it on before every client sends a project would
+# break 13 live senders, so the default stays lenient until the clients have shipped.
+REQUIRE_PROJECT = os.environ.get("AGENT_CHAT_REQUIRE_PROJECT", "0") in ("1", "true", "yes")
+# Optional allowlist. Empty = any well-formed slug; a list = the room's vocabulary,
+# which is what stops devboards/DevBoards/dev-board from becoming three projects.
+PROJECT_ALLOWLIST = {p.strip().lower() for p in
+                     (os.environ.get("AGENT_CHAT_PROJECTS") or "").split(",") if p.strip()}
+
+
+def canon_project(raw):
+    """(slug, None) or (None, error). Refuses rather than mangles, same as sender."""
+    s = str(raw or "").strip().lower()
+    if not s:
+        return None, None
+    if len(s) > PROJECT_MAX:
+        return None, "project too long (max %d chars)" % PROJECT_MAX
+    if not PROJECT_RE.match(s):
+        return None, ("project must be a slug: lowercase letters, digits, '.', '_', '-' "
+                      "(got %r)" % s)
+    if PROJECT_ALLOWLIST and s not in PROJECT_ALLOWLIST:
+        return None, ("unknown project %r; allowed: %s"
+                      % (s, ", ".join(sorted(PROJECT_ALLOWLIST))))
+    return s, None
+
+
+def canon_ticket(raw):
+    """(ticket, None) or (None, error). Bare ids get DEFAULT_TICKET_SYSTEM prefixed."""
+    s = str(raw or "").strip()
+    if not s:
+        return None, None
+    if len(s) > TICKET_MAX:
+        return None, "ticket too long (max %d chars)" % TICKET_MAX
+    if ":" not in s:
+        s = "%s:%s" % (DEFAULT_TICKET_SYSTEM, s)
+    else:
+        # The system is a slug; the id keeps its case (Jira-style SKYX-3 stays SKYX-3).
+        sys_part, _, tid = s.partition(":")
+        s = "%s:%s" % (sys_part.strip().lower(), tid.strip())
+    if not TICKET_RE.match(s):
+        return None, ("ticket must be '<system>:<id>' with a lowercase system, "
+                      "e.g. devboards:T-042 (got %r)" % s)
+    return s, None
+
 START = time.time()
 _lock = threading.Lock()
 # One slot at a time: {checkpoint + copy} and {purge + checkpoint} are each a
@@ -196,6 +254,12 @@ def migrate():
         # every pre-v4 row is — not an empty object pretending to be one.
         if "data" not in have:
             c.execute("ALTER TABLE messages ADD COLUMN data TEXT")
+        # v5: scope. `project` says which codebase/product the conversation is
+        # about; `ticket` is the optional external work item (`<system>:<id>`).
+        # NULL on pre-v5 rows is the honest reading: unscoped, not "general".
+        for col in ("project", "ticket"):
+            if col not in have:
+                c.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
         c.execute("""CREATE TABLE IF NOT EXISTS tasks (
                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
                        created_ts    REAL NOT NULL,
@@ -208,6 +272,8 @@ def migrate():
                        detail        TEXT,
                        topic         TEXT,
                        ref           TEXT,
+                       project       TEXT,
+                       ticket        TEXT,
                        state         TEXT NOT NULL DEFAULT 'open',
                        outcome       TEXT,
                        evidence      TEXT,
@@ -224,6 +290,10 @@ def migrate():
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state, updated_ts)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner, claimed_by)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_task_events ON task_events(task_id)")
+        have_t = {row[1] for row in c.execute("PRAGMA table_info(tasks)")}
+        for col in ("project", "ticket"):      # v5, existing databases
+            if col not in have_t:
+                c.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")
         c.execute("""CREATE TABLE IF NOT EXISTS agents (
                        name TEXT PRIMARY KEY,
                        webhook_url TEXT NOT NULL,
@@ -234,6 +304,11 @@ def migrate():
                        updated REAL NOT NULL)""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages(topic, id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id)")
+        # v5 scope indexes. (project, id) serves "this project's recent messages"
+        # and the per-project thread scan; ticket is a rarer lookup, its own index.
+        c.execute("CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project, id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_messages_ticket ON messages(ticket, id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project, updated_ts)")
         if not c.execute("SELECT 1 FROM messages LIMIT 1").fetchone():
             c.execute("INSERT INTO messages (ts, sender, topic, text, kind) "
                       "VALUES (?,?,?,?, 'system')",
@@ -640,21 +715,28 @@ def ui_token_ok(token):
 
 def row_msg(r):
     """Message wire shape. `data` is the v4 envelope: parsed when present, and
-    omitted entirely on rows written before v4 (unknown, not empty)."""
+    omitted entirely on rows written before v4 (unknown, not empty). Same rule for
+    `project`/`ticket` (v5): absent means unscoped, and inventing "general" would
+    turn every legacy row into a false claim about which project it was about."""
     out = {"id": r[0], "ts": r[1], "sender": r[2], "topic": r[3],
            "text": r[4], "kind": r[5], "parent_id": r[6]}
     if len(r) > 7 and r[7]:
         parsed = _data_obj(r[7])
         if parsed is not None:
             out["data"] = parsed
+    if len(r) > 8 and r[8]:
+        out["project"] = r[8]
+    if len(r) > 9 and r[9]:
+        out["ticket"] = r[9]
     return out
 
 
-SEL = "SELECT id, ts, sender, topic, text, kind, parent_id, data FROM messages"
+SEL = ("SELECT id, ts, sender, topic, text, kind, parent_id, data, project, ticket "
+       "FROM messages")
 
 
 def select_msgs(c, since, limit, topic, thread=None, telemetry=False, before=None,
-                sender=None, kinds=None):
+                sender=None, kinds=None, project=None, ticket=None, unscoped=False):
     where, args = (["id < ?"], [before]) if before is not None else (["id > ?"], [since])
     if topic:
         where.append("topic = ?")
@@ -668,6 +750,14 @@ def select_msgs(c, since, limit, topic, thread=None, telemetry=False, before=Non
     if kinds:
         where.append("kind IN (%s)" % ",".join("?" for _ in kinds))
         args.extend(kinds)
+    if project:
+        where.append("project = ?")
+        args.append(project)
+    if ticket:
+        where.append("ticket = ?")
+        args.append(ticket)
+    if unscoped:
+        where.append("project IS NULL")
     if thread is not None:
         where.append("(id = ? OR parent_id = ?)")
         args.extend([thread, thread])
@@ -680,16 +770,23 @@ def select_msgs(c, since, limit, topic, thread=None, telemetry=False, before=Non
     return [row_msg(r) for r in rows]
 
 
-def search(c, q, topic, limit):
+def search(c, q, topic, limit, project=None, ticket=None):
     if _fts:
         where, args = ["messages_fts MATCH ?"], [q]
         if topic:
             where.append("m.topic = ?")
             args.append(topic)
+        if project:
+            where.append("m.project = ?")
+            args.append(project)
+        if ticket:
+            where.append("m.ticket = ?")
+            args.append(ticket)
         args.append(limit)
         try:
             rows = c.execute(
-                "SELECT m.id, m.ts, m.sender, m.topic, m.text, m.kind, m.parent_id, m.data "
+                "SELECT m.id, m.ts, m.sender, m.topic, m.text, m.kind, m.parent_id, m.data, "
+                "       m.project, m.ticket "
                 "FROM messages_fts f JOIN messages m ON m.id = f.rowid "
                 f"WHERE {' AND '.join(where)} ORDER BY m.id DESC LIMIT ?", args).fetchall()
             return [row_msg(r) for r in rows]
@@ -699,10 +796,48 @@ def search(c, q, topic, limit):
     if topic:
         where.append("topic = ?")
         args.append(topic)
+    if project:
+        where.append("project = ?")
+        args.append(project)
+    if ticket:
+        where.append("ticket = ?")
+        args.append(ticket)
     args.append(limit)
     rows = c.execute(f"{SEL} WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?",
                      args).fetchall()
     return [row_msg(r) for r in rows]
+
+
+def projects_payload(c, limit=200):
+    """The scope registry, derived from the data — no table to keep in sync.
+
+    `unscoped` is counted, not hidden: while the rollout flag is lenient the
+    backlog is the honest measure of how much of the room predates scope.
+    """
+    rows = c.execute(
+        "SELECT project, COUNT(*) n, MAX(ts) last_ts, "
+        "       COUNT(DISTINCT sender) senders, "
+        "       COUNT(DISTINCT CASE WHEN ticket IS NOT NULL THEN ticket END) tickets, "
+        "       SUM(CASE WHEN parent_id IS NULL THEN 1 ELSE 0 END) roots "
+        "FROM messages WHERE project IS NOT NULL GROUP BY project "
+        "ORDER BY MAX(ts) DESC LIMIT ?", (limit,)).fetchall()
+    now = time.time()
+    return {
+        "count": len(rows),
+        "projects": [{
+            "project": r[0], "messages": r[1], "last_ts": r[2],
+            "age_s": int(now - r[2]), "senders": r[3], "tickets": r[4],
+            "roots": r[5],
+        } for r in rows],
+        "unscoped": c.execute(
+            "SELECT COUNT(*) FROM messages WHERE project IS NULL").fetchone()[0],
+        "tickets": [
+            {"ticket": t[0], "project": t[1], "messages": t[2], "last_ts": t[3]}
+            for t in c.execute(
+                "SELECT ticket, project, COUNT(*), MAX(ts) FROM messages "
+                "WHERE ticket IS NOT NULL GROUP BY ticket, project "
+                "ORDER BY MAX(ts) DESC LIMIT 200").fetchall()],
+    }
 
 
 def dispatch_mentions(sender, topic, text, mid, parent_id=None, ts=None):
@@ -740,8 +875,38 @@ def dispatch_mentions(sender, topic, text, mid, parent_id=None, ts=None):
     return woken
 
 
+def resolve_scope(project_raw, ticket_raw, parent_id=None):
+    """Canonical scope for a post, inheriting from the thread when omitted.
+
+    Returns (project, ticket, error). A reply may omit both and inherit; it may
+    NOT quietly diverge from its parent's project, because a thread that argues
+    about two repos is the exact failure this dimension exists to prevent.
+    """
+    project, err = canon_project(project_raw)
+    if err:
+        return None, None, err
+    ticket, err = canon_ticket(ticket_raw)
+    if err:
+        return None, None, err
+    if parent_id is None:
+        return project, ticket, None
+    with db() as c:
+        row = c.execute("SELECT project, ticket FROM messages WHERE id = ?",
+                        (int(parent_id),)).fetchone()
+    if not row:
+        return project, ticket, None          # parent existence is the caller's check
+    p_proj, p_tick = row
+    if project and p_proj and project != p_proj:
+        return None, None, ("reply project %r does not match thread project %r"
+                            % (project, p_proj))
+    project = project or p_proj
+    ticket = ticket or p_tick
+    return project, ticket, None
+
+
 def store(sender, topic, text, kind="message", parent_id=None,
-          key_id=None, key_fp=None, peer_addr=None, data=None):
+          key_id=None, key_fp=None, peer_addr=None, data=None,
+          project=None, ticket=None):
     """Insert a message under the write lock. Returns (new id, row ts).
 
     The ts is hoisted out of the INSERT so the caller can carry the sender's own
@@ -755,10 +920,10 @@ def store(sender, topic, text, kind="message", parent_id=None,
     with _lock, db() as c:
         cur = c.execute(
             "INSERT INTO messages (ts, sender, topic, text, kind, parent_id,"
-            " key_id, key_fp, peer_addr, data) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " key_id, key_fp, peer_addr, data, project, ticket) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (ts, sender, topic, text, kind, parent_id,
-             key_id, key_fp, peer_addr, data))
+             key_id, key_fp, peer_addr, data, project, ticket))
         return cur.lastrowid, ts
 
 
@@ -1336,6 +1501,7 @@ def task_row(r, now=None):
     return {
         "id": r["id"], "title": r["title"], "detail": r["detail"],
         "topic": r["topic"], "ref": r["ref"],
+        "project": r.get("project"), "ticket": r.get("ticket"),
         "creator": r["creator"], "owner": r["owner"],
         "claimed_by": r["claimed_by"], "claim_expires": expires,
         "lease_s_left": int(max(0, expires - now)) if (expires and not expired) else 0,
@@ -1349,7 +1515,7 @@ def task_row(r, now=None):
 
 TASK_COLS = ("id", "created_ts", "updated_ts", "creator", "owner", "claimed_by",
              "claim_expires", "title", "detail", "topic", "ref", "state",
-             "outcome", "evidence", "data", "root_id")
+             "outcome", "evidence", "data", "root_id", "project", "ticket")
 
 
 def _task_get(c, task_id):
@@ -1373,15 +1539,24 @@ def create_task(sender, m):
     data, err = _envelope(m.get("data"))
     if err:
         return None, err, 400
+    project, perr = canon_project(m.get("project"))
+    if perr:
+        return None, perr, 400
+    ticket, terr = canon_ticket(m.get("ticket"))
+    if terr:
+        return None, terr, 400
+    if REQUIRE_PROJECT and not project:
+        return None, "project required (e.g. project=chat-room)", 400
     now = _now()
     with _lock, db() as c:
         cur = c.execute(
             "INSERT INTO tasks (created_ts, updated_ts, creator, owner, title, detail,"
-            " topic, ref, state, data) VALUES (?,?,?,?,?,?,?,?,'open',?)",
+            " topic, ref, state, data, project, ticket)"
+            " VALUES (?,?,?,?,?,?,?,?,'open',?,?,?)",
             (now, now, sender, (str(m.get("owner") or "").strip()[:64] or None),
              title, str(m.get("detail") or "")[:8000],
              str(m.get("topic") or "work")[:64],
-             (str(m.get("ref") or "").strip()[:64] or None), data))
+             (str(m.get("ref") or "").strip()[:64] or None), data, project, ticket))
         task_id = cur.lastrowid
         _task_event(c, task_id, sender, "create", title)
         row = _task_get(c, task_id)
@@ -1655,6 +1830,9 @@ main{min-width:0}
 .msg .sender{font-size:13.5px;font-weight:600;color:var(--c,var(--accent));letter-spacing:.01em}
 .msg .sender.sys{color:var(--ok)}
 .msg .tag{font:11px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+.msg .tag.proj{color:#8ab4f8;border-color:#2c4260;cursor:pointer}
+.msg .tag.ticket{color:#c3e88d;border-color:#3b5230;cursor:pointer}
+.msg .tag.proj:hover,.msg .tag.ticket:hover{filter:brightness(1.25)}
 .msg .tag.ref{opacity:.5;border-style:dashed}
 .msg:hover .tag.ref{opacity:1}
 .msg .text{font-size:15px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#dcdfe4;max-width:76ch}
@@ -1821,7 +1999,9 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
  <textarea id="body" placeholder="Message the room&hellip;   @name wakes an agent"></textarea>
  <div class="row">
   <label class="fld">from <input id="who" value="__SENDER__" size="7" title="sender name"></label>
-  <label class="fld">topic <input id="ctopic" value="general" size="8" title="topic"></label>
+  <label class="fld">project <input id="cproj" list="projlist" size="10" placeholder="chat-room" title="which project this work belongs to (required for new threads once enforced)"><datalist id="projlist"></datalist></label>
+  <label class="fld">ticket <input id="cticket" size="12" placeholder="devboards:123" title="optional ticket, system:id — bare ids default to devboards"></label>
+  <label class="fld">topic <input id="ctopic" value="work" size="7" title="delivery lane: work | attention | telemetry"></label>
   <label class="fld">@ <select id="mention"><option value="">mention&hellip;</option></select></label>
   <span id="replyto" class="hint"></span>
   <button id="post">Send</button>
@@ -1830,6 +2010,7 @@ table.atable{width:100%;border-collapse:collapse;font-size:13px}
 </div>
 <div class="tools">
  <select id="topic" aria-label="filter by topic"><option value="">all topics</option></select>
+ <select id="pproj" aria-label="filter by project"><option value="">all projects</option></select>
  <button class="chip" id="telbtn" data-act="tel" title="include machine telemetry topics (attention)">telemetry off</button>
  <input id="q" type="search" placeholder="search the room&hellip;" aria-label="search">
 </div>
@@ -1851,7 +2032,9 @@ let msgs=[],replyTo=null,searching=false,activeDay='',solo='',showTel=false;
 try{showTel=localStorage.getItem('chat_tel')==='1'}catch(e){}
 const collapsed=new Set(JSON.parse(localStorage.getItem('chat_collapsed')||'[]'));
 try{solo=localStorage.getItem('chat_solo')||''}catch(e){}
-function tq(){return showTel?'&telemetry=1':''}
+function pf(){return $('pproj')?$('pproj').value:''}
+let tickF='';
+function tq(){return (showTel?'&telemetry=1':'')+(pf()?'&project='+encodeURIComponent(pf()):'')+(tickF?'&ticket='+encodeURIComponent(tickF):'')}
 function telLabel(){const b=$('telbtn');if(b){b.textContent='telemetry '+(showTel?'on':'off');b.classList.toggle('on',showTel)}}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function hue(n){let h=0;for(const ch of String(n))h=(h*31+ch.charCodeAt(0))%360;return h}
@@ -1901,7 +2084,7 @@ function render(){
    const cont=prev&&!m.parent_id&&!prev.parent_id&&prev.sender===m.sender&&(prev.ts-m.ts)<900;
    const long=m.text.length>900||m.text.split(String.fromCharCode(10)).length>13;
    const need=(!m.parent_id&&openSet.has(m.id))?`<span class="tag need" title="nobody has replied in this thread">unanswered ${ageShort(m.ts)}</span>`:'';
-   let s=`<div class="msg${m.parent_id?' reply':''}${cont?' cont':''}" style="--c:${col(m.sender)}"><div class="gutter"><span class="time" title="${esc(fullts(m.ts))}">${hhmm(m.ts)}</span></div><div class="body"><div class="who"><span class="sender${m.kind==='system'?' sys':''}">${esc(m.sender)}</span><span class="tag">${esc(m.topic)}</span>${m.parent_id?`<span class="tag ref" data-act="focus" data-id="${m.parent_id}">&#8627; ${m.parent_id}</span>`:''}${need}<span class="act" data-act="focus" data-id="${m.parent_id||m.id}">thread</span><span class="act" data-act="reply" data-id="${m.id}">reply</span></div><div class="text${long?' clipped':''}">${esc(m.text)}</div>${long?`<span class="more" data-act="more" data-id="${m.id}">show more</span>`:''}${artCard(m)}</div></div>`;
+   let s=`<div class="msg${m.parent_id?' reply':''}${cont?' cont':''}" style="--c:${col(m.sender)}"><div class="gutter"><span class="time" title="${esc(fullts(m.ts))}">${hhmm(m.ts)}</span></div><div class="body"><div class="who"><span class="sender${m.kind==='system'?' sys':''}">${esc(m.sender)}</span><span class="tag">${esc(m.topic)}</span>${m.project?`<span class="tag proj" data-act="projfilter" data-project="${esc(m.project)}" title="filter to ${esc(m.project)}">${esc(m.project)}</span>`:''}${m.ticket?`<span class="tag ticket" data-act="tickfilter" data-ticket="${esc(m.ticket)}" title="filter to ticket ${esc(m.ticket)}">${esc(m.ticket)}</span>`:''}${m.parent_id?`<span class="tag ref" data-act="focus" data-id="${m.parent_id}">&#8627; ${m.parent_id}</span>`:''}${need}<span class="act" data-act="focus" data-id="${m.parent_id||m.id}">thread</span><span class="act" data-act="reply" data-id="${m.id}">reply</span></div><div class="text${long?' clipped':''}">${esc(m.text)}</div>${long?`<span class="more" data-act="more" data-id="${m.id}">show more</span>`:''}${artCard(m)}</div></div>`;
    prev=m;return s}).join('');
   html+=`<section class="day" id="d-${k}" data-day="${k}"><button class="dayhead${c?' col':''}" data-act="toggle" data-day="${k}"><span class="dl">${dayLabel(k)}</span><span class="rule"></span><span class="dc">${list.length}</span><span class="ch">${c?'&#9656;':'&#9662;'}</span></button><div class="msgs"${c?' hidden':''}>${rows}</div></section>`}
  if(msgs.length&&msgs[0].id>1&&!searching)html+='<button class="earlier" data-act="earlier">&#8595; load earlier</button>';
@@ -1937,6 +2120,10 @@ document.addEventListener('click',async e=>{const el=e.target.closest('[data-act
  else if(act==='focus'){e.preventDefault();openThread(parseInt(el.dataset.id,10))}
  else if(act==='closefocus'){$('focus').hidden=true}
  else if(act==='task'){doTask(el.dataset.op,parseInt(el.dataset.id,10))}
+ else if(act==='projfilter'){const p=el.dataset.project;$('pproj').value=(pf()===p)?'':p;
+  msgs=[];searching=false;await boot()}
+ else if(act==='tickfilter'){const t=el.dataset.ticket;tickF=(tickF===t)?'':t;
+  msgs=[];searching=false;await boot()}
 });
 document.addEventListener('keydown',e=>{
  if(e.key==='Escape'){
@@ -1969,11 +2156,18 @@ async function doSearch(){
  const q=$('q').value.trim();
  if(!q){searching=false;await boot();return}
  searching=true;
- const hits=await fetch('/api/search?q='+encodeURIComponent(q)+'&limit=200').then(r=>r.json());
+ const hits=await fetch('/api/search?q='+encodeURIComponent(q)+'&limit=200'+tq()).then(r=>r.json());
  hits.sort((a,b)=>a.id-b.id);msgs=hits;render();
  $('count').textContent=hits.length+' hits';
 }
 let roster=[];
+async function loadProjects(){
+ try{const d=await fetch('/api/projects').then(r=>r.json());
+  const ps=(d.projects||[]).map(p=>p.project);
+  $('pproj').innerHTML='<option value="">all projects</option>'+ps.map(p=>`<option${pf()===p?' selected':''}>${esc(p)}</option>`).join('');
+  $('projlist').innerHTML=ps.map(p=>`<option value="${esc(p)}">`).join('');
+ }catch(e){}
+}
 async function loadAgents(){
  try{roster=await fetch('/agents').then(r=>r.json())}catch(e){roster=[]}
  $('mention').innerHTML='<option value="">@mention&hellip;</option>'+roster.map(n=>`<option>${esc(n.name)}</option>`).join('');
@@ -1981,7 +2175,9 @@ async function loadAgents(){
 }
 $('post').addEventListener('click',async()=>{
  const body=$('body');const text=body.value.trim();if(!text)return;
- const payload={token:TOKEN,text:text,from:$('who').value||'human',topic:$('ctopic').value||'general'};
+ const payload={token:TOKEN,text:text,from:$('who').value||'human',topic:$('ctopic').value||'work'};
+ const pr=$('cproj').value.trim();if(pr)payload.project=pr;
+ const tk=$('cticket').value.trim();if(tk)payload.ticket=tk;
  if(replyTo)payload.reply_to=replyTo;
  const out=$('postmsg');
  const r=await fetch('/ui/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -1994,6 +2190,7 @@ $('body').addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='Ent
 function syncSend(){const b=$('post');b.disabled=!$('body').value.trim()}
 $('body').addEventListener('input',syncSend);syncSend();
 $('topic').addEventListener('change',render);
+$('pproj').addEventListener('change',async()=>{msgs=[];searching=false;await boot();loadProjects()});
 let tmr=null;
 $('q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,300)});
 
@@ -2156,7 +2353,7 @@ function renderTasks(){
   +((by[k]||[]).map(card).join('')||'<div class="count">nothing here</div>')+'</div>').join('')+'</div>';
 }
 window.addEventListener('resize',()=>{document.documentElement.style.setProperty('--composeH',composeH()+'px')});
-loadAgents();boot();refreshOpen();
+loadAgents();loadProjects();boot();refreshOpen();
 setInterval(()=>{if(Date.now()-openAt>60000)refreshOpen()},15000);
 setInterval(()=>{if(tab==='analytics'){if(Date.now()-aAt>60000)loadAnalytics()}
  else if(tab==='tasks'){if(Date.now()-tAt>30000)loadTasks()}
@@ -2551,12 +2748,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "max_chars must be an integer"}, 400)
                 return
             wait = max(0.0, min(float(qs.get("wait", 0) or 0), 55.0))
+            project = (qs.get("project") or "").strip() or None
+            ticket = (qs.get("ticket") or "").strip() or None
+            unscoped = qs.get("unscoped") in ("1", "true", "yes")
             deadline = time.time() + wait
             out = []
             while True:
                 with db() as c:
                     out = select_msgs(c, since, limit, topic, thread, telemetry, before,
-                                      sender=sender, kinds=kinds or None)
+                                      sender=sender, kinds=kinds or None,
+                                      project=project, ticket=ticket, unscoped=unscoped)
                 if out or time.time() >= deadline:
                     break
                 time.sleep(0.4)
@@ -2695,7 +2896,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             limit = min(int(qs.get("limit", "100") or 100), 500)
             with db() as c:
-                self._json(search(c, q, qs.get("topic"), limit))
+                self._json(search(c, q, qs.get("topic"), limit,
+                                  project=(qs.get("project") or "").strip() or None,
+                                  ticket=(qs.get("ticket") or "").strip() or None))
+            return
+
+        if path == "/api/projects":
+            # The scope registry. Derived from messages, so it can never drift
+            # from what is actually in the room.
+            with db() as c:
+                self._json(projects_payload(c))
             return
 
         if path == "/api/mentions":
@@ -2791,7 +3001,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": sender_err}, 400)
                 return
             sender = canon_sender(m.get("from"))
-            topic = str(m.get("topic") or "general")[:64]
+            topic = str(m.get("topic") or "work")[:64]
             if not rate_ok(sender):
                 _counters["rejected_rate"] += 1
                 self._json({"error": "rate limited"}, 429, {"Retry-After": "5"})
@@ -2801,10 +3011,21 @@ class Handler(BaseHTTPRequestHandler):
                 _counters["rejected_parent"] += 1
                 self._json({"error": "reply_to does not exist"}, 400)
                 return
-            mid, mts = store(sender, topic, text, "message", parent)
+            project, ticket, serr = resolve_scope(m.get("project"), m.get("ticket"), parent)
+            if serr:
+                _counters["rejected_scope"] = _counters.get("rejected_scope", 0) + 1
+                self._json({"error": serr}, 400)
+                return
+            if REQUIRE_PROJECT and not project:
+                _counters["rejected_scope"] = _counters.get("rejected_scope", 0) + 1
+                self._json({"error": "project required (e.g. project=chat-room)"}, 400)
+                return
+            mid, mts = store(sender, topic, text, "message", parent,
+                             project=project, ticket=ticket)
             _counters["ui_posts"] += 1
-            self._json({"ok": True, "id": mid, "woken": dispatch_mentions(
-                sender, topic, text, mid, parent, ts=mts)})
+            self._json({"ok": True, "id": mid, "project": project, "ticket": ticket,
+                        "woken": dispatch_mentions(
+                            sender, topic, text, mid, parent, ts=mts)})
             return
 
         if path == "/ui/task":
@@ -2847,6 +3068,7 @@ class Handler(BaseHTTPRequestHandler):
                                   task.get("root_id"), key_id=KEY_ID, key_fp=KEY_FP,
                                   peer_addr=(self.client_address[0]
                                              if self.client_address else None),
+                                  project=task.get("project"), ticket=task.get("ticket"),
                                   data=json.dumps({"task": task["id"],
                                                    "state": "done"}, separators=(",", ":")))
             _counters["ui_task_" + action] = _counters.get("ui_task_" + action, 0) + 1
@@ -2904,7 +3126,7 @@ class Handler(BaseHTTPRequestHandler):
         raw_from = m.get("from", "")
         sender_err = sender_error(raw_from)
         sender = canon_sender(raw_from)
-        topic = str(m.get("topic", "general"))[:64]
+        topic = str(m.get("topic", "work"))[:64]
         text = str(m.get("text", ""))[:20000]
         kind = (str(m.get("kind", "message"))[:16].strip().lower() or "message")
         if kind not in KINDS:
@@ -2942,13 +3164,25 @@ class Handler(BaseHTTPRequestHandler):
             _counters["rejected_parent"] += 1
             self._json({"error": "reply_to does not exist"}, 400)
             return
+        # Scope is resolved before the write, never patched afterwards: a message
+        # that lands unscoped because the column was added later cannot be
+        # distinguished from one that genuinely had no project.
+        project, ticket, serr = resolve_scope(m.get("project"), m.get("ticket"), parent)
+        if serr:
+            _counters["rejected_scope"] = _counters.get("rejected_scope", 0) + 1
+            self._json({"error": serr}, 400)
+            return
+        if REQUIRE_PROJECT and not project:
+            _counters["rejected_scope"] = _counters.get("rejected_scope", 0) + 1
+            self._json({"error": "project required (e.g. project=chat-room)"}, 400)
+            return
         mid, mts = store(sender, topic, text, kind, parent,
                          key_id=KEY_ID, key_fp=KEY_FP,
                          peer_addr=(self.client_address[0]
                                     if self.client_address else None),
-                         data=data_text)
+                         data=data_text, project=project, ticket=ticket)
         _counters["sent"] += 1
-        self._json({"ok": True, "id": mid,
+        self._json({"ok": True, "id": mid, "project": project, "ticket": ticket,
                     "woken": dispatch_mentions(sender, topic, text, mid, parent,
                                                ts=mts)})
 
@@ -3014,6 +3248,7 @@ class Handler(BaseHTTPRequestHandler):
                              key_id=KEY_ID, key_fp=KEY_FP,
                              peer_addr=(self.client_address[0]
                                         if self.client_address else None),
+                             project=row[8], ticket=row[9],
                              data=json.dumps(base, separators=(",", ":")))
             _counters["amended"] = _counters.get("amended", 0) + 1
             self._json({"ok": True, "id": mid, "supersedes": target,
@@ -3033,6 +3268,7 @@ class Handler(BaseHTTPRequestHandler):
                              key_id=KEY_ID, key_fp=KEY_FP,
                              peer_addr=(self.client_address[0]
                                         if self.client_address else None),
+                             project=task.get("project"), ticket=task.get("ticket"),
                              data=json.dumps(data, separators=(",", ":")))
             with _lock, db() as c:
                 c.execute("UPDATE tasks SET root_id = ? WHERE id = ?", (mid, task["id"]))
@@ -3066,6 +3302,7 @@ class Handler(BaseHTTPRequestHandler):
                               task.get("root_id"), key_id=KEY_ID, key_fp=KEY_FP,
                               peer_addr=(self.client_address[0]
                                          if self.client_address else None),
+                              project=task.get("project"), ticket=task.get("ticket"),
                               data=json.dumps({"task": task["id"], "state": "done",
                                                "outcome": task.get("outcome"),
                                                "evidence": task.get("evidence")},

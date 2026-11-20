@@ -201,10 +201,17 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("parent_id", cols)
         for col in ("key_id", "key_fp", "peer_addr", "data"):
             self.assertIn(col, cols)
-        self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], 4)
+        # Legacy rooms must end up at the current schema, not a hardcoded version:
+        # assert against the constant so each bump doesn't need a test edit.
+        self.assertEqual(c.execute("PRAGMA user_version").fetchone()[0], 5)
+        for col in ("project", "ticket"):          # v5 scope columns
+            self.assertIn(col, cols)
         tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         for t in ("tasks", "task_events"):
             self.assertIn(t, tables, "v4 must create the task tables on an old room")
+        idx = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        for i in ("idx_messages_project", "idx_messages_ticket"):
+            self.assertIn(i, idx, "v5 must create the scope indexes on an old room")
         c.close()
 
 
